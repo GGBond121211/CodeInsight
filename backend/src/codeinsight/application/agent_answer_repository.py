@@ -1,0 +1,31 @@
+"""Application entry point for the bounded citation refinement Agent."""
+
+from collections.abc import Callable, Sequence
+from pathlib import Path
+
+from codeinsight.agent.workflow import run_citation_agent
+from codeinsight.domain.agent import AgentRepositoryAnswer
+from codeinsight.domain.answer import ModelCompletion
+from codeinsight.domain.semantic import EmbeddingBatch
+
+SemanticEmbed = Callable[[Sequence[str]], EmbeddingBatch]
+
+
+def agent_answer_repository(
+    root: str | Path,
+    question: str,
+    *,
+    complete: Callable[[str, str], ModelCompletion],
+    limit: int = 5,
+    retrieval_mode: str = "hybrid",
+    semantic_embed: SemanticEmbed | None = None,
+) -> AgentRepositoryAnswer:
+    """Answer with retrieval, citation review, and at most five revisions."""
+    return run_citation_agent(
+        root,
+        question,
+        complete=complete,
+        limit=limit,
+        retrieval_mode=retrieval_mode,
+        semantic_embed=semantic_embed,
+    )

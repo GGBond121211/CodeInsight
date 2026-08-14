@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "source_cases": "tests/evals/httpx_cases.json",
+  "cases": [
+    {
+      "source_case_id": "httpx-flow-top-level-get",
+      "required_terms": ["get", "request", "client.request"]
+    },
+    {
+      "source_case_id": "httpx-flow-sync-transport",
+      "required_terms": ["Client._send_single_request", "HTTPTransport.handle_request", "httpcore"]
+    },
+    {
+      "source_case_id": "httpx-flow-async-transport",
+      "required_terms": ["AsyncClient._send_single_request", "AsyncHTTPTransport.handle_async_request", "httpcore"]
+    },
+    {
+      "source_case_id": "httpx-symbol-async-client-send",
+      "required_terms": ["AsyncClient.send"]
+    },
+    {
+      "source_case_id": "httpx-symbol-raise-for-status",
+      "required_terms": ["raise_for_status", "HTTPStatusError"]
+    },
+    {
+      "source_case_id": "httpx-redirect-decision",
+      "required_terms": ["follow_redirects", "has_redirect_location"]
+    },
+    {
+      "source_case_id": "httpx-basic-auth-header",
+      "required_terms": ["Authorization", "b64encode"]
+    },
+    {
+      "id": "httpx-insufficient-status-retry-policy",
+      "category": "insufficient_evidence",
+      "protects": "Refuses to invent an HTTP status retry and backoff policy that is not implemented in the scoped package evidence.",
+      "input": {
+        "question": "Which HTTP status codes does HTTPX automatically retry, and what exponential backoff formula does it use?"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence",
+        "evidence": []
+      },
+      "required_terms": []
+    }
+  ]
+}

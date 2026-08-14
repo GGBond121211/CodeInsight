@@ -1,0 +1,1 @@
+"""External infrastructure implementations."""

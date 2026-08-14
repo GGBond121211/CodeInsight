@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-*/
+**/.pytest-*/
+.ruff_cache/
+.venv/
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local agent instructions and planning notes
+AGENTS.md
+.hermes/
+
+# Private local project history
+docs/*.md
+
+# Project-local temporary and generated files
+work/*
+!work/.gitignore
+outputs/*
+!outputs/.gitignore

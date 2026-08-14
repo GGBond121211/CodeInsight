@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "repository": {
+    "name": "encode/httpx",
+    "url": "https://github.com/encode/httpx",
+    "tag": "0.28.1",
+    "commit": "26d48e0634e6ee9cdc0533996db289ce4b430177",
+    "scope": "httpx/",
+    "license": "BSD-3-Clause",
+    "python_file_count": 23,
+    "logical_line_count": 8828,
+    "non_empty_line_count": 7449,
+    "source_tree_sha256": "340af8bceee655797fb86296e3229702690eb37b72f91636123412f9afdfc715"
+  },
+  "cases": [
+    {
+      "id": "httpx-symbol-client-send",
+      "category": "symbol_lookup",
+      "protects": "Locates the synchronous Client.send implementation instead of AsyncClient.send or a call site.",
+      "input": {"question": "Where is the synchronous Client.send implementation defined?"},
+      "expected": {"outcome": "answered", "evidence": [{"path": "_client.py", "start_line": 879, "end_line": 928}]}
+    },
+    {
+      "id": "httpx-symbol-async-client-send",
+      "category": "same_name_symbol",
+      "protects": "Separates AsyncClient.send from the synchronous Client.send implementation.",
+      "input": {"question": "Where is the AsyncClient.send implementation defined?"},
+      "expected": {"outcome": "answered", "evidence": [{"path": "_client.py", "start_line": 1594, "end_line": 1643}]}
+    },
+    {
+      "id": "httpx-symbol-raise-for-status",
+      "category": "symbol_lookup",
+      "protects": "Finds the Response.raise_for_status implementation and its HTTPStatusError construction.",
+      "input": {"question": "Where is Response.raise_for_status implemented?"},
+      "expected": {"outcome": "answered", "evidence": [{"path": "_models.py", "start_line": 794, "end_line": 829}]}
+    },
+    {
+      "id": "httpx-symbol-wsgi-transport",
+      "category": "same_name_symbol",
+      "protects": "Finds WSGITransport.handle_request rather than another transport handle_request method.",
+      "input": {"question": "Where is WSGITransport.handle_request implemented?"},
+      "expected": {"outcome": "answered", "evidence": [{"path": "_transports/wsgi.py", "start_line": 91, "end_line": 149}]}
+    },
+    {
+      "id": "httpx-symbol-asgi-transport",
+      "category": "same_name_symbol",
+      "protects": "Finds the long ASGITransport.handle_async_request body across its bounded AST chunks.",
+      "input": {"question": "Where is ASGITransport.handle_async_request implemented?"},
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "_transports/asgi.py", "start_line": 99, "end_line": 160},
+          {"path": "_transports/asgi.py", "start_line": 161, "end_line": 178},
+          {"path": "_transports/asgi.py", "start_line": 179, "end_line": 187}
+        ]
+      }
+    },
+    {
+      "id": "httpx-flow-top-level-get",
+      "category": "cross_file_call",
+      "protects": "Traces the public get helper through request and the temporary Client request call.",
+      "input": {"question": "How does the top-level get helper dispatch an HTTP request?"},
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "_api.py", "start_line": 195, "end_line": 207},
+          {"path": "_api.py", "start_line": 102, "end_line": 118},
+          {"path": "_api.py", "start_line": 119, "end_line": 120}
+        ]
+      }
+    },
+    {
+      "id": "httpx-flow-sync-auth",
+      "category": "cross_file_call",
+      "protects": "Traces Client.send into the synchronous auth generator and its response feedback loop.",
+      "input": {"question": "How does the synchronous client run an authentication flow?"},
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "_client.py", "start_line": 914, "end_line": 919},
+          {"path": "_client.py", "start_line": 930, "end_line": 960},
+          {"path": "_client.py", "start_line": 961, "end_line": 962},
+          {"path": "_auth.py", "start_line": 62, "end_line": 80},
+          {"path": "_auth.py", "start_line": 81, "end_line": 85}
+        ]
+      }
+    },
+    {
+      "id": "httpx-flow-async-auth",
+      "category": "cross_file_call",
+      "protects": "Traces AsyncClient.send through async_auth_flow without confusing the synchronous path.",
+      "input": {"question": "How does AsyncClient execute asynchronous authentication?"},
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "_client.py", "start_line": 1629, "end_line": 1634},
+          {"path": "_client.py", "start_line": 1645, "end_line": 1677},
+          {"path": "_auth.py", "start_line": 87, "end_line": 110}
+        ]
+      }
+    },
+    {
+      "id": "httpx-flow-sync-transport",
+      "category": "cross_file_call",
+      "protects": "Traces a synchronous client request into HTTPTransport and the httpcore pool.",
+      "input": {"question": "How does a synchronous Client send one request through HTTPTransport?"},
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "_client.py", "start_line": 1001, "end_line": 1034},
+          {"path": "_transports/default.py", "start_line": 230, "end_line": 240},
+          {"path": "_transports/default.py", "start_line": 241, "end_line": 259}
+        ]
+      }
+    },
+    {
+      "id": "httpx-flow-async-transport",
+      "category": "cross_file_call",
+      "protects": "Traces AsyncClient into AsyncHTTPTransport.handle_async_request and its httpcore pool call.",
+      "input": {"question": "How does AsyncClient send one request through AsyncHTTPTransport?"},
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "_client.py", "start_line": 1717, "end_line": 1749},
+          {"path": "_transports/default.py", "start_line": 374, "end_line": 400},
+          {"path": "_transports/default.py", "start_line": 401, "end_line": 403}
+        ]
+      }
+    },
+    {
+      "id": "httpx-basic-auth-header",
+      "category": "data_flow",
+      "protects": "Finds how BasicAuth encodes credentials and writes the Authorization header.",
+      "input": {"question": "How does BasicAuth produce the Authorization header?"},
+      "expected": {"outcome": "answered", "evidence": [{"path": "_auth.py", "start_line": 126, "end_line": 142}]}
+    },
+    {
+      "id": "httpx-redirect-decision",
+      "category": "cross_file_call",
+      "protects": "Connects Client redirect handling with Response.has_redirect_location.",
+      "input": {"question": "How does the synchronous client decide whether to follow a redirect?"},
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "_client.py", "start_line": 964, "end_line": 999},
+          {"path": "_models.py", "start_line": 771, "end_line": 792}
+        ]
+      }
+    },
+    {
+      "id": "httpx-build-request-merge",
+      "category": "data_flow",
+      "protects": "Finds how BaseClient.build_request merges client defaults before constructing Request.",
+      "input": {"question": "How does build_request merge URL, headers, cookies, query parameters, and timeout?"},
+      "expected": {"outcome": "answered", "evidence": [{"path": "_client.py", "start_line": 340, "end_line": 389}]}
+    }
+  ]
+}

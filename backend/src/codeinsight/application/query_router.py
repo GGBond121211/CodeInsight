@@ -1,0 +1,196 @@
+"""Structured LLM Query Router with a deterministic linear fallback."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from time import perf_counter
+from typing import Any
+
+from codeinsight.domain.answer import ModelCompletion
+from codeinsight.domain.errors import ModelCallError, ModelResponseError
+from codeinsight.domain.query_plan import (
+    SUPPORTED_EXECUTION_ROUTES,
+    SUPPORTED_LANGUAGES,
+    QueryPlan,
+    SubQuestion,
+)
+from codeinsight.prompts.query_router import PROMPT_VERSION, build_router_prompt
+
+MIN_ROUTER_CONFIDENCE = 0.70
+ROUTER_KEYS = frozenset(
+    {"language", "normalized_question", "subquestions", "execution_route", "confidence"}
+)
+SUBQUESTION_KEYS = frozenset({"question", "intent", "retrieval_mode"})
+SUPPORTED_INTENTS = frozenset(
+    {"symbol_lookup", "call_flow", "data_flow", "implementation", "boundary", "semantic", "unknown"}
+)
+ROUTER_RETRIEVAL_MODES = frozenset({"bm25"})
+_LANGUAGE_ALIASES = {
+    "zh-en": "mixed",
+    "en-zh": "mixed",
+    "chinese": "zh",
+    "english": "en",
+}
+_INTENT_ALIASES = {
+    "call_graph": "call_flow",
+    "cross_file_call": "call_flow",
+    "dataflow": "data_flow",
+    "business_logic": "implementation",
+}
+_RETRIEVAL_ALIASES = {"sparse": "bm25"}
+
+
+@dataclass(frozen=True)
+class QueryRouterResult:
+    plan: QueryPlan
+    used_fallback: bool
+    fallback_reason: str | None
+    model: str | None
+    input_tokens: int
+    output_tokens: int
+    elapsed_milliseconds: float
+    prompt_version: str = PROMPT_VERSION
+
+
+def fallback_plan(question: str, reason: str) -> QueryPlan:
+    """Build the documented BM25 + linear fallback plan."""
+    subquestion = SubQuestion(question, "unknown", "bm25")
+    return QueryPlan(
+        original_question=question,
+        language="unknown",
+        normalized_question=question,
+        subquestions=(subquestion,),
+        retrieval_modes=("bm25",),
+        execution_route="linear",
+        confidence=0.0,
+        fallback_reason=reason,
+    )
+
+
+def _require_string(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ModelResponseError(f"router field {key} must be a non-empty string")
+    return value.strip()
+
+
+def _decode_json_object(content: str) -> dict[str, Any]:
+    """Decode a JSON object while tolerating a markdown wrapper from a model."""
+    candidate = content.strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start < 0 or end <= start:
+            raise ModelResponseError("router response is not valid JSON") from None
+        try:
+            payload = json.loads(candidate[start : end + 1])
+        except json.JSONDecodeError as error:
+            raise ModelResponseError("router response is not valid JSON") from error
+    if not isinstance(payload, dict):
+        raise ModelResponseError("router response must be a JSON object")
+    return payload
+
+
+def parse_query_plan(original_question: str, content: str) -> QueryPlan:
+    """Parse and strictly validate a router JSON response."""
+    payload = _decode_json_object(content)
+    if frozenset(payload) != ROUTER_KEYS:
+        raise ModelResponseError("router response has an unsupported JSON shape")
+
+    language = _require_string(payload, "language")
+    language = _LANGUAGE_ALIASES.get(language.lower(), language.lower())
+    if language not in SUPPORTED_LANGUAGES:
+        raise ModelResponseError("router response has an unsupported language")
+    normalized_question = _require_string(payload, "normalized_question")
+    execution_route = _require_string(payload, "execution_route")
+    if execution_route not in SUPPORTED_EXECUTION_ROUTES:
+        raise ModelResponseError("router response has an unsupported execution route")
+    confidence = payload.get("confidence")
+    if isinstance(confidence, str):
+        try:
+            confidence = float(confidence.strip())
+        except ValueError as error:
+            raise ModelResponseError("router confidence must be numeric") from error
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise ModelResponseError("router confidence must be numeric")
+
+    raw_subquestions = payload.get("subquestions")
+    if not isinstance(raw_subquestions, list):
+        raise ModelResponseError("router subquestions must be a list")
+    subquestions: list[SubQuestion] = []
+    for raw in raw_subquestions:
+        if not isinstance(raw, dict) or frozenset(raw) != SUBQUESTION_KEYS:
+            raise ModelResponseError("router subquestion has an unsupported JSON shape")
+        question = _require_string(raw, "question")
+        intent = _require_string(raw, "intent")
+        intent = _INTENT_ALIASES.get(intent.lower(), intent.lower())
+        if intent not in SUPPORTED_INTENTS:
+            raise ModelResponseError("router subquestion has an unsupported intent")
+        retrieval_mode = _require_string(raw, "retrieval_mode")
+        retrieval_mode = _RETRIEVAL_ALIASES.get(retrieval_mode.lower(), retrieval_mode.lower())
+        if retrieval_mode not in ROUTER_RETRIEVAL_MODES:
+            raise ModelResponseError("router subquestion has an unsupported retrieval mode")
+        subquestions.append(SubQuestion(question, intent, retrieval_mode))
+
+    retrieval_modes = tuple(dict.fromkeys(item.retrieval_mode for item in subquestions))
+    return QueryPlan(
+        original_question=original_question,
+        language=language,
+        normalized_question=normalized_question,
+        subquestions=tuple(subquestions),
+        retrieval_modes=retrieval_modes,
+        execution_route=execution_route,
+        confidence=float(confidence),
+    )
+
+
+def route_question(
+    question: str,
+    *,
+    complete,
+    min_confidence: float = MIN_ROUTER_CONFIDENCE,
+) -> QueryRouterResult:
+    """Call the router once and return a safe linear fallback on failure."""
+    started = perf_counter()
+    input_tokens = 0
+    output_tokens = 0
+    model: str | None = None
+    try:
+        system_prompt, user_prompt = build_router_prompt(question)
+        completion: ModelCompletion = complete(system_prompt, user_prompt)
+        model = completion.model
+        input_tokens = completion.input_tokens or 0
+        output_tokens = completion.output_tokens or 0
+        plan = parse_query_plan(question, completion.content)
+        if plan.confidence < min_confidence:
+            raise ModelResponseError("router confidence is below the configured threshold")
+        return QueryRouterResult(
+            plan=plan,
+            used_fallback=False,
+            fallback_reason=None,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            elapsed_milliseconds=(perf_counter() - started) * 1000,
+        )
+    except (ModelCallError, ModelResponseError, ValueError, TypeError):
+        reason = "router_call_failed" if model is None else "router_invalid_or_low_confidence"
+        return QueryRouterResult(
+            plan=fallback_plan(question, reason),
+            used_fallback=True,
+            fallback_reason=reason,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            elapsed_milliseconds=(perf_counter() - started) * 1000,
+        )

@@ -1,0 +1,4389 @@
+{
+  "schema_version": 2,
+  "case_set": "task11_multilingual_realistic_v2",
+  "fixture": "tests/fixtures/sample_repo",
+  "description": "100 high-difficulty Chinese and Chinese-English code-understanding cases. Every question is newly written, intentionally noisy or internally conflicted, and grounded in the offline fixture.",
+  "generation_contract": {
+    "case_count": 100,
+    "scenario_count": 25,
+    "languages": {
+      "zh": 50,
+      "zh-en": 50
+    },
+    "forbidden_languages": [
+      "en"
+    ],
+    "categories": {
+      "ambiguity": 12,
+      "boundary_behavior": 12,
+      "code_document_conflict": 8,
+      "cross_file_trace": 12,
+      "data_flow": 12,
+      "insufficient_evidence": 8,
+      "multi_intent": 12,
+      "noisy_query": 12,
+      "semantic_paraphrase": 12
+    },
+    "variants_per_scenario": 4,
+    "minimum_challenge_features_per_case": 3,
+    "external_content_policy": "Research sources provide discourse patterns only; no external question is copied and all expected evidence is local."
+  },
+  "research_basis": [
+    {
+      "source": "GitHub issue search: uncertain bug vs expected behavior",
+      "url": "https://github.com/search?q=%22not+sure%22+but+expected+is%3Aissue+language%3APython&type=issues",
+      "pattern": "Uncertain bug classification, partial context, contradictory observations and apologetic self-correction."
+    },
+    {
+      "source": "GitHub Stimela issue #605",
+      "url": "https://github.com/caracal-pipeline/stimela/issues/605",
+      "pattern": "Nested defaults and aliases create competing precedence hypotheses; the reporter cannot yet pin down whether behavior is surprising or wrong."
+    },
+    {
+      "source": "GitHub photon-docker issue #341",
+      "url": "https://github.com/rtuszik/photon-docker/issues/341",
+      "pattern": "Restart timing, logs, scheduled behavior and an uncertain interpretation are mixed into one causal report."
+    },
+    {
+      "source": "GitHub cal-itp data-infra issue #5641",
+      "url": "https://github.com/cal-itp/data-infra/issues/5641",
+      "pattern": "Two fields contradict each other while the reporter explicitly allows that the assumed invariant may be wrong."
+    },
+    {
+      "source": "GitHub canvas-mcp issue #281",
+      "url": "https://github.com/vishalsachdev/canvas-mcp/issues/281",
+      "pattern": "A plausible-but-wrong retrieval result leads to an incorrect causal theory; scope mismatch is the real issue."
+    },
+    {
+      "source": "V2EX Python and Q&A topic feeds",
+      "url": "https://www.v2ex.com/go/python",
+      "pattern": "Colloquial requests often omit environment details, include irrelevant background, repeat themselves and ask several goals only at the end."
+    },
+    {
+      "source": "Zhihu search: Python errors are hard to understand",
+      "url": "https://www.zhihu.com/search?type=content&q=Python%20%E6%8A%A5%E9%94%99%20%E4%BD%86%E6%98%AF%20%E4%B8%BA%E4%BB%80%E4%B9%88%20%E7%9C%8B%E4%B8%8D%E6%87%82",
+      "pattern": "Chinese novice questions commonly provide screenshots or fragments, confuse environment with logic, contain typos and revise the premise after more context appears."
+    }
+  ],
+  "cases": [
+    {
+      "id": "t11-v2-checkout-full-trace-a",
+      "scenario": "checkout-full-trace",
+      "language": "zh",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求从 transport-shaped adapter 追到校验、库存、计价与 Receipt 映射，不能只命中 checkout 定义。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "cross_file_trace",
+        "execution_order"
+      ],
+      "input": {
+        "question": "线上说下单成功但钱不对，我翻到 `checkout` 又像只是组对象；先别默认 API 就是路由，payload 到 `OrderRequest`、校验、扣库存、算总价、塞 currency 到返回到底按什么顺序？中间谁先抛错也一起说。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-checkout-full-trace-b",
+      "scenario": "checkout-full-trace",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求从 transport-shaped adapter 追到校验、库存、计价与 Receipt 映射，不能只命中 checkout 定义。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "cross_file_trace",
+        "execution_order"
+      ],
+      "input": {
+        "question": "ticket 写成 create_order -> reserve -> validate -> pricing，but 我怀疑顺序抄反了，而且 `Receipt.currency` 像是 user locale；pls trace payload→request→checkout→response，按 actual execution，不要照 ticket 猜。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-checkout-full-trace-c",
+      "scenario": "checkout-full-trace",
+      "language": "zh",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求从 transport-shaped adapter 追到校验、库存、计价与 Receipt 映射，不能只命中 checkout 定义。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "cross_file_trace",
+        "execution_order"
+      ],
+      "input": {
+        "question": "背景有点乱：客服先说库存扣了才校验，财务又说 total 在 API 层算，我只看到最后四个字段。不是问某个函数在哪，麻烦把输入怎么一路变成返回串起来；如果他们两边都说错就直接拆开指出。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-checkout-full-trace-d",
+      "scenario": "checkout-full-trace",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求从 transport-shaped adapter 追到校验、库存、计价与 Receipt 映射，不能只命中 checkout 定义。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "cross_file_trace",
+        "execution_order"
+      ],
+      "input": {
+        "question": "checkout flow 求捋下：payload 是 dict 但后面又 dataclass；validate/reserve/order_total 谁先谁后？还有 currency 到底 request 带的还是 config，API-ish 文件有没有 HTTP route 先别脑补，给 code evidence。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-return-chain-a",
+      "scenario": "fulfillment-return-chain",
+      "language": "zh",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求追踪 fulfillment entrypoint、planning 与 ledger mutation 的跨文件返回链。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "cross_file_trace",
+        "nested_return"
+      ],
+      "input": {
+        "question": "这个 fulfillment 我越看越像套娃，入口 return planning，planning 又 return store；同事说 record 是 entrypoint 直接写 DB 的，可代码又有个全局 list。请从 payload 转 submission 开始追，`planned` 和 `record_type` 分别何时加，最终哪一行真的 mutate。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-return-chain-b",
+      "scenario": "fulfillment-return-chain",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求追踪 fulfillment entrypoint、planning 与 ledger mutation 的跨文件返回链。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "cross_file_trace",
+        "nested_return"
+      ],
+      "input": {
+        "question": "`accept_fulfilment`（可能拼错）日志只看到 returned record，so 是 pipeline persist 还是 ledger append？trace entrypoint -> plan -> store，顺便纠正 state=`planned` 跟 record_type=`fulfillment` 被我混成一个字段的问题。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-return-chain-c",
+      "scenario": "fulfillment-return-chain",
+      "language": "zh",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求追踪 fulfillment entrypoint、planning 与 ledger mutation 的跨文件返回链。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "cross_file_trace",
+        "nested_return"
+      ],
+      "input": {
+        "question": "我本来以为 destination 在 store 时才补，后来又看到入口 cast；还有人说进程重启记录仍在。先不讨论生产应该怎样，只按这三个文件说明字段什么时候出现、谁调用谁、返回值是不是同一个 dict 链。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-return-chain-d",
+      "scenario": "fulfillment-return-chain",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求追踪 fulfillment entrypoint、planning 与 ledger mutation 的跨文件返回链。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "cross_file_trace",
+        "nested_return"
+      ],
+      "input": {
+        "question": "nested return 看晕了：payload/submission/planned/record 四个叫法是不是四份数据？where list mutated, where state added, where record_type added；不要一句“fulfillment pipeline 处理了”就结束。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-checkout-failure-order-a",
+      "scenario": "checkout-failure-order",
+      "language": "zh",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求跨 validation、inventory、pricing 证明失败短路顺序，不能从函数名猜测。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "cross_file_trace",
+        "short_circuit"
+      ],
+      "input": {
+        "question": "有人反馈 quantity=0 也把库存扣了，另一个人说缺货时 total 还是会算出来；两句话可能都不对。请沿 `checkout` 实际调用顺序解释哪种输入在哪先停，reserve 里面是否又查一次 available，pricing 有没有机会执行。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-checkout-failure-order-b",
+      "scenario": "checkout-failure-order",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求跨 validation、inventory、pricing 证明失败短路顺序，不能从函数名猜测。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "cross_file_trace",
+        "short_circuit"
+      ],
+      "input": {
+        "question": "If sku empty / qty<=0 / stock false，这三个 fail path 我混了：validate 是 after reserve 吗，`available()` false 会 return 还是 raise，order_total still runs? 只按 call order 和 exception boundary 回。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-checkout-failure-order-c",
+      "scenario": "checkout-failure-order",
+      "language": "zh",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求跨 validation、inventory、pricing 证明失败短路顺序，不能从函数名猜测。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "cross_file_trace",
+        "short_circuit"
+      ],
+      "input": {
+        "question": "昨天日志只有 insufficient stock，今天又是 quantity must be positive，我还以为是随机。其实可能输入不同；请把两条失败路径和正常计价路径分开，不要因为都在 checkout 就合成一个异常。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-checkout-failure-order-d",
+      "scenario": "checkout-failure-order",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "要求跨 validation、inventory、pricing 证明失败短路顺序，不能从函数名猜测。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "cross_file_trace",
+        "short_circuit"
+      ],
+      "input": {
+        "question": "quick check：validate、reserve、available、price 这几个谁包谁？ticket 说先算钱再锁库存但看着不对；need exact short-circuit evidence，别推 runtime transaction。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 11,
+            "end_line": 14
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-response-field-lineage-a",
+      "scenario": "response-field-lineage",
+      "language": "zh",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求逐字段区分复制、类型转换、计算与配置来源。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "field_lineage",
+        "source_confusion"
+      ],
+      "input": {
+        "question": "前端拿到 sku、quantity、total_cents、currency，产品说四个都原样来自 payload，可 payload 明明没 currency，total 也不像原值。麻烦逐字段追来源和转换，别给一段泛泛的“checkout 返回 receipt”。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 6,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-response-field-lineage-b",
+      "scenario": "response-field-lineage",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求逐字段区分复制、类型转换、计算与配置来源。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "field_lineage",
+        "source_confusion"
+      ],
+      "input": {
+        "question": "response mapping 有点怪：`quantity='2'` 最后变 int，total_cents maybe payload hidden field，currency maybe locale。Can you classify copied/cast/computed/configured for each output field and cite both creation and exposure sites?"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 6,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-response-field-lineage-c",
+      "scenario": "response-field-lineage",
+      "language": "zh",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求逐字段区分复制、类型转换、计算与配置来源。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "field_lineage",
+        "source_confusion"
+      ],
+      "input": {
+        "question": "我查这个是因为 UI 金额错，不是要你算 1500*2 就完了；先说明请求里哪些字段真的存在，再说 Receipt 哪些字段从 request 拿、哪些由 helper/config 产生，最后 API dict 又怎么展开。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 6,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-response-field-lineage-d",
+      "scenario": "response-field-lineage",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求逐字段区分复制、类型转换、计算与配置来源。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "field_lineage",
+        "source_confusion"
+      ],
+      "input": {
+        "question": "field lineage pls：sku/qty/total/currency；有人说 dataclass default 注入 USD、有人说 API 注入，我不确定。不要只命中 models 的字段声明，要追到 value assignment。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 17
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 6,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quantity-boundary-a",
+      "scenario": "quantity-boundary",
+      "language": "zh",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求区分 API 边界类型转换与领域校验，处理字符串数量和非正数。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "field_lineage",
+        "layer_ownership"
+      ],
+      "input": {
+        "question": "payload 里 quantity 有时是 `'2'`，客服就说 validation 会把字符串转数字；但 0 又是在别处报错。到底哪层 cast、哪层判断正数、OrderRequest 本身有没有 validator？请把三个概念分开。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quantity-boundary-b",
+      "scenario": "quantity-boundary",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求区分 API 边界类型转换与领域校验，处理字符串数量和非正数。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "field_lineage",
+        "layer_ownership"
+      ],
+      "input": {
+        "question": "`qty='02'` works maybe，`qty='0'` converts too but later fails？I need boundary contract: int cast vs dataclass storage vs `<=0` rule，别把 conversion success 当 validation success。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quantity-boundary-c",
+      "scenario": "quantity-boundary",
+      "language": "zh",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求区分 API 边界类型转换与领域校验，处理字符串数量和非正数。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "field_lineage",
+        "layer_ownership"
+      ],
+      "input": {
+        "question": "同样是 quantity，日志一会儿像 ValueError from int，一会儿是 quantity must be positive。我没给你完整 traceback，所以不要猜具体坏字符串；只回答仓库能证明的转换和校验顺序。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quantity-boundary-d",
+      "scenario": "quantity-boundary",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求区分 API 边界类型转换与领域校验，处理字符串数量和非正数。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "field_lineage",
+        "layer_ownership"
+      ],
+      "input": {
+        "question": "api/service/models/validation ownership 搞混了：who casts, who stores, who rejects；还有“API 自动校验”这个说法若代码没 decorator 就别顺着我说。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/models.py",
+            "start_line": 6,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-total-calculation-a",
+      "scenario": "total-calculation",
+      "language": "zh",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求从单价表追到数量乘法、checkout 调用点和 API 输出。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "field_lineage",
+        "calculation_confusion"
+      ],
+      "input": {
+        "question": "book 买 2 个有人报 3000 不对，说应该含税后更高，另一个说 discount 已经减了；仓库里到底只是单价乘数量还是还藏了税折扣？请从 PRICE_CENTS 追到 response，别按业务常识补。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-total-calculation-b",
+      "scenario": "total-calculation",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求从单价表追到数量乘法、checkout 调用点和 API 输出。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "field_lineage",
+        "calculation_confusion"
+      ],
+      "input": {
+        "question": "`totla_cents` 到底 from where?? ticket says unit_price=1500 but UI total=3000，财务还认定含 tax；trace `PRICE_CENTS` -> helper -> checkout -> API，也要标出 unsupported tax/discount assumption。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-total-calculation-c",
+      "scenario": "total-calculation",
+      "language": "zh",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求从单价表追到数量乘法、checkout 调用点和 API 输出。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "field_lineage",
+        "calculation_confusion"
+      ],
+      "input": {
+        "question": "我先说清楚不是要计算器答案：函数名 order_total 很容易让人以为全口径金额。请检查实现到底消费了哪些参数、quantity 在哪参与、最后 total 变量怎么映射出去。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-total-calculation-d",
+      "scenario": "total-calculation",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "要求从单价表追到数量乘法、checkout 调用点和 API 输出。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "field_lineage",
+        "calculation_confusion"
+      ],
+      "input": {
+        "question": "unit vs total vs total_cents 三个名字绕晕：which one reads sku only, which multiplies qty, which is just output field；不要把同名含义拼起来。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-reserve-boundary-a",
+      "scenario": "reserve-boundary",
+      "language": "zh",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求解释 available 与 reserve 的边界、异常和库存 mutation。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "boundary_behavior",
+        "mutation_order"
+      ],
+      "input": {
+        "question": "库存这块有人说 `available` 会顺手扣减，也有人说 `reserve` 只是返回 bool；我看两个都不像。正常和不足时分别发生什么，STOCK 什么时候改，checkout 前面的数量校验会不会挡住负数造成反向加库存？"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 3,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-reserve-boundary-b",
+      "scenario": "reserve-boundary",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求解释 available 与 reserve 的边界、异常和库存 mutation。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "boundary_behavior",
+        "mutation_order"
+      ],
+      "input": {
+        "question": "available(false) -> reserve returns false or raises? and STOCK mutation before/after check? 另有 qty=-1 这个离谱输入，先看 validation call order，别孤立看 `STOCK[sku] -= quantity` 就下结论。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 3,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-reserve-boundary-c",
+      "scenario": "reserve-boundary",
+      "language": "zh",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求解释 available 与 reserve 的边界、异常和库存 mutation。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "boundary_behavior",
+        "mutation_order"
+      ],
+      "input": {
+        "question": "我担心负数库存越扣越多，但其实 checkout 可能先拦了；同时 reserve 作为公开函数单独调用又是另一回事。请区分 orchestration path 与函数自身边界，不要说系统绝对安全。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 3,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-reserve-boundary-d",
+      "scenario": "reserve-boundary",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求解释 available 与 reserve 的边界、异常和库存 mutation。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "boundary_behavior",
+        "mutation_order"
+      ],
+      "input": {
+        "question": "stock path：get missing sku gives 0，reserve 又 call available；所以 unknown sku 和 insufficient 是一回事吗？need exact behavior + exception + mutation evidence。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/inventory.py",
+            "start_line": 3,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-ledger-persistence-a",
+      "scenario": "ledger-persistence",
+      "language": "zh",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求识别进程内列表存储边界，不虚构数据库、Redis 或重启持久化。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "boundary_behavior",
+        "persistence_assumption"
+      ],
+      "input": {
+        "question": "运维说 fulfillment 重启还在，因为函数叫 ledger；但我搜不到 DB 配置，又怕漏了隐式 ORM。现在代码能证明的是进程内 list 还是持久化？`planned` record 具体怎样被加进去，重启结论要保守。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-ledger-persistence-b",
+      "scenario": "ledger-persistence",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求识别进程内列表存储边界，不虚构数据库、Redis 或重启持久化。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "boundary_behavior",
+        "persistence_assumption"
+      ],
+      "input": {
+        "question": "after restart records still there? logs 没给全。`FULFILLMENT_RECORDS` 看似 global cache/DB client 都可能；pls identify actual type and mutation, and say what repo cannot prove about persistence。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-ledger-persistence-c",
+      "scenario": "ledger-persistence",
+      "language": "zh",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求识别进程内列表存储边界，不虚构数据库、Redis 或重启持久化。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "boundary_behavior",
+        "persistence_assumption"
+      ],
+      "input": {
+        "question": "这事起因是测试互相污染，有人却解释成数据库残留。我只需要当前 fixture：容器生命周期先别脑补，说明 store 是否复制 dict、append 到哪、返回哪个对象。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-ledger-persistence-d",
+      "scenario": "ledger-persistence",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求识别进程内列表存储边界，不虚构数据库、Redis 或重启持久化。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "boundary_behavior",
+        "persistence_assumption"
+      ],
+      "input": {
+        "question": "ledger 这个名字 misleading：is it durable or just list？plan returns store directly so state/record_type 谁持有；回答要区分代码事实与 deployment guess。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-dispatch-priority-a",
+      "scenario": "dispatch-priority",
+      "language": "zh",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求证明 fragile 分支相对 region 映射的优先级及未知 region 边界。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "boundary_behavior",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "运营说国内件永远 ground，可易碎件规则又说专线，这两个条件冲突时到底谁赢？顺便别假设 remote/local 都有 fallback；请按表达式说明 fragile true/false 各读取什么。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-dispatch-priority-b",
+      "scenario": "dispatch-priority",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求证明 fragile 分支相对 region 映射的优先级及未知 region 边界。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "boundary_behavior",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "region='domestic', fragile=true returns ground or fragile-courier? and unknown region with fragile=true 会先 KeyError 吗？I think dict lookup happens first but ternary maybe not，按实际 evaluation 回。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-dispatch-priority-c",
+      "scenario": "dispatch-priority",
+      "language": "zh",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求证明 fragile 分支相对 region 映射的优先级及未知 region 边界。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "boundary_behavior",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "我一开始问 ETA，后来发现真正问题是 lane：地区表和易碎判断挤在一行，看起来像都会执行。请说明条件优先级，也明确仓库没有承运商调用。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-dispatch-priority-d",
+      "scenario": "dispatch-priority",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "要求证明 fragile 分支相对 region 映射的优先级及未知 region 边界。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "boundary_behavior",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "lane logic pls，业务词“专用 outbound route”未必是 symbol；fragile vs region precedence + missing region boundary，别只复述 lanes map。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-record-symbol-collision-a",
+      "scenario": "record-symbol-collision",
+      "language": "zh",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 customer/admin 同名 find_record 的签名、权限检查和返回 scope。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "symbol_collision",
+        "scope_confusion"
+      ],
+      "input": {
+        "question": "`find_record` 搜出来两个，客服 ticket 又只写了 C-200/A-100 混在一起；哪个要 customer_id 并做 owner 校验，哪个只有 record_id？scope/status 别串线，也别把两份静态 row 当一张表。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 3,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-record-symbol-collision-b",
+      "scenario": "record-symbol-collision",
+      "language": "zh-en",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 customer/admin 同名 find_record 的签名、权限检查和返回 scope。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "symbol_collision",
+        "scope_confusion"
+      ],
+      "input": {
+        "question": "find_reocrd 撞名了：customer path vs admin path，one raises LookupError maybe，one scope=admin；请给 signatures + branch + return separately，别又 merged answer。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 3,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-record-symbol-collision-c",
+      "scenario": "record-symbol-collision",
+      "language": "zh",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 customer/admin 同名 find_record 的签名、权限检查和返回 scope。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "symbol_collision",
+        "scope_confusion"
+      ],
+      "input": {
+        "question": "同事说 admin 也会校验 owner，因为文档提到 ownership；我怀疑他把 customer 实现读过去了。请先判断这个前提，再分别说明两个模块的输入和输出。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 3,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-record-symbol-collision-d",
+      "scenario": "record-symbol-collision",
+      "language": "zh-en",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 customer/admin 同名 find_record 的签名、权限检查和返回 scope。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "symbol_collision"
+      ],
+      "input": {
+        "question": "C-200 给 customer-8 跟 A-100 lookup 是两回事对吧？which implementation/context，wrong owner behavior，scope values；不要只按 record id 前缀猜。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 3,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-eta-sla-collision-a",
+      "scenario": "eta-sla-collision",
+      "language": "zh",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 estimated arrival 与 service-level deadline 的基准时间和单位。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "alias_collision",
+        "unit_confusion"
+      ],
+      "input": {
+        "question": "运营一句“这个 SLA/ETA 到期时间不对”把两个词混了：包裹发出后的到达时间和工单打开后的响应截止到底各用哪个起点、days 还是 hours？不要选一个函数替两件事回答。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 21,
+            "end_line": 26
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-eta-sla-collision-b",
+      "scenario": "eta-sla-collision",
+      "language": "zh-en",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 estimated arrival 与 service-level deadline 的基准时间和单位。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "alias_collision",
+        "unit_confusion"
+      ],
+      "input": {
+        "question": "ETA 会不会其实是 `service_level_deadline`，SLA 又用了 transit_days？names in docs are aliases and ticket swapped them；请 map business shorthand to implementations and arithmetic units。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 21,
+            "end_line": 26
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-eta-sla-collision-c",
+      "scenario": "eta-sla-collision",
+      "language": "zh",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 estimated arrival 与 service-level deadline 的基准时间和单位。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "alias_collision",
+        "unit_confusion"
+      ],
+      "input": {
+        "question": "我没有具体时间值，只知道一个从 dispatched_at 算、一个从 opened_at 算，可能我也记反了。请靠代码纠正，不要虚构 timezone、calendar 或工作日规则。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 21,
+            "end_line": 26
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-eta-sla-collision-d",
+      "scenario": "eta-sla-collision",
+      "language": "zh-en",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 estimated arrival 与 service-level deadline 的基准时间和单位。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "alias_collision",
+        "unit_confusion"
+      ],
+      "input": {
+        "question": "两个 deadline 被我 conflated 了：arrival vs support response；need symbol、base timestamp、timedelta arg/unit，并明确别推不存在的 relation/state-machine。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 21,
+            "end_line": 26
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-state-name-collision-a",
+      "scenario": "state-name-collision",
+      "language": "zh",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 fulfillment planned、shipment ready 与 held-for-review 等独立状态。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "concept_collision",
+        "false_unification"
+      ],
+      "input": {
+        "question": "产品画了一条 planned→ready→held-for-review 状态机，可我怀疑这三个 state 来自不同流程，甚至 held 和 ready 是二选一。请指出各自写入位置，仓库没连接就别替它补状态迁移。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-state-name-collision-b",
+      "scenario": "state-name-collision",
+      "language": "zh-en",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 fulfillment planned、shipment ready 与 held-for-review 等独立状态。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "concept_collision",
+        "false_unification"
+      ],
+      "input": {
+        "question": "`state` same key everywhere so are fulfillment and shipping sharing enum? planned/ready/held-for-review/ready-to-pack 看着像 chain but maybe unrelated；disambiguate by function and record shape。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-state-name-collision-c",
+      "scenario": "state-name-collision",
+      "language": "zh",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 fulfillment planned、shipment ready 与 held-for-review 等独立状态。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "concept_collision",
+        "false_unification"
+      ],
+      "input": {
+        "question": "我本来想问为何 planned 之后没变 ready，后来发现可能根本不是同一对象。麻烦先验证对象/模块边界，再说 record_type 是否等于 state。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-state-name-collision-d",
+      "scenario": "state-name-collision",
+      "language": "zh-en",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "要求区分 fulfillment planned、shipment ready 与 held-for-review 等独立状态。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "concept_collision",
+        "false_unification"
+      ],
+      "input": {
+        "question": "这算 state collision bug 吗？pipeline sets planned，finalize sets ready，quarantine sets held or ready-to-pack；请拆 separate contexts，no imaginary transition arrows。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-validation-typo-a",
+      "scenario": "validation-typo",
+      "language": "zh",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从严重拼写噪声中恢复 validate_request 调用点与规则归属。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "typo_noise",
+        "callsite_vs_definition"
+      ],
+      "input": {
+        "question": "帮忙看下 valdiate_requset 这玩意到底在哪被调的，别只甩定义；qty=0 是 api cast 挂还是 service 前面校验挂？我只截到 must be positive，调用栈没了，大概就这些。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 7,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-validation-typo-b",
+      "scenario": "validation-typo",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从严重拼写噪声中恢复 validate_request 调用点与规则归属。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "callsite_vs_definition"
+      ],
+      "input": {
+        "question": "plz trace `vaildate_request` call-site not def，payload qty='0'先 int 成功 then why fail?? API/service/validation ownership 我现在完全搅一块了。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 7,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-validation-typo-c",
+      "scenario": "validation-typo",
+      "language": "zh",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从严重拼写噪声中恢复 validate_request 调用点与规则归属。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "typo_noise",
+        "callsite_vs_definition"
+      ],
+      "input": {
+        "question": "事情有点丢人，变量我也可能拼错：sku 空和 quantity 零报错不是同一行，但客服说都属于库存不足。请从 checkout 往下找，纠正这三个错误分类。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 7,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-validation-typo-d",
+      "scenario": "validation-typo",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从严重拼写噪声中恢复 validate_request 调用点与规则归属。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "typo_noise",
+        "callsite_vs_definition"
+      ],
+      "input": {
+        "question": "validate req?? where invoked，what checks，before reserv? need evidence；顺便 `OrderRequest` 是不是 pydantic auto-validator，代码没有就说没有。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/service.py",
+            "start_line": 7,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/validation.py",
+            "start_line": 6,
+            "end_line": 10
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 7,
+            "end_line": 12
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-money-currency-typos-a",
+      "scenario": "money-currency-typos",
+      "language": "zh",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求穿过金额与货币拼写噪声追踪配置、计算和输出映射。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "typo_noise",
+        "field_lineage"
+      ],
+      "input": {
+        "question": "totla_cent/curreny 这俩字段前端说偶发错，我没有完整 payload；book x2 看着 3000，USD 又不知道哪冒的。请分别追值，别因为 typo 搜不到就说仓库无证据，也别顺手加税。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-money-currency-typos-b",
+      "scenario": "money-currency-typos",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求穿过金额与货币拼写噪声追踪配置、计算和输出映射。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "field_lineage"
+      ],
+      "input": {
+        "question": "where `toatl_cents` + `curency` come frm?? maybe locale/discount？show price table→multiply→Receipt→response and DEFAULT config，unsupported guess 标出来。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-money-currency-typos-c",
+      "scenario": "money-currency-typos",
+      "language": "zh",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求穿过金额与货币拼写噪声追踪配置、计算和输出映射。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "typo_noise",
+        "field_lineage"
+      ],
+      "input": {
+        "question": "我先以为 currency 是 models 默认，后来看到 config，但又不确定 service 有没有覆盖。金额同理，函数名很像字段名。请按赋值而不是按名字回答。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-money-currency-typos-d",
+      "scenario": "money-currency-typos",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求穿过金额与货币拼写噪声追踪配置、计算和输出映射。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "typo_noise",
+        "field_lineage"
+      ],
+      "input": {
+        "question": "金额 flow 太 messy：unit pirce / order toal / total_cents / USD；need exact mapping，拼写先忽略，但别 silently invent missing fields。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/pricing.py",
+            "start_line": 3,
+            "end_line": 14
+          },
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-noisy-nesting-a",
+      "scenario": "fulfillment-noisy-nesting",
+      "language": "zh",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从中英文拼写与对象名混乱中恢复 fulfillment 嵌套调用链。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "typo_noise",
+        "nested_return"
+      ],
+      "input": {
+        "question": "fulfilment/fulfillment 我一直拼不对，反正入口收 payload 后为什么突然多 planned 和 record_type？是不是两个 return 把字段重复 merge 了，最后 list append 的究竟哪份。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-noisy-nesting-b",
+      "scenario": "fulfillment-noisy-nesting",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从中英文拼写与对象名混乱中恢复 fulfillment 嵌套调用链。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "nested_return"
+      ],
+      "input": {
+        "question": "accpet_fulfillment -> plan_fulfilment -> store?? trace pls；destination cast在哪，state added在哪，record_type added在哪，nested return 看得头大。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-noisy-nesting-c",
+      "scenario": "fulfillment-noisy-nesting",
+      "language": "zh",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从中英文拼写与对象名混乱中恢复 fulfillment 嵌套调用链。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "typo_noise",
+        "nested_return"
+      ],
+      "input": {
+        "question": "日志只剩一个 dict，没有函数名，我按字段猜到这三层但可能猜错。请用字段血缘验证，不要把模块 docstring 当执行行为。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fulfillment-noisy-nesting-d",
+      "scenario": "fulfillment-noisy-nesting",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "protects": "要求从中英文拼写与对象名混乱中恢复 fulfillment 嵌套调用链。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "typo_noise",
+        "nested_return"
+      ],
+      "input": {
+        "question": "submission/plannned/record names 混用：same object or copies? where append，what returned；need code not architecture story。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/fulfillment/entrypoint.py",
+            "start_line": 6,
+            "end_line": 12
+          },
+          {
+            "path": "src/shop/fulfillment/pipeline.py",
+            "start_line": 6,
+            "end_line": 13
+          },
+          {
+            "path": "src/shop/fulfillment/ledger.py",
+            "start_line": 3,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-checkout-claims-a",
+      "scenario": "multi-checkout-claims",
+      "language": "zh",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆解关于请求构建、校验顺序、库存与税折扣的多项冲突主张。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "multi_intent",
+        "conflicting_claims"
+      ],
+      "input": {
+        "question": "一个 bug 单塞了三句互相打架的话：API 不建 request、库存先扣再校验、总价已经含税折扣。麻烦别挑最容易的一句答，逐条判真假并给证据；如果函数名只能证明一半也要说。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "subquestions": [
+          {
+            "question": "API 是否构建 OrderRequest？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/api.py",
+                "start_line": 7,
+                "end_line": 12
+              },
+              {
+                "path": "src/shop/models.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "校验是否发生在库存预留之后？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/service.py",
+                "start_line": 10,
+                "end_line": 13
+              },
+              {
+                "path": "src/shop/validation.py",
+                "start_line": 6,
+                "end_line": 10
+              }
+            ]
+          },
+          {
+            "question": "总价是否包含税或折扣？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/pricing.py",
+                "start_line": 11,
+                "end_line": 14
+              }
+            ]
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-checkout-claims-b",
+      "scenario": "multi-checkout-claims",
+      "language": "zh-en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆解关于请求构建、校验顺序、库存与税折扣的多项冲突主张。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "multi_intent",
+        "conflicting_claims"
+      ],
+      "input": {
+        "question": "review notes: (1) payload directly to checkout? (2) reserve before validate? (3) tax in order_total? 三个 claim mixed，please decompose, no single blended answer。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "subquestions": [
+          {
+            "question": "API 是否构建 OrderRequest？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/api.py",
+                "start_line": 7,
+                "end_line": 12
+              },
+              {
+                "path": "src/shop/models.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "校验是否发生在库存预留之后？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/service.py",
+                "start_line": 10,
+                "end_line": 13
+              },
+              {
+                "path": "src/shop/validation.py",
+                "start_line": 6,
+                "end_line": 10
+              }
+            ]
+          },
+          {
+            "question": "总价是否包含税或折扣？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/pricing.py",
+                "start_line": 11,
+                "end_line": 14
+              }
+            ]
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-checkout-claims-c",
+      "scenario": "multi-checkout-claims",
+      "language": "zh",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆解关于请求构建、校验顺序、库存与税折扣的多项冲突主张。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "multi_intent",
+        "conflicting_claims"
+      ],
+      "input": {
+        "question": "背景是金额投诉，但同事把数据转换、调用顺序、价格口径全写进一个结论。我自己也不确定哪句是根因；请分别回答，不需要替我找唯一 root cause。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "subquestions": [
+          {
+            "question": "API 是否构建 OrderRequest？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/api.py",
+                "start_line": 7,
+                "end_line": 12
+              },
+              {
+                "path": "src/shop/models.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "校验是否发生在库存预留之后？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/service.py",
+                "start_line": 10,
+                "end_line": 13
+              },
+              {
+                "path": "src/shop/validation.py",
+                "start_line": 6,
+                "end_line": 10
+              }
+            ]
+          },
+          {
+            "question": "总价是否包含税或折扣？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/pricing.py",
+                "start_line": 11,
+                "end_line": 14
+              }
+            ]
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-checkout-claims-d",
+      "scenario": "multi-checkout-claims",
+      "language": "zh-en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆解关于请求构建、校验顺序、库存与税折扣的多项冲突主张。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "multi_intent",
+        "conflicting_claims"
+      ],
+      "input": {
+        "question": "API/request + validation/order + pricing/tax 一锅粥：split subquestions, mark false assumptions，citations must cover each not just checkout body。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "subquestions": [
+          {
+            "question": "API 是否构建 OrderRequest？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/api.py",
+                "start_line": 7,
+                "end_line": 12
+              },
+              {
+                "path": "src/shop/models.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "校验是否发生在库存预留之后？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/service.py",
+                "start_line": 10,
+                "end_line": 13
+              },
+              {
+                "path": "src/shop/validation.py",
+                "start_line": 6,
+                "end_line": 10
+              }
+            ]
+          },
+          {
+            "question": "总价是否包含税或折扣？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/pricing.py",
+                "start_line": 11,
+                "end_line": 14
+              }
+            ]
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-record-refund-a",
+      "scenario": "multi-record-refund",
+      "language": "zh",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆分 customer/admin lookup 与退款 provider，并正确部分拒答。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "客服把三个系统问成一句：客户查记录会不会越权、后台查的是不是同一个函数、退款 queued 后是不是 Stripe 已经打款。前两件可能有代码，第三件别因为金额字段像支付就猜；拆开答。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "customer lookup 是否校验 owner？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/customer/records.py",
+                "start_line": 6,
+                "end_line": 11
+              }
+            ]
+          },
+          {
+            "question": "admin lookup 返回什么 scope？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/admin/records.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "queued refund 是否调用 Stripe？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-record-refund-b",
+      "scenario": "multi-record-refund",
+      "language": "zh-en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆分 customer/admin lookup 与退款 provider，并正确部分拒答。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "customer `find_record` + admin same symbol + Stripe refund callback?? support ticket 太乱了，need 3 subanswers and partial/insufficient distinction。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "customer lookup 是否校验 owner？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/customer/records.py",
+                "start_line": 6,
+                "end_line": 11
+              }
+            ]
+          },
+          {
+            "question": "admin lookup 返回什么 scope？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/admin/records.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "queued refund 是否调用 Stripe？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-record-refund-c",
+      "scenario": "multi-record-refund",
+      "language": "zh",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆分 customer/admin lookup 与退款 provider，并正确部分拒答。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "我原本只查权限，后来财务又塞进退款到账问题，所以不要强行给一个统一流程。说明两个 lookup 的边界，然后明确 provider/到账证据是否存在。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "customer lookup 是否校验 owner？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/customer/records.py",
+                "start_line": 6,
+                "end_line": 11
+              }
+            ]
+          },
+          {
+            "question": "admin lookup 返回什么 scope？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/admin/records.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "queued refund 是否调用 Stripe？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-record-refund-d",
+      "scenario": "multi-record-refund",
+      "language": "zh-en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求拆分 customer/admin lookup 与退款 provider，并正确部分拒答。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "record scope/owner and refund provider mashed together：answer separatly（拼写也别管），missing integration must not borrow evidence from local queued record。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "customer lookup 是否校验 owner？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/customer/records.py",
+                "start_line": 6,
+                "end_line": 11
+              }
+            ]
+          },
+          {
+            "question": "admin lookup 返回什么 scope？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/admin/records.py",
+                "start_line": 6,
+                "end_line": 9
+              }
+            ]
+          },
+          {
+            "question": "queued refund 是否调用 Stripe？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-shipping-concepts-a",
+      "scenario": "multi-shipping-concepts",
+      "language": "zh",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求同时区分 lane、ETA/SLA、shipment finalization 与不存在的外部 carrier side effect。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "运营群里一句话问了路线、到达时间、客服 SLA，还顺便断言 finalize 会调承运商 API。请拆成 lane、两个 deadline、外部副作用三块；能证明的证明，不能证明的别拿 docstring 顶。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "易碎国内件选择哪条 lane？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 11,
+                "end_line": 13
+              }
+            ]
+          },
+          {
+            "question": "ETA 与 SLA 分别如何计算？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 21,
+                "end_line": 26
+              }
+            ]
+          },
+          {
+            "question": "finalize_shipment 是否调用外部承运商？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-shipping-concepts-b",
+      "scenario": "multi-shipping-concepts",
+      "language": "zh-en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求同时区分 lane、ETA/SLA、shipment finalization 与不存在的外部 carrier side effect。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "fragile domestic route + ETA/SLA + carrier API call 三件事 tangled 了；which branches/math exist，哪个 integration 根本 absent？必要时请 return partial。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "易碎国内件选择哪条 lane？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 11,
+                "end_line": 13
+              }
+            ]
+          },
+          {
+            "question": "ETA 与 SLA 分别如何计算？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 21,
+                "end_line": 26
+              }
+            ]
+          },
+          {
+            "question": "finalize_shipment 是否调用外部承运商？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-shipping-concepts-c",
+      "scenario": "multi-shipping-concepts",
+      "language": "zh",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求同时区分 lane、ETA/SLA、shipment finalization 与不存在的外部 carrier side effect。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "我最开始以为这些都属于 shipping state machine，后来发现可能只是四个互不相连 helper。不要替仓库串业务流程，分别给实现和缺口。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "易碎国内件选择哪条 lane？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 11,
+                "end_line": 13
+              }
+            ]
+          },
+          {
+            "question": "ETA 与 SLA 分别如何计算？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 21,
+                "end_line": 26
+              }
+            ]
+          },
+          {
+            "question": "finalize_shipment 是否调用外部承运商？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-multi-shipping-concepts-d",
+      "scenario": "multi-shipping-concepts",
+      "language": "zh-en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "要求同时区分 lane、ETA/SLA、shipment finalization 与不存在的外部 carrier side effect。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "multi_intent",
+        "partial_answer"
+      ],
+      "input": {
+        "question": "lane/deadline/finalize 一票问题：need precedence, time units, return shape, external side-effect evidence；不要只回答最显眼的 ETA。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {
+            "question": "易碎国内件选择哪条 lane？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 11,
+                "end_line": 13
+              }
+            ]
+          },
+          {
+            "question": "ETA 与 SLA 分别如何计算？",
+            "outcome": "answered",
+            "evidence": [
+              {
+                "path": "src/shop/shipping/workflow.py",
+                "start_line": 21,
+                "end_line": 26
+              }
+            ]
+          },
+          {
+            "question": "finalize_shipment 是否调用外部承运商？",
+            "outcome": "insufficient_evidence"
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quarantine-paraphrase-a",
+      "scenario": "quarantine-paraphrase",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从人工复核业务描述定位 quarantine_unfulfillable 及双分支状态。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "semantic_paraphrase",
+        "business_code_gap"
+      ],
+      "input": {
+        "question": "业务没说 quarantine，只说“分配失败的单子先搁着让人看，没失败就继续打包”。代码里哪个实现对应这句话？两个分支的精确 state 都要，别拿库存 reserve 的异常来替代。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 16,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quarantine-paraphrase-b",
+      "scenario": "quarantine-paraphrase",
+      "language": "zh-en",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从人工复核业务描述定位 quarantine_unfulfillable 及双分支状态。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "semantic_paraphrase",
+        "business_code_gap"
+      ],
+      "input": {
+        "question": "allocation failed 就转人工 review，otherwise packing continues；symbol 可能不叫 review_order。请找 semantic match 和 exact returned dict/state，不要只靠 filename keyword。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 16,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quarantine-paraphrase-c",
+      "scenario": "quarantine-paraphrase",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从人工复核业务描述定位 quarantine_unfulfillable 及双分支状态。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "semantic_paraphrase",
+        "business_code_gap"
+      ],
+      "input": {
+        "question": "我搜“人工复核”当然搜不到，又有人说这是 fulfillment planned 的下一步。请先找真正的条件函数，再说明仓库是否把它接到 fulfillment。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 16,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-quarantine-paraphrase-d",
+      "scenario": "quarantine-paraphrase",
+      "language": "zh-en",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从人工复核业务描述定位 quarantine_unfulfillable 及双分支状态。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "semantic_paraphrase",
+        "business_code_gap"
+      ],
+      "input": {
+        "question": "set aside bad allocation / keep good one moving，这个 ticket 没函数名；map to code, both branches, no invented workflow edge。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 16,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fragile-paraphrase-a",
+      "scenario": "fragile-paraphrase",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从业务自然语言定位 dispatch lane 选择并解析优先级。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "semantic_paraphrase",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "用户没说 fragile，只说“玻璃杯这种国内件别走普通陆运，给特殊配送通道”，这个需求在代码里落在哪？国内和易碎两个条件冲突时返回值是什么，别按物流常识答。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fragile-paraphrase-b",
+      "scenario": "fragile-paraphrase",
+      "language": "zh-en",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从业务自然语言定位 dispatch lane 选择并解析优先级。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "semantic_paraphrase",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "易碎 parcel 要 special outbound lane，region 还是 domestic；但搜不到 `fragile_route` symbol，请 semantic-match implementation 并解释 precedence。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fragile-paraphrase-c",
+      "scenario": "fragile-paraphrase",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从业务自然语言定位 dispatch lane 选择并解析优先级。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "semantic_paraphrase",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "我先搜 carrier 没结果，可能业务叫法完全不一样。只根据返回字符串和条件判断说明专线，不要推断真实承运商或费用。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-fragile-paraphrase-d",
+      "scenario": "fragile-paraphrase",
+      "language": "zh-en",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从业务自然语言定位 dispatch lane 选择并解析优先级。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "semantic_paraphrase",
+        "branch_priority"
+      ],
+      "input": {
+        "question": "易碎/国内/route 三个词未必同名：which helper + actual lane，if non-fragile contrast too；evidence only。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 11,
+            "end_line": 13
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-currency-paraphrase-a",
+      "scenario": "currency-paraphrase",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从地区/用户偏好的错误假设定位固定配置货币来源。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "semantic_paraphrase"
+      ],
+      "input": {
+        "question": "客户在欧洲却返回 USD，大家都说系统会根据 locale 选币种，可能只是这次没识别。可 payload 根本没地区；请找真正来源和输出链，并判断“自动选币种”有没有任何证据。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-currency-paraphrase-b",
+      "scenario": "currency-paraphrase",
+      "language": "zh-en",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从地区/用户偏好的错误假设定位固定配置货币来源。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "semantic_paraphrase",
+        "false_premise"
+      ],
+      "input": {
+        "question": "currency 像是 magically 出现的，maybe user profile/geo？Trace configured value -> Receipt -> API；除非 repo proves it，否则请拒绝 locale hypothesis。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-currency-paraphrase-c",
+      "scenario": "currency-paraphrase",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从地区/用户偏好的错误假设定位固定配置货币来源。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "semantic_paraphrase",
+        "false_premise"
+      ],
+      "input": {
+        "question": "这不是问 DEFAULT_CURRENCY 定义在哪那么简单：我要确认它是否真的被 checkout 使用，之后是否被 API 原样暴露，中间有没有覆盖。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-currency-paraphrase-d",
+      "scenario": "currency-paraphrase",
+      "language": "zh-en",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "要求从地区/用户偏好的错误假设定位固定配置货币来源。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "semantic_paraphrase",
+        "false_premise"
+      ],
+      "input": {
+        "question": "USD 到底什么 origin，pls；config vs model default vs payload 已经 confusion 了，need assignment chain，不要 semantic guess。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "src/shop/config.py",
+            "start_line": 3,
+            "end_line": 3
+          },
+          {
+            "path": "src/shop/service.py",
+            "start_line": 10,
+            "end_line": 18
+          },
+          {
+            "path": "src/shop/api.py",
+            "start_line": 13,
+            "end_line": 18
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-payment-provider-a",
+      "scenario": "missing-payment-provider",
+      "language": "zh",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从金额和 queued refund 记录虚构 Stripe、PayPal、endpoint 或到账确认。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "insufficient_evidence",
+        "plausible_but_absent"
+      ],
+      "input": {
+        "question": "退款 record 已经 queued，金额也有 amount_cents，所以 Stripe 应该在后台 worker 扣款吧？我要 provider 名、endpoint、回调和到账确认；如果这几个在仓库里一个都没有，不要拿 prepare_refund 的本地 dict 假装完成。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-payment-provider-b",
+      "scenario": "missing-payment-provider",
+      "language": "zh-en",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从金额和 queued refund 记录虚构 Stripe、PayPal、endpoint 或到账确认。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "insufficient_evidence",
+        "plausible_but_absent"
+      ],
+      "input": {
+        "question": "queued refund => PayPal/Stripe charge reversal maybe，where API URL/webhook/settlement callback? local record alone is not proof，insufficient 就说 insufficient。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-payment-provider-c",
+      "scenario": "missing-payment-provider",
+      "language": "zh",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从金额和 queued refund 记录虚构 Stripe、PayPal、endpoint 或到账确认。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "insufficient_evidence",
+        "plausible_but_absent"
+      ],
+      "input": {
+        "question": "财务催我确认银行到账，我手头只有 refund summary 那句话。请不要根据状态名推断异步任务；仓库能不能回答 provider、发送、结算三件事？"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-payment-provider-d",
+      "scenario": "missing-payment-provider",
+      "language": "zh-en",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从金额和 queued refund 记录虚构 Stripe、PayPal、endpoint 或到账确认。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "insufficient_evidence",
+        "plausible_but_absent"
+      ],
+      "input": {
+        "question": "refund money-like fields 看着很真，但 integration evidence 在哪？need external provider + endpoint + confirmation；不存在就完整拒答，不引用无关 pricing。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-http-route-a",
+      "scenario": "missing-http-route",
+      "language": "zh",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从 api.py 和 create_order 名称虚构 FastAPI route、HTTP method 与 status code。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "insufficient_evidence",
+        "framework_assumption"
+      ],
+      "input": {
+        "question": "文件叫 api.py、函数叫 create_order，那线上应该是 POST /orders 返回 201 对吧？请给 decorator、path、method、status code 和 framework app 证据；如果只是 transport-shaped adapter 就别顺着命名编接口。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-http-route-b",
+      "scenario": "missing-http-route",
+      "language": "zh-en",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从 api.py 和 create_order 名称虚构 FastAPI route、HTTP method 与 status code。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "insufficient_evidence",
+        "framework_assumption"
+      ],
+      "input": {
+        "question": "what HTTP endpoint exposes `create_order`，POST maybe 200/201? 我找不到 FastAPI decorator，need actual route evidence or mark insufficient。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-http-route-c",
+      "scenario": "missing-http-route",
+      "language": "zh",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从 api.py 和 create_order 名称虚构 FastAPI route、HTTP method 与 status code。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "insufficient_evidence",
+        "framework_assumption"
+      ],
+      "input": {
+        "question": "前端同学要联调地址，我也不确定这个 fixture 是不是完整服务。不能因为 import/return dict 就猜 JSON API；请判断仓库是否足以回答 URL 和状态码。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-missing-http-route-d",
+      "scenario": "missing-http-route",
+      "language": "zh-en",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "防止从 api.py 和 create_order 名称虚构 FastAPI route、HTTP method 与 status code。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "insufficient_evidence",
+        "framework_assumption"
+      ],
+      "input": {
+        "question": "这个 api-ish file 也许根本 != HTTP route；我要 method/path/status/framework registration，all absent 就拒答，别套 generic FastAPI convention。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence"
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-carrier-conflict-a",
+      "scenario": "docs-carrier-conflict",
+      "language": "zh",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 shipping guide 与 finalize_shipment 实现，区分本地返回和外部副作用。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "code_document_conflict",
+        "side_effect_confusion"
+      ],
+      "input": {
+        "question": "shipping guide 写“persist carrier tracking”，同事就理解成 finalize 会调承运商并落库；但函数体看起来只是 return dict。请把文档措辞和可执行证据对照，carrier/tracking/state 的 shape 与外部副作用分别下结论。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/shipping-guide.md",
+            "start_line": 1,
+            "end_line": 5
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 8
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-carrier-conflict-b",
+      "scenario": "docs-carrier-conflict",
+      "language": "zh-en",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 shipping guide 与 finalize_shipment 实现，区分本地返回和外部副作用。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "code_document_conflict",
+        "side_effect_confusion"
+      ],
+      "input": {
+        "question": "docs 说 persisted carrier reference，可 code maybe only returns object；`finalize_shipment` 到底 call carrier API/DB 没？compare guide vs body，别让 persist 这个词 overrule code。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/shipping-guide.md",
+            "start_line": 1,
+            "end_line": 5
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 8
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-carrier-conflict-c",
+      "scenario": "docs-carrier-conflict",
+      "language": "zh",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 shipping guide 与 finalize_shipment 实现，区分本地返回和外部副作用。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "code_document_conflict",
+        "side_effect_confusion"
+      ],
+      "input": {
+        "question": "问题起因是文档让人误会，不是要你说文档全错。指出它帮助定位了哪个概念，再说明实现实际做了什么、没证明什么。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/shipping-guide.md",
+            "start_line": 1,
+            "end_line": 5
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 8
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-carrier-conflict-d",
+      "scenario": "docs-carrier-conflict",
+      "language": "zh-en",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 shipping guide 与 finalize_shipment 实现，区分本地返回和外部副作用。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "code_document_conflict",
+        "side_effect_confusion"
+      ],
+      "input": {
+        "question": "carrier persistence 这个 claim 冲突了：guide vs code；need concrete return fields and side-effect absence，别 invented pack-station integration。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/shipping-guide.md",
+            "start_line": 1,
+            "end_line": 5
+          },
+          {
+            "path": "src/shop/shipping/workflow.py",
+            "start_line": 6,
+            "end_line": 8
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-record-conflict-a",
+      "scenario": "docs-record-conflict",
+      "language": "zh",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 lookup guide 与两个同名实现，不能让文档模糊真实权限边界。",
+      "challenge_features": [
+        "contradictory_claim",
+        "false_premise",
+        "colloquial_fragment",
+        "mixed_intent",
+        "code_document_conflict",
+        "symbol_collision"
+      ],
+      "input": {
+        "question": "lookup guide 先说 customer 标准查找，后面又说 admin 也用同名函数，客服于是以为都只传 record_id。真实代码是否要求 customer_id 并校验 owner？请同时解释文档为何容易撞词、两个实现如何分开。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/record-lookups.md",
+            "start_line": 1,
+            "end_line": 8
+          },
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 6,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-record-conflict-b",
+      "scenario": "docs-record-conflict",
+      "language": "zh-en",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 lookup guide 与两个同名实现，不能让文档模糊真实权限边界。",
+      "challenge_features": [
+        "mixed_language",
+        "typo_noise",
+        "log_fragment",
+        "uncertain_causality",
+        "code_document_conflict",
+        "symbol_collision"
+      ],
+      "input": {
+        "question": "docs 到处 repeats `find_record`，search 还把 guide 排第一；customer/admin signatures 和 ownership behavior 跟 one-function reading 冲突，请用 code + doc context 解开。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/record-lookups.md",
+            "start_line": 1,
+            "end_line": 8
+          },
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 6,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-record-conflict-c",
+      "scenario": "docs-record-conflict",
+      "language": "zh",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 lookup guide 与两个同名实现，不能让文档模糊真实权限边界。",
+      "challenge_features": [
+        "irrelevant_context",
+        "self_correction",
+        "omitted_subject",
+        "temporal_confusion",
+        "code_document_conflict",
+        "symbol_collision"
+      ],
+      "input": {
+        "question": "我不能简单说“文档过期”，因为它确实提醒 admin scope 不同。请把文档能证明的和代码实际执行的边界分开，尤其 wrong owner 怎么处理。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/record-lookups.md",
+            "start_line": 1,
+            "end_line": 8
+          },
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 6,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    },
+    {
+      "id": "t11-v2-docs-record-conflict-d",
+      "scenario": "docs-record-conflict",
+      "language": "zh-en",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "要求对照 lookup guide 与两个同名实现，不能让文档模糊真实权限边界。",
+      "challenge_features": [
+        "mixed_language",
+        "scope_confusion",
+        "conflicting_constraints",
+        "shorthand",
+        "code_document_conflict",
+        "symbol_collision"
+      ],
+      "input": {
+        "question": "record lookup guide vs implementation 又撞了：same symbol、different args/scope；need code authority，也别忽略 docs 为什么会在 retrieval 里 collision。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {
+            "path": "docs/record-lookups.md",
+            "start_line": 1,
+            "end_line": 8
+          },
+          {
+            "path": "src/shop/customer/records.py",
+            "start_line": 6,
+            "end_line": 11
+          },
+          {
+            "path": "src/shop/admin/records.py",
+            "start_line": 6,
+            "end_line": 9
+          }
+        ]
+      },
+      "design_notes": [
+        "Grounded in the offline fixture; external research influenced expression only.",
+        "Combines realistic uncertainty, conflict or noise instead of a clean paraphrase."
+      ]
+    }
+  ]
+}

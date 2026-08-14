@@ -1,0 +1,170 @@
+"""Deterministic quality metrics for grounded repository answers."""
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from codeinsight.domain.answer import INSUFFICIENT_EVIDENCE, AnswerCitation, RepositoryAnswer
+
+
+@dataclass(frozen=True)
+class AnswerMetrics:
+    case_count: int
+    outcome_accuracy: float
+    valid_citation_rate: float
+    citation_precision: float
+    evidence_recall: float
+    required_term_case_rate: float
+
+
+def citation_covers(citation: AnswerCitation, evidence: dict) -> bool:
+    """Return whether a citation covers one expected evidence span."""
+    return (
+        citation.relative_path == evidence["path"]
+        and citation.start_line <= evidence["start_line"]
+        and citation.end_line >= evidence["end_line"]
+    )
+
+
+def citation_overlaps(citation: AnswerCitation, evidence: dict) -> bool:
+    """Return whether a citation intersects the expected evidence region."""
+    return (
+        citation.relative_path == evidence["path"]
+        and citation.start_line <= evidence["end_line"]
+        and citation.end_line >= evidence["start_line"]
+    )
+
+
+def citations_jointly_cover(citations: Sequence[AnswerCitation], evidence: dict) -> bool:
+    """Return whether same-file citations jointly cover one full requirement."""
+    intervals = sorted(
+        (
+            max(citation.start_line, evidence["start_line"]),
+            min(citation.end_line, evidence["end_line"]),
+        )
+        for citation in citations
+        if citation_overlaps(citation, evidence)
+    )
+    if not intervals:
+        return False
+    covered_until = evidence["start_line"] - 1
+    for start, end in intervals:
+        if start > covered_until + 1:
+            return False
+        covered_until = max(covered_until, end)
+        if covered_until >= evidence["end_line"]:
+            return True
+    return False
+
+
+def expected_evidence_requirements(expected: dict) -> tuple[dict, ...]:
+    """Return original requirements while supporting historical flat evidence."""
+    requirements = expected.get("evidence_requirements")
+    return tuple(requirements if requirements is not None else expected.get("evidence", ()))
+
+
+def citation_is_valid(citation: AnswerCitation, fixture_root: Path) -> bool:
+    """Check that a citation points to a real in-fixture 1-based line span."""
+    resolved_root = fixture_root.resolve()
+    resolved = (fixture_root / citation.relative_path).resolve()
+    if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
+        return False
+    if citation.start_line < 1 or citation.end_line < citation.start_line:
+        return False
+    line_count = len(resolved.read_text(encoding="utf-8").splitlines())
+    return citation.end_line <= line_count
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    return numerator / denominator if denominator else 1.0
+
+
+def answer_failure_types(
+    case: dict,
+    result: RepositoryAnswer | None,
+    fixture_root: Path,
+) -> list[str]:
+    """Classify deterministic answer failures for one evaluation case."""
+    if result is None:
+        return ["model_error"]
+
+    failures = []
+    expected = case["expected"]
+    requirements = expected_evidence_requirements(expected)
+    if result.outcome != expected["outcome"]:
+        failures.append("outcome")
+
+    has_citation_failure = any(
+        not citation_is_valid(citation, fixture_root)
+        or not any(citation_overlaps(citation, item) for item in requirements)
+        for citation in result.citations
+    ) or any(not citations_jointly_cover(result.citations, item) for item in requirements)
+    if has_citation_failure:
+        failures.append("citation")
+
+    required_terms = case.get("required_terms", ())
+    if expected["outcome"] == INSUFFICIENT_EVIDENCE:
+        terms_pass = result.outcome == INSUFFICIENT_EVIDENCE and not result.citations
+    else:
+        folded_answer = result.answer.casefold()
+        terms_pass = all(term.casefold() in folded_answer for term in required_terms)
+    if not terms_pass:
+        failures.append("required_terms")
+    return failures
+
+
+def evaluate_answer_results(
+    cases: Sequence[dict],
+    results: Mapping[str, RepositoryAnswer | None],
+    fixture_root: Path,
+) -> AnswerMetrics:
+    """Evaluate outcomes, grounded citations, evidence coverage, and term proxy."""
+    outcome_hits = 0
+    valid_citations = 0
+    citation_hits = 0
+    citation_total = 0
+    evidence_hits = 0
+    evidence_total = 0
+    required_term_case_hits = 0
+
+    for case in cases:
+        result = results.get(case["id"])
+        expected = case["expected"]
+        expected_outcome = expected["outcome"]
+        requirements = expected_evidence_requirements(expected)
+        evidence_total += len(requirements)
+
+        if result is None:
+            continue
+        if result.outcome == expected_outcome:
+            outcome_hits += 1
+
+        citation_total += len(result.citations)
+        valid_citations += sum(
+            citation_is_valid(citation, fixture_root) for citation in result.citations
+        )
+        citation_hits += sum(
+            any(citation_overlaps(citation, item) for item in requirements)
+            for citation in result.citations
+        )
+        evidence_hits += sum(
+            citations_jointly_cover(result.citations, item) for item in requirements
+        )
+
+        required_terms = case.get("required_terms", ())
+        if expected_outcome == INSUFFICIENT_EVIDENCE:
+            term_case_passes = result.outcome == INSUFFICIENT_EVIDENCE and not result.citations
+        else:
+            folded_answer = result.answer.casefold()
+            term_case_passes = all(term.casefold() in folded_answer for term in required_terms)
+        required_term_case_hits += int(term_case_passes)
+
+    case_count = len(cases)
+    return AnswerMetrics(
+        case_count=case_count,
+        outcome_accuracy=_rate(outcome_hits, case_count),
+        valid_citation_rate=_rate(valid_citations, citation_total),
+        citation_precision=_rate(citation_hits, citation_total),
+        evidence_recall=_rate(evidence_hits, evidence_total),
+        required_term_case_rate=_rate(required_term_case_hits, case_count),
+    )

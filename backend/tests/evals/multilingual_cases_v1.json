@@ -1,0 +1,719 @@
+{
+  "schema_version": 1,
+  "fixture": "tests/fixtures/sample_repo",
+  "case_set": "task11_multilingual_realistic_v1",
+  "description": "Task 11.1 high-difficulty multilingual, noisy, mixed-intent and evidence-bound evaluation cases. The questions are newly written from realistic developer-expression patterns and are grounded in the offline sample fixture.",
+  "research_basis": [
+    {
+      "source": "GitHub HTTPX discussion #2285",
+      "url": "https://github.com/encode/httpx/discussions/2285",
+      "pattern": "Intermittent symptoms, competing hypotheses, and a request to distinguish a reproducible fact from a guess."
+    },
+    {
+      "source": "GitHub FastAPI discussion #7319",
+      "url": "https://github.com/fastapi/fastapi/discussions/7319",
+      "pattern": "Long debugging context with attempted fixes, configuration details, typos, and a stale-runtime assumption mixed together."
+    },
+    {
+      "source": "Stack Overflow ImportError question",
+      "url": "https://stackoverflow.com/questions/17309288/error-importerror-no-module-named-requests",
+      "pattern": "A user reports that a dependency appears installed in one environment but fails in another and asks for the actual boundary."
+    },
+    {
+      "source": "GitHub Pydantic issue #7507",
+      "url": "https://github.com/pydantic/pydantic/issues/7507",
+      "pattern": "Several validation requirements are combined, with uncertainty about which API layer owns each rule."
+    }
+  ],
+  "cases": [
+    {
+      "id": "t11-mix-checkout-order-trace",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "Requires a complete payload-to-receipt trace and preserves execution order instead of answering with the first checkout symbol hit.",
+      "input": {
+        "question": "我现在不是想找 `checkout` 的定义，而是想 trace 一次完整 order path：payload 什么时候变成 `OrderRequest`，然后按什么顺序 validate → reserve → price，最后 `Receipt.currency` 又从哪里来？请按 execution order 给 evidence。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/api.py", "start_line": 7, "end_line": 12},
+          {"path": "src/shop/models.py", "start_line": 6, "end_line": 9},
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 19},
+          {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10},
+          {"path": "src/shop/inventory.py", "start_line": 10, "end_line": 13},
+          {"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14},
+          {"path": "src/shop/config.py", "start_line": 3, "end_line": 3},
+          {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}
+        ],
+        "answer_contract": {
+          "ordered_steps": ["payload_to_order_request", "validate", "reserve", "order_total", "receipt_currency"],
+          "must_not_invent": ["database_write", "payment_provider"]
+        }
+      },
+      "design_notes": ["Chinese narrative with exact English symbols", "explicitly rejects a symbol-lookup answer", "requires ordered multi-hop evidence"]
+    },
+    {
+      "id": "t11-mix-total-tax-assumption",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "Separates unit price, order total, and receipt assignment while testing whether the system rejects an unsupported tax or discount assumption.",
+      "input": {
+        "question": "The checkout total looks off. `order_total` 到底有没有 tax/discount？Please trace `unit_price -> order_total -> total_cents` and show the checkout call site; don't infer from the function name。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/pricing.py", "start_line": 6, "end_line": 14},
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 17}
+        ],
+        "answer_contract": {
+          "must_cover": ["unit_price_reads_PRICE_CENTS", "order_total_multiplies_by_quantity", "checkout_assigns_total_cents"],
+          "must_not_invent": ["tax", "discount"]
+        }
+      },
+      "design_notes": ["uses an English bug-report opening", "Chinese asks for the semantic distinction", "contains a plausible but false business assumption"]
+    },
+    {
+      "id": "t11-mix-payload-cast-validation",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "Distinguishes transport coercion from domain validation and prevents a generic validation answer from hiding the cross-file boundary.",
+      "input": {
+        "question": "payload 里的 quantity 如果是 `'2'`，which layer casts it, which layer rejects `<= 0`? I need the actual contract between API and checkout, not a generic validation explanation。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/api.py", "start_line": 7, "end_line": 12},
+          {"path": "src/shop/models.py", "start_line": 6, "end_line": 9},
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 12},
+          {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}
+        ],
+        "answer_contract": {
+          "must_cover": ["api_int_cast", "OrderRequest_quantity_is_int", "service_calls_validate_request", "validation_rejects_non_positive_quantity"]
+        }
+      },
+      "design_notes": ["mixes a concrete runtime-shaped value with architecture language", "asks which layer owns each behavior"]
+    },
+    {
+      "id": "t11-mix-reserve-short-circuit",
+      "language": "zh-en",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "Tests call-order reasoning around an exception boundary and prevents the answer from claiming that pricing runs before inventory reservation.",
+      "input": {
+        "question": "If `available()` returns false, checkout 会继续算 `order_total` or fail first? Please follow the actual call order and exception boundary; no runtime assumptions。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 14},
+          {"path": "src/shop/inventory.py", "start_line": 6, "end_line": 13},
+          {"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}
+        ],
+        "answer_contract": {
+          "must_cover": ["validate_before_reserve", "reserve_raises_when_unavailable", "order_total_is_after_reserve"],
+          "must_not_invent": ["rollback", "retry"]
+        }
+      },
+      "design_notes": ["asks for a negative-path trace rather than a happy path", "explicitly forbids runtime speculation"]
+    },
+    {
+      "id": "t11-mix-fulfillment-return-chain",
+      "language": "zh-en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "Requires the nested return chain and separates the planned state from the ledger-added record type.",
+      "input": {
+        "question": "我看到 `accept_fulfillment` 的 return 很短，but where does the payload become a `record`? Trace entrypoint → `plan_fulfillment` → `store_fulfillment`; distinguish `state='planned'` from `record_type='fulfillment'`。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/fulfillment/entrypoint.py", "start_line": 6, "end_line": 12},
+          {"path": "src/shop/fulfillment/pipeline.py", "start_line": 6, "end_line": 13},
+          {"path": "src/shop/fulfillment/ledger.py", "start_line": 6, "end_line": 9}
+        ],
+        "answer_contract": {
+          "ordered_steps": ["convert_payload_to_submission", "add_planned_state", "copy_and_add_record_type", "append_to_fulfillment_records"],
+          "must_not_invent": ["database", "queue_worker"]
+        }
+      },
+      "design_notes": ["uses a realistic request to explain a short return statement", "requires distinction between two similarly shaped fields"]
+    },
+    {
+      "id": "t11-en-fulfillment-no-db-assumption",
+      "language": "en",
+      "category": "cross_file_trace",
+      "difficulty": "very_hard",
+      "protects": "Rejects an authoritative but unsupported database claim and identifies the exact in-memory mutation in the return chain.",
+      "input": {
+        "question": "An engineer told me `plan_fulfillment` persists to the database. Can you verify the actual return chain and say exactly where the list is mutated? I want repository evidence, not what a production system usually does."
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/fulfillment/pipeline.py", "start_line": 3, "end_line": 13},
+          {"path": "src/shop/fulfillment/ledger.py", "start_line": 3, "end_line": 9}
+        ],
+        "answer_contract": {
+          "must_cover": ["pipeline_calls_store_fulfillment", "ledger_copies_planned_record", "ledger_appends_to_FULFILLMENT_RECORDS"],
+          "must_not_invent": ["database", "transaction", "durable_persistence"]
+        }
+      },
+      "design_notes": ["English production-style assertion", "asks for verification rather than accepting the premise"]
+    },
+    {
+      "id": "t11-zh-customer-admin-collision",
+      "language": "zh",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "Resolves the customer-facing same-name symbol without combining it with the administrative implementation.",
+      "input": {
+        "question": "客服说查客户订单时会走 `find_record`，但 admin 目录也有同名函数。我要的是 customer path：哪里做 owner 校验，返回里的 scope/status 怎么来的？不要把两个实现拼成一个。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}
+        ],
+        "answer_contract": {
+          "must_cover": ["owner_comparison", "customer_scope", "status_forwarding"],
+          "disambiguate_against": ["src/shop/admin/records.py"]
+        }
+      },
+      "design_notes": ["natural Chinese support-ticket context", "explicitly names a conflicting module", "requires scope-specific retrieval"]
+    },
+    {
+      "id": "t11-en-admin-collision-signature",
+      "language": "en",
+      "category": "ambiguity",
+      "difficulty": "hard",
+      "protects": "Uses signature and returned scope to select the administrative find_record implementation instead of the customer version.",
+      "input": {
+        "question": "`find_record` is duplicated. Which version accepts only `record_id` and returns `scope='admin'`, and why is it not the customer implementation? Cite the actual signature and body."
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9},
+          {"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}
+        ],
+        "answer_contract": {
+          "must_cover": ["admin_signature_has_one_argument", "admin_scope", "customer_signature_requires_customer_id"]
+        }
+      },
+      "design_notes": ["English asks for both positive identification and contrastive evidence", "tests same-name disambiguation by signature"]
+    },
+    {
+      "id": "t11-noisy-validate-callsite",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "noise_profile": ["misspelled_symbol", "colloquial_abbreviation", "mixed_language"],
+      "protects": "Normalizes a misspelled symbol while honoring the user's request for a call site rather than a definition.",
+      "input": {
+        "question": "plz locat `valdiate_request` call-site（typo intentional），我不要 definition；why does `quantity=0` fail, and is that check in API or service?"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/api.py", "start_line": 7, "end_line": 12},
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 12},
+          {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}
+        ],
+        "answer_contract": {
+          "must_cover": ["call_site_is_checkout", "quantity_zero_rejected_by_validation", "api_constructs_and_forwards_request"],
+          "must_not_answer_as": "symbol_definition_only"
+        }
+      },
+      "design_notes": ["contains a realistic typo in a code identifier", "combines call-site location with behavior ownership"]
+    },
+    {
+      "id": "t11-noisy-totaltypo",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "noise_profile": ["misspelled_output_field", "informal_omission", "mixed_language"],
+      "protects": "Recovers a misspelled output field and follows quantity through pricing into the receipt rather than answering only with a formula.",
+      "input": {
+        "question": "where does `totla_cents` come frm?? `book x 2` should be 3000? 先别只给算式，show sku -> `unit_price` -> `order_total` -> Receipt mapping, and tell me where quantity enters。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/pricing.py", "start_line": 6, "end_line": 14},
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 17},
+          {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}
+        ],
+        "answer_contract": {
+          "must_cover": ["book_price_is_1500", "quantity_multiplies_unit_price", "service_assigns_total_to_receipt"],
+          "must_not_invent": ["tax", "discount"]
+        }
+      },
+      "design_notes": ["resembles a rushed issue comment", "includes a typo, an expected numeric result, and a request for lineage"]
+    },
+    {
+      "id": "t11-noisy-currency-origin",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "noise_profile": ["false_localization_assumption", "mixed_language", "request_for_negative_evidence"],
+      "protects": "Shows that currency is a fixed configuration value mapped into the response and does not fabricate locale-based behavior.",
+      "input": {
+        "question": "Why checkout returns `currency` even though payload has no currency? 是不是根据 user locale 自动推的？pls trace source and output mapping, and flag anything the repo cannot prove。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/service.py", "start_line": 3, "end_line": 19},
+          {"path": "src/shop/config.py", "start_line": 3, "end_line": 3},
+          {"path": "src/shop/api.py", "start_line": 12, "end_line": 18},
+          {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}
+        ],
+        "answer_contract": {
+          "must_cover": ["DEFAULT_CURRENCY_is_USD", "checkout_uses_default_currency", "api_exposes_receipt_currency"],
+          "must_not_invent": ["user_locale", "currency_negotiation"]
+        }
+      },
+      "design_notes": ["the premise is plausible in a real commerce system but unsupported here", "asks the answer to mark the unsupported part"]
+    },
+    {
+      "id": "t11-noisy-fulfilment-spelling",
+      "language": "zh-en",
+      "category": "noisy_query",
+      "difficulty": "very_hard",
+      "noise_profile": ["British-American_spelling_confusion", "nested_return_chain", "mixed_language"],
+      "protects": "Handles a spelling variant for fulfillment while preserving the three-module return chain and the record mutation point.",
+      "input": {
+        "question": "`fulfilment`/`fulfillment` maybe I’m mixing the spelling. `accept_fulfillment` -> `plan_fulfillment` -> `store_fulfillment`: where exactly does `record_type` get added? 我看不懂 nested return chain。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/fulfillment/entrypoint.py", "start_line": 3, "end_line": 12},
+          {"path": "src/shop/fulfillment/pipeline.py", "start_line": 3, "end_line": 13},
+          {"path": "src/shop/fulfillment/ledger.py", "start_line": 6, "end_line": 9}
+        ],
+        "answer_contract": {
+          "must_cover": ["record_type_added_in_store_fulfillment", "entrypoint_converts_fields", "pipeline_adds_planned_state"]
+        }
+      },
+      "design_notes": ["spelling confusion is realistic but not the actual retrieval target", "requires following imports and returns across three files"]
+    },
+    {
+      "id": "t11-en-multi-order-check",
+      "language": "en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "Separates true, false, and unsupported bug-report claims instead of producing one blended answer.",
+      "input": {
+        "question": "I’m reviewing a bug report with three claims: (a) API builds `OrderRequest`; (b) validation happens after stock reservation; (c) pricing includes tax. Please answer each separately, mark false or unsupported claims, and cite the code."
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/api.py", "start_line": 7, "end_line": 12},
+          {"path": "src/shop/models.py", "start_line": 6, "end_line": 9},
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 13},
+          {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10},
+          {"path": "src/shop/inventory.py", "start_line": 10, "end_line": 13},
+          {"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}
+        ],
+        "subquestions": [
+          {"question": "Does the API build OrderRequest?", "outcome": "answered", "evidence": [{"path": "src/shop/api.py", "start_line": 7, "end_line": 12}, {"path": "src/shop/models.py", "start_line": 6, "end_line": 9}]},
+          {"question": "Does validation happen after reservation?", "outcome": "answered", "evidence": [{"path": "src/shop/service.py", "start_line": 10, "end_line": 13}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}, {"path": "src/shop/inventory.py", "start_line": 10, "end_line": 13}]},
+          {"question": "Does pricing include tax?", "outcome": "answered", "evidence": [{"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}]}
+        ],
+        "answer_contract": {
+          "claim_labels": ["supported", "contradicted", "not_evidenced"],
+          "must_not_invent": ["tax"]
+        }
+      },
+      "design_notes": ["realistic bug-review framing", "three claims require separate routing and evidence grouping", "one claim contradicts execution order and one adds an unsupported feature"]
+    },
+    {
+      "id": "t11-zh-multi-state-machines",
+      "language": "zh",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "Prevents the answer from merging fulfillment and shipping state vocabularies into one unsupported state machine.",
+      "input": {
+        "question": "我有两个状态概念混在一起：fulfillment 的 `planned`，shipping 的 `ready`/`held-for-review` 是不是同一条 state machine？请分别指出写入位置；如果仓库没有连接关系就明确说没有。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/fulfillment/pipeline.py", "start_line": 6, "end_line": 13},
+          {"path": "src/shop/shipping/workflow.py", "start_line": 6, "end_line": 18}
+        ],
+        "answer_contract": {
+          "must_cover": ["planned_written_in_plan_fulfillment", "ready_and_held_for_review_written_in_shipping_workflow", "no_connection_shown"],
+          "must_not_invent": ["shared_state_machine", "transition_event"]
+        }
+      },
+      "design_notes": ["asks a realistic architecture question over similarly named state fields", "requires an explicit negative conclusion"]
+    },
+    {
+      "id": "t11-zh-en-multi-support-ticket",
+      "language": "zh-en",
+      "category": "multi_intent",
+      "difficulty": "very_hard",
+      "protects": "Tests decomposition into two answerable subquestions and one evidence-insufficient payment question.",
+      "input": {
+        "question": "Support ticket 里同时问了三件事：customer `find_record` 是否校验 owner；admin 版本返回什么 scope；退款是否会调用 Stripe。请拆成三个 sub-answers，缺证据的不要猜。"
+      },
+      "expected": {
+        "outcome": "partially_answered",
+        "subquestions": [
+          {"question": "Does customer find_record validate ownership?", "outcome": "answered", "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}]},
+          {"question": "What scope does the admin implementation return?", "outcome": "answered", "evidence": [{"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}]},
+          {"question": "Does the refund flow call Stripe?", "outcome": "insufficient_evidence"}
+        ],
+        "answer_contract": {
+          "must_cover": ["customer_owner_check", "admin_scope", "refund_provider_not_evidenced"],
+          "must_not_invent": ["Stripe", "refund_endpoint"]
+        }
+      },
+      "design_notes": ["support-ticket style multi-intent input", "mixes Chinese, English identifiers, and a named external provider", "requires partial completion rather than all-or-nothing failure"]
+    },
+    {
+      "id": "t11-en-output-field-lineage",
+      "language": "en",
+      "category": "data_flow",
+      "difficulty": "very_hard",
+      "protects": "Requires field-by-field lineage from input model through checkout to the transport-shaped response.",
+      "input": {
+        "question": "The UI receives `sku`, `quantity`, `total_cents`, and `currency`. Which are copied from the request, which are computed, and where are they exposed in the API response? Please give a field-by-field lineage, not a prose summary."
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/models.py", "start_line": 6, "end_line": 17},
+          {"path": "src/shop/service.py", "start_line": 10, "end_line": 19},
+          {"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14},
+          {"path": "src/shop/api.py", "start_line": 12, "end_line": 18}
+        ],
+        "answer_contract": {
+          "field_lineage": {
+            "sku": "request_to_receipt_to_response",
+            "quantity": "request_to_receipt_to_response",
+            "total_cents": "pricing_to_receipt_to_response",
+            "currency": "config_to_receipt_to_response"
+          }
+        }
+      },
+      "design_notes": ["asks for a structured lineage instead of a general explanation", "crosses model, service, pricing, and API boundaries"]
+    },
+    {
+      "id": "t11-mix-duplicate-symbol-caller",
+      "language": "zh-en",
+      "category": "ambiguity",
+      "difficulty": "very_hard",
+      "protects": "Uses caller context, record-id shape, and module signature to disambiguate two same-named functions.",
+      "input": {
+        "question": "I searched `find_record` and got two hits. For record IDs `C-200` and `A-100`, which caller context does each implementation represent? I need symbol disambiguation by module/signature, not a combined answer。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/customer/records.py", "start_line": 3, "end_line": 11},
+          {"path": "src/shop/admin/records.py", "start_line": 3, "end_line": 9}
+        ],
+        "answer_contract": {
+          "must_cover": ["C-200_customer_scope", "A-100_admin_scope", "different_signatures"],
+          "must_not_invent": ["caller_not_present_in_fixture"]
+        }
+      },
+      "design_notes": ["uses realistic identifiers to anchor an ambiguous symbol", "asks for separate answers rather than merging definitions"]
+    },
+    {
+      "id": "t11-mix-total-vs-unit",
+      "language": "zh-en",
+      "category": "data_flow",
+      "difficulty": "hard",
+      "protects": "Distinguishes a helper that reads a single-item price from the helper that consumes quantity and follows its checkout call site.",
+      "input": {
+        "question": "Search returns both `unit_price` and `order_total`; the word 'total' in my ticket is vague. Which one consumes `quantity`, and where is that helper invoked from `checkout`? Please resolve the ambiguity."
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/pricing.py", "start_line": 6, "end_line": 14},
+          {"path": "src/shop/service.py", "start_line": 6, "end_line": 14}
+        ],
+        "answer_contract": {
+          "must_cover": ["order_total_consumes_quantity", "unit_price_does_not", "checkout_calls_order_total"]
+        }
+      },
+      "design_notes": ["shorter than the multi-hop cases but still ambiguous", "tests semantic selection between near-neighbor symbols"]
+    },
+    {
+      "id": "t11-zh-fragile-route",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "Maps a business phrase to choose_dispatch_lane and tests the fragile-condition priority with concrete inputs.",
+      "input": {
+        "question": "仓库里没有叫 `fragile_route` 的函数，但业务说“易碎件走专用 outbound lane”。对于 `region='domestic', fragile=True`，实际返回什么？请找语义对应的实现，并说明条件优先级。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}
+        ],
+        "answer_contract": {
+          "must_cover": ["fragile_returns_fragile_courier", "fragile_branch_precedes_region_lookup"],
+          "must_not_invent": ["new_fragile_route_function"]
+        }
+      },
+      "design_notes": ["business wording does not match the symbol name", "concrete arguments force condition-aware reasoning"]
+    },
+    {
+      "id": "t11-en-quarantine-state",
+      "language": "en",
+      "category": "semantic_paraphrase",
+      "difficulty": "hard",
+      "protects": "Maps the product word quarantined to the actual held-for-review branch and contrasts the normal state.",
+      "input": {
+        "question": "After allocation fails, the product owner says the order should be quarantined. Which function expresses that behavior, what exact state is returned on failure, and what is the non-failure branch? Don't use the word 'quarantine' as a filename clue only."
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/shipping/workflow.py", "start_line": 16, "end_line": 18}
+        ],
+        "answer_contract": {
+          "must_cover": ["function_is_quarantine_unfulfillable", "failure_state_held_for_review", "success_state_ready_to_pack"]
+        }
+      },
+      "design_notes": ["uses a product term rather than the code symbol", "requires both branches to avoid a one-sided answer"]
+    },
+    {
+      "id": "t11-mix-payment-no-evidence",
+      "language": "zh-en",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "Prevents money-like field names from triggering a fabricated payment integration answer.",
+      "input": {
+        "question": "checkout produces money-like fields, so I suspect it calls Stripe/PayPal next. Does this repo actually show a payment provider, endpoint, or charge call? If not, say what is and isn't evidenced。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence",
+        "answer_contract": {
+          "must_not_invent": ["Stripe", "PayPal", "payment_endpoint", "charge_call"],
+          "required_behavior": "state_insufficient_evidence"
+        }
+      },
+      "design_notes": ["realistic inference from monetary fields", "explicitly tests evidence-bounded refusal"]
+    },
+    {
+      "id": "t11-en-http-boundary-no-framework",
+      "language": "en",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "Prevents a transport-shaped adapter from being misreported as a concrete HTTP route with a status code.",
+      "input": {
+        "question": "What HTTP endpoint and status code does `create_order` expose? The file looks API-ish. Please distinguish a transport adapter from an actual FastAPI route and don't infer decorators."
+      },
+      "expected": {
+        "outcome": "insufficient_evidence",
+        "answer_contract": {
+          "must_not_invent": ["HTTP_method", "URL_path", "status_code", "FastAPI_decorator"],
+          "required_behavior": "state_insufficient_evidence"
+        }
+      },
+      "design_notes": ["tests framework-specific overreach", "the user supplies a misleading architectural clue"]
+    },
+    {
+      "id": "t11-zh-process-restart",
+      "language": "zh",
+      "category": "boundary_behavior",
+      "difficulty": "very_hard",
+      "protects": "Distinguishes an in-memory module list from durable persistence and does not infer restart survival.",
+      "input": {
+        "question": "fulfillment record 重启后还在吗？有没有 DB/Redis connection? `FULFILLMENT_RECORDS` 是临时 list 还是持久化存储？请基于代码回答并指出证据。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/fulfillment/ledger.py", "start_line": 1, "end_line": 8}
+        ],
+        "answer_contract": {
+          "must_cover": ["module_level_list", "append_mutation", "no_db_or_redis_connection_shown", "restart_survival_not_supported"],
+          "must_not_invent": ["durable_persistence"]
+        }
+      },
+      "design_notes": ["asks a production-operability question from a tiny fixture", "requires a precise distinction between observed storage and unproven behavior"]
+    },
+    {
+      "id": "t11-mix-docs-code-carrier",
+      "language": "zh-en",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "Keeps a docstring-backed local return shape separate from an imagined external carrier side effect.",
+      "input": {
+        "question": "Docs/comment says carrier reference is persisted, but does `finalize_shipment` actually call a carrier API? I need the concrete return shape and any external side effect; answer only what the repo proves。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/shipping/workflow.py", "start_line": 6, "end_line": 8}
+        ],
+        "answer_contract": {
+          "must_cover": ["returns_carrier_tracking_state", "no_external_call_shown"],
+          "must_not_invent": ["carrier_http_request", "database_persistence"]
+        }
+      },
+      "design_notes": ["asks the model to separate a comment's wording from executable evidence", "mixed-language request with an external-side-effect trap"]
+    },
+    {
+      "id": "t11-zh-docs-lookup-guide",
+      "language": "zh",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "Keeps a design-guide description from overriding the customer implementation's owner check.",
+      "input": {
+        "question": "设计文档把 customer record lookup 写成“只按 record_id 返回”，但代码里我看到 owner 这个概念。现在我要确认真实实现：customer `find_record` 是否会拒绝不属于当前 customer 的记录？不要引用文档描述。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}
+        ],
+        "answer_contract": {
+          "must_cover": ["customer_id_is_compared_with_owner", "mismatch_raises_lookup_error"],
+          "must_not_invent": ["document_behavior", "admin_scope"]
+        }
+      },
+      "design_notes": ["Chinese code-review context", "the documentation premise conflicts with an explicit branch in code", "asks for code authority only"]
+    },
+    {
+      "id": "t11-en-docs-refund-implementation",
+      "language": "en",
+      "category": "code_document_conflict",
+      "difficulty": "very_hard",
+      "protects": "Separates a claimed future provider handoff from the local refund record actually constructed by the fixture.",
+      "input": {
+        "question": "The README says queued refunds are sent to a provider later. Does `prepare_refund` select a provider or endpoint, or does it only build a local record? Separate the documentation claim from executable evidence."
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/refunds.py", "start_line": 1, "end_line": 6}
+        ],
+        "answer_contract": {
+          "must_cover": ["local_queued_record", "order_id_and_amount_cents", "no_provider_or_endpoint_selected"],
+          "must_not_invent": ["provider_handoff", "background_worker"]
+        }
+      },
+      "design_notes": ["English documentation-vs-code dispute", "tests whether the model reports the implementation instead of the claimed future behavior"]
+    },
+    {
+      "id": "t11-zh-refund-bank-confirmation",
+      "language": "zh",
+      "category": "insufficient_evidence",
+      "difficulty": "very_hard",
+      "protects": "Prevents a queued local refund state from being promoted into a claim about bank settlement or completion callbacks.",
+      "input": {
+        "question": "退款状态变成 `queued` 之后，系统有没有确认银行到账？请找 completion callback、银行查询或 settlement 记录；如果仓库没有证据就直接说不足。"
+      },
+      "expected": {
+        "outcome": "insufficient_evidence",
+        "answer_contract": {
+          "must_not_invent": ["bank_settlement", "completion_callback", "settlement_record"],
+          "required_behavior": "state_insufficient_evidence"
+        }
+      },
+      "design_notes": ["asks a high-risk operational question after a plausible intermediate state", "requires refusing to extend queued into settled"]
+    },
+    {
+      "id": "t11-mix-eta-alias",
+      "language": "zh-en",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "Disambiguates the business alias ETA from the separate service-level deadline calculation.",
+      "input": {
+        "question": "Ops ticket calls this ETA, but I can't find an `eta` symbol. After a shipment is dispatched, which implementation derives arrival time, and is it based on `transit_days` or a service SLA? Please disambiguate the two time calculations。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 26}
+        ],
+        "answer_contract": {
+          "must_cover": ["estimated_arrival_at_uses_transit_days", "service_level_deadline_uses_response_hours", "ETA_alias_maps_to_estimated_arrival_at"],
+          "must_not_invent": ["shared_clock", "carrier_eta_api"]
+        }
+      },
+      "design_notes": ["operations vocabulary does not match code naming", "requires comparing two adjacent datetime helpers rather than returning the first time-related hit"]
+    },
+    {
+      "id": "t11-zh-semantic-fragile-lane",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "Creates a pure business-language semantic mismatch case with no target code identifier in the query.",
+      "input": {
+        "question": "业务只说“易碎件要走专门的配送通道”，代码里可能没有这个业务词；如果是国内区域，实际会选择哪条线路？请找实现并说明易碎条件是否优先于区域。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}
+        ],
+        "answer_contract": {
+          "must_cover": ["fragile_business_term_maps_to_dispatch_lane", "fragile_branch_has_priority", "domestic_normal_branch_is_ground"],
+          "must_not_invent": ["new_business_named_function"]
+        }
+      },
+      "design_notes": ["pure Chinese business wording", "no backtick code identifier or target English function name", "concrete region and condition still require branch reasoning"]
+    },
+    {
+      "id": "t11-zh-semantic-quarantine-state",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "Creates a pure business-language case for the allocation-failure state transition without exposing the implementation symbol.",
+      "input": {
+        "question": "库存分配失败以后，订单是进入人工复核，还是仍然可以继续打包？请找出真正决定这两个状态的实现。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/shipping/workflow.py", "start_line": 16, "end_line": 18}
+        ],
+        "answer_contract": {
+          "must_cover": ["allocation_failure_maps_to_manual_review", "normal_branch_maps_to_ready_to_pack"],
+          "must_not_invent": ["automatic_reallocation", "warehouse_api"]
+        }
+      },
+      "design_notes": ["pure Chinese wording with no code identifier", "asks for both failure and normal branches", "tests semantic retrieval rather than lexical lookup"]
+    },
+    {
+      "id": "t11-zh-semantic-arrival-vs-sla",
+      "language": "zh",
+      "category": "semantic_paraphrase",
+      "difficulty": "very_hard",
+      "protects": "Creates a pure business-language case that distinguishes delivery arrival calculation from support response timing.",
+      "input": {
+        "question": "运营同学问：包裹发出后什么时候到，以及客服最晚什么时候响应，这两个时间分别由哪里计算？不要把运输时长和客服时限混为一谈。"
+      },
+      "expected": {
+        "outcome": "answered",
+        "evidence": [
+          {"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 26}
+        ],
+        "answer_contract": {
+          "must_cover": ["arrival_time_uses_transit_duration", "support_deadline_uses_response_hours", "two_calculations_are_separate"],
+          "must_not_invent": ["carrier_eta_service", "support_ticket_system"]
+        }
+      },
+      "design_notes": ["pure Chinese operations wording", "two related time concepts require semantic separation", "no code identifier appears in the input"]
+    }
+  ]
+}

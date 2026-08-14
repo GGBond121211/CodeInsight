@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "source_cases": "tests/evals/cases.json",
+  "cases": [
+    {"id":"symbol-checkout","required_terms":["checkout"]},
+    {"id":"call-api-checkout","required_terms":["create_order","checkout"]},
+    {"id":"call-checkout-validation","required_terms":["checkout","validate_request"]},
+    {"id":"flow-payload-request","required_terms":["OrderRequest","sku","quantity"]},
+    {"id":"hard-duplicate-admin-find-record","required_terms":["find_record","admin"]},
+    {"id":"hard-docs-collision-finalize-shipment","required_terms":["finalize_shipment","tracking_code"]},
+    {"id":"hard-flow-fulfillment-three-path","required_terms":["accept_fulfillment","plan_fulfillment","store_fulfillment"]},
+    {"id":"hard-semantic-paraphrase-quarantine","required_terms":["quarantine_unfulfillable","held-for-review"]},
+    {"id":"hard-alias-eta","required_terms":["estimated_arrival_at","timedelta"]},
+    {"id":"partial-order-request","required_terms":["sku","quantity"]},
+    {"id":"insufficient-payment","required_terms":[]},
+    {"id":"hard-insufficient-refund-provider","required_terms":[]},
+    {"id":"hard-insufficient-refund-delivery","required_terms":[]}
+  ]
+}
