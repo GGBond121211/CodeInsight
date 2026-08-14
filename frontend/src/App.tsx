@@ -10,7 +10,7 @@ type ViewResult = { kind: 'auto'; value: AutoAnswerResponse }
 
 function App() {
   const [repositoryRoot, setRepositoryRoot] = useState('tests/fixtures/sample_repo')
-  const [question, setQuestion] = useState('How does checkout validate input?')
+  const [question, setQuestion] = useState('checkout 如何校验输入？')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ViewResult | null>(null)
@@ -25,7 +25,7 @@ function App() {
         value: await autoAnswerRepository({ repository_root: repositoryRoot, question, limit: 5 }),
       })
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The request failed.')
+      setError(caught instanceof Error ? caught.message : '请求失败。')
     } finally {
       setLoading(false)
     }
@@ -38,15 +38,14 @@ function App() {
           CI
         </div>
         <div>
-          <span className="eyebrow">Local repository intelligence</span>
+          <span className="eyebrow">本地代码仓库理解</span>
           <h1>CodeInsight</h1>
           <p>
-            Ask how unfamiliar code works, then verify every conclusion against repository paths
-            and line ranges.
+            询问陌生代码如何工作，再通过仓库路径和行号范围核验每个结论。
           </p>
         </div>
         <div className="local-badge">
-          <span className="pulse" /> Local read-only demo
+          <span className="pulse" /> 本地只读演示
         </div>
       </header>
 
@@ -64,14 +63,14 @@ function App() {
           {!result && !error && !loading && (
             <div className="empty-state">
               <span className="empty-glyph">⌁</span>
-              <h2>Evidence will appear here</h2>
-              <p>CodeInsight never asks the model to invent a filename or line number.</p>
+              <h2>证据会显示在这里</h2>
+              <p>CodeInsight 不会要求模型凭空编造文件名或行号。</p>
             </div>
           )}
-          {loading && <div className="loading-state">Scanning, ranking, and grounding…</div>}
+          {loading && <div className="loading-state">正在扫描、排序并建立证据依据…</div>}
           {error && (
             <div className="error-state" role="alert">
-              <strong>Request failed</strong>
+              <strong>请求失败</strong>
               <span>{error}</span>
             </div>
           )}

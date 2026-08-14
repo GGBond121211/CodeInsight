@@ -1,4 +1,4 @@
-"""CLI coverage for the Task 11 Smart Answer entry point."""
+"""Task 11 Smart Answer CLI 入口测试。"""
 
 import json
 from pathlib import Path
@@ -79,6 +79,6 @@ def test_auto_answer_cli_routes_and_prints_public_metadata(monkeypatch, capsys) 
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "Checkout validation is implemented" in output
-    assert "route: linear" in output
-    assert "router: model=fake-router-and-answer tokens=12/7" in output
-    assert "fallback: none" in output
+    assert "执行路线：linear" in output
+    assert "Router：模型=fake-router-and-answer Token=12/7" in output
+    assert "回退原因：无" in output

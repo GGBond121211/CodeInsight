@@ -1,4 +1,4 @@
-"""Explainable lexical scoring over SourceChunk instances."""
+"""对 SourceChunk 执行可解释的词法评分。"""
 
 import re
 from collections.abc import Sequence
@@ -31,7 +31,7 @@ def _is_whole_identifier(token: str, text: str) -> bool:
 
 
 def score_chunk(query_tokens: tuple[str, ...], chunk: SourceChunk) -> float:
-    """Score one chunk using body, path, filename, and identifier hits."""
+    """根据正文、路径、文件名和标识符命中情况为一个块评分。"""
     if not query_tokens:
         return 0.0
     body_tokens = frozenset(tokenize(chunk.text))
@@ -58,9 +58,9 @@ def search_chunks(
     *,
     limit: int = 5,
 ) -> tuple[RankedChunk, ...]:
-    """Rank chunks deterministically and discard zero-score results."""
+    """确定性地为块排序，并丢弃分数为 0 的结果。"""
     if limit <= 0:
-        raise ValueError("limit must be positive")
+        raise ValueError("limit 必须是正整数")
     query_tokens = tokenize_query(query)
     if not query_tokens:
         return ()

@@ -1,4 +1,4 @@
-"""Tests for the immutable scan result value types."""
+"""不可变扫描结果值对象测试。"""
 
 from dataclasses import FrozenInstanceError
 

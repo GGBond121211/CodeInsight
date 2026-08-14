@@ -10,10 +10,10 @@ export function AgentTimeline({ events, revisions }: AgentTimelineProps) {
     <section className="result-card timeline-card" aria-labelledby="timeline-heading">
       <header className="timeline-header">
         <div>
-          <span className="eyebrow">LangGraph execution</span>
-          <h2 id="timeline-heading">Public Agent timeline</h2>
+          <span className="eyebrow">LangGraph 执行</span>
+          <h2 id="timeline-heading">公开 Agent 时间线</h2>
         </div>
-        <span className="revision-count">{revisions} revision</span>
+        <span className="revision-count">{revisions} 次修订</span>
       </header>
       <ol className="timeline-list">
         {events.map((event) => (

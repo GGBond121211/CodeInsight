@@ -6,8 +6,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('CodeInsight API client', () => {
-  it('posts only to the Auto Answer product endpoint', async () => {
+describe('CodeInsight API 客户端', () => {
+  it('只向 Auto Answer 产品接口发送请求', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ outcome: 'answered' }), {
         status: 200,
@@ -28,11 +28,11 @@ describe('CodeInsight API client', () => {
     )
   })
 
-  it('surfaces the API detail message', async () => {
+  it('向调用方传递 API detail 错误信息', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ detail: 'model request failed' }), {
+        new Response(JSON.stringify({ detail: '模型请求失败' }), {
           status: 502,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -41,6 +41,6 @@ describe('CodeInsight API client', () => {
 
     await expect(
       autoAnswerRepository({ repository_root: 'repo', question: 'question', limit: 5 }),
-    ).rejects.toThrow('model request failed')
+    ).rejects.toThrow('模型请求失败')
   })
 })

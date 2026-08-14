@@ -1,4 +1,4 @@
-"""Tests for repository file classification."""
+"""仓库文件分类测试。"""
 
 from codeinsight.ingestion.filters import (
     REASON_UNSUPPORTED_EXTENSION,

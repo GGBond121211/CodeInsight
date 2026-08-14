@@ -12,8 +12,8 @@ export function AnswerPanel({ result }: AnswerPanelProps) {
     <section className="result-card answer-card" aria-live="polite">
       <header className="result-header">
         <div>
-          <span className="eyebrow">Repository answer</span>
-          <h2>{insufficient ? 'Evidence is insufficient' : 'Grounded explanation'}</h2>
+          <span className="eyebrow">仓库回答</span>
+          <h2>{insufficient ? '证据不足' : '基于证据的解释'}</h2>
         </div>
         <span className={insufficient ? 'status-pill warning' : 'status-pill'}>
           {insufficient ? 'INSUFFICIENT' : 'ANSWERED'}
@@ -24,7 +24,7 @@ export function AnswerPanel({ result }: AnswerPanelProps) {
       <EvidenceList citations={result.citations} />
 
       <footer className="metadata-row">
-        <span>{result.model ?? 'model not called'}</span>
+        <span>{result.model ?? '未调用模型'}</span>
         <span>{result.prompt_version}</span>
         <span>{result.retrieval_mode}</span>
         <span>

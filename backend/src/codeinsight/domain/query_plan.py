@@ -1,4 +1,4 @@
-"""Public, validated plans produced before Smart Answer execution."""
+"""Smart Answer 执行前生成的公开、已校验查询计划。"""
 
 from dataclasses import dataclass
 
@@ -15,7 +15,7 @@ SUPPORTED_LANGUAGES = frozenset({"zh", "en", "mixed", "unknown"})
 
 @dataclass(frozen=True)
 class SubQuestion:
-    """One independently retrievable public question plan item."""
+    """一个可以独立检索的公开问题计划项。"""
 
     question: str
     intent: str
@@ -23,16 +23,16 @@ class SubQuestion:
 
     def __post_init__(self) -> None:
         if not self.question.strip():
-            raise ValueError("subquestion must not be blank")
+            raise ValueError("subquestion 不能为空")
         if not self.intent.strip():
-            raise ValueError("subquestion intent must not be blank")
+            raise ValueError("subquestion 的 intent 不能为空")
         if self.retrieval_mode not in SUPPORTED_RETRIEVAL_MODES:
-            raise ValueError(f"unsupported retrieval mode: {self.retrieval_mode}")
+            raise ValueError(f"retrieval_mode 不受支持：{self.retrieval_mode}")
 
 
 @dataclass(frozen=True)
 class QueryPlan:
-    """Validated route plan; it contains no source paths or hidden reasoning."""
+    """已校验的路线计划；其中不包含源码路径或隐藏推理。"""
 
     original_question: str
     language: str
@@ -45,29 +45,29 @@ class QueryPlan:
 
     def __post_init__(self) -> None:
         if not self.original_question.strip():
-            raise ValueError("original question must not be blank")
+            raise ValueError("original_question 不能为空")
         if not self.normalized_question.strip():
-            raise ValueError("normalized question must not be blank")
+            raise ValueError("normalized_question 不能为空")
         if self.language not in SUPPORTED_LANGUAGES:
-            raise ValueError(f"unsupported language: {self.language}")
+            raise ValueError(f"language 不受支持：{self.language}")
         if self.execution_route not in SUPPORTED_EXECUTION_ROUTES:
-            raise ValueError(f"unsupported execution route: {self.execution_route}")
+            raise ValueError(f"execution_route 不受支持：{self.execution_route}")
         if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError("query plan confidence must be between 0 and 1")
+            raise ValueError("QueryPlan 的 confidence 必须在 0 和 1 之间")
         if len(self.subquestions) > 8:
-            raise ValueError("query plan supports at most 8 subquestions")
+            raise ValueError("QueryPlan 最多支持 8 个 subquestion")
         if len(set(self.retrieval_modes)) != len(self.retrieval_modes):
-            raise ValueError("query plan retrieval modes must be unique")
+            raise ValueError("QueryPlan 的 retrieval_mode 不能重复")
         if any(mode not in SUPPORTED_RETRIEVAL_MODES for mode in self.retrieval_modes):
-            raise ValueError("query plan contains an unsupported retrieval mode")
+            raise ValueError("QueryPlan 包含不受支持的 retrieval_mode")
         subquestion_modes = tuple(item.retrieval_mode for item in self.subquestions)
         if set(subquestion_modes) != set(self.retrieval_modes):
-            raise ValueError("retrieval_modes must match subquestion retrieval modes")
+            raise ValueError("retrieval_modes 必须与 subquestion 的 retrieval_mode 匹配")
         if self.execution_route != "insufficient" and not self.subquestions:
-            raise ValueError("non-insufficient query plans require a subquestion")
+            raise ValueError("非 insufficient 的 QueryPlan 必须包含至少一个 subquestion")
 
     def to_dict(self) -> dict:
-        """Return only public plan data suitable for API display or events."""
+        """只返回适合 API 展示或事件记录的公开计划数据。"""
         return {
             "original_question": self.original_question,
             "language": self.language,

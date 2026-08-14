@@ -1,4 +1,4 @@
-"""Tests for explainable BM25 retrieval."""
+"""可解释 BM25 检索测试。"""
 
 import pytest
 
@@ -73,5 +73,5 @@ def test_no_hit_and_empty_query_return_empty() -> None:
 
 @pytest.mark.parametrize("limit", [0, -1])
 def test_non_positive_limit_raises(limit: int) -> None:
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="正整数"):
         search_chunks_bm25("query", (), limit=limit)

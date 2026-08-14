@@ -1,4 +1,4 @@
-"""HTTP request and response schemas for the local CodeInsight API."""
+"""本地 CodeInsight API 的 HTTP 请求和响应 Schema。"""
 
 from typing import Literal
 
@@ -23,7 +23,7 @@ class SearchRequest(BaseModel):
     def strip_required_text(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("must not be blank")
+            raise ValueError("不能为空")
         return stripped
 
 
@@ -38,7 +38,7 @@ class AnswerRequest(BaseModel):
     def strip_required_text(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("must not be blank")
+            raise ValueError("不能为空")
         return stripped
 
 
@@ -57,7 +57,7 @@ class AutoAnswerRequest(BaseModel):
     def strip_auto_text(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("must not be blank")
+            raise ValueError("不能为空")
         return stripped
 
 

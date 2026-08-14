@@ -1,4 +1,4 @@
-"""Integration coverage for opt-in hybrid retrieval."""
+"""可选 hybrid 检索集成测试。"""
 
 from pathlib import Path
 
@@ -41,6 +41,6 @@ def test_hybrid_requires_an_explicit_embedding_function() -> None:
             retrieval_mode="hybrid",
         )
     except ValueError as error:
-        assert "embedding model" in str(error)
+        assert "Embedding 模型" in str(error)
     else:
-        raise AssertionError("hybrid retrieval should require an embedding model")
+        raise AssertionError("hybrid 检索必须需要 Embedding 模型")

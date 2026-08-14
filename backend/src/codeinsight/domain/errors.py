@@ -1,17 +1,17 @@
-"""Domain exceptions for repository scanning."""
+"""仓库扫描和模型调用使用的领域异常。"""
 
 
 class RepositoryScanError(ValueError):
-    """Raised when a repository scan cannot start."""
+    """仓库扫描无法启动时抛出。"""
 
 
 class ModelConfigurationError(ValueError):
-    """Raised when required runtime model settings are missing."""
+    """缺少运行时所需模型配置时抛出。"""
 
 
 class ModelResponseError(ValueError):
-    """Raised when model output cannot become a grounded answer."""
+    """模型输出无法转换成有证据支撑的答案时抛出。"""
 
 
 class ModelCallError(RuntimeError):
-    """Raised when the configured model request fails."""
+    """已配置的模型请求失败时抛出。"""

@@ -1,4 +1,4 @@
-"""Ranked retrieval value types."""
+"""排序检索值对象。"""
 
 from dataclasses import dataclass
 
@@ -9,7 +9,7 @@ SEMANTIC_MATCH_REASON = "semantic_match"
 
 @dataclass(frozen=True)
 class RankedChunk:
-    """A SourceChunk with an explainable retrieval score and 1-based rank."""
+    """带有可解释检索分数和从 1 开始排名的 SourceChunk。"""
 
     chunk: SourceChunk
     score: float
@@ -19,7 +19,7 @@ class RankedChunk:
 
 @dataclass(frozen=True)
 class SubQuestionEvidence:
-    """Evidence kept independently for one planned subquestion."""
+    """为一个计划子问题独立保存的证据。"""
 
     question: str
     retrieval_mode: str
@@ -28,11 +28,11 @@ class SubQuestionEvidence:
 
     def __post_init__(self) -> None:
         if not self.question.strip():
-            raise ValueError("subquestion evidence question must not be blank")
+            raise ValueError("子问题证据的 question 不能为空")
         if len(self.results) != len(self.evidence_ids):
-            raise ValueError("subquestion evidence IDs must match results")
+            raise ValueError("子问题 evidence ID 必须与结果匹配")
 
     @property
     def covered(self) -> bool:
-        """Whether this subquestion currently has at least one evidence block."""
+        """判断这个子问题当前是否至少有一个证据块。"""
         return bool(self.results)

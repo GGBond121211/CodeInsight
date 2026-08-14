@@ -1,4 +1,4 @@
-"""FastAPI application composition for the local CodeInsight service."""
+"""本地 CodeInsight 服务的 FastAPI 应用组装。"""
 
 from collections.abc import Callable
 
@@ -14,11 +14,11 @@ def create_app(
     model_factory: Callable[[], OpenAIChatModel] = OpenAIChatModel.from_environment,
     embedding_factory: Callable[[], OpenAIEmbeddingModel] = OpenAIEmbeddingModel.from_environment,
 ) -> FastAPI:
-    """Compose a local HTTP app without reading model configuration at import time."""
+    """组装本地 HTTP 应用，导入时不读取模型配置。"""
     application = FastAPI(
         title="CodeInsight API",
         version="1.1.0",
-        description="Router-guided repository answers with verifiable citations.",
+        description="由 Router 引导、带可核验引用的仓库回答。",
     )
     application.add_middleware(
         CORSMiddleware,

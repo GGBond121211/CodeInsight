@@ -1,4 +1,4 @@
-"""Deterministic quality metrics for grounded repository answers."""
+"""基于证据回答仓库问题的确定性质量指标。"""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -18,7 +18,7 @@ class AnswerMetrics:
 
 
 def citation_covers(citation: AnswerCitation, evidence: dict) -> bool:
-    """Return whether a citation covers one expected evidence span."""
+    """判断引用是否覆盖一个预期证据范围。"""
     return (
         citation.relative_path == evidence["path"]
         and citation.start_line <= evidence["start_line"]
@@ -27,7 +27,7 @@ def citation_covers(citation: AnswerCitation, evidence: dict) -> bool:
 
 
 def citation_overlaps(citation: AnswerCitation, evidence: dict) -> bool:
-    """Return whether a citation intersects the expected evidence region."""
+    """判断引用是否与预期证据区域相交。"""
     return (
         citation.relative_path == evidence["path"]
         and citation.start_line <= evidence["end_line"]
@@ -36,7 +36,7 @@ def citation_overlaps(citation: AnswerCitation, evidence: dict) -> bool:
 
 
 def citations_jointly_cover(citations: Sequence[AnswerCitation], evidence: dict) -> bool:
-    """Return whether same-file citations jointly cover one full requirement."""
+    """判断同一文件中的多个引用是否共同覆盖完整要求。"""
     intervals = sorted(
         (
             max(citation.start_line, evidence["start_line"]),
@@ -58,13 +58,13 @@ def citations_jointly_cover(citations: Sequence[AnswerCitation], evidence: dict)
 
 
 def expected_evidence_requirements(expected: dict) -> tuple[dict, ...]:
-    """Return original requirements while supporting historical flat evidence."""
+    """返回原始要求，同时兼容历史的扁平 evidence 结构。"""
     requirements = expected.get("evidence_requirements")
     return tuple(requirements if requirements is not None else expected.get("evidence", ()))
 
 
 def citation_is_valid(citation: AnswerCitation, fixture_root: Path) -> bool:
-    """Check that a citation points to a real in-fixture 1-based line span."""
+    """检查引用是否指向 fixture 中真实的、从 1 开始的行号范围。"""
     resolved_root = fixture_root.resolve()
     resolved = (fixture_root / citation.relative_path).resolve()
     if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
@@ -84,7 +84,7 @@ def answer_failure_types(
     result: RepositoryAnswer | None,
     fixture_root: Path,
 ) -> list[str]:
-    """Classify deterministic answer failures for one evaluation case."""
+    """为一个评测用例分类确定性回答失败。"""
     if result is None:
         return ["model_error"]
 
@@ -118,7 +118,7 @@ def evaluate_answer_results(
     results: Mapping[str, RepositoryAnswer | None],
     fixture_root: Path,
 ) -> AnswerMetrics:
-    """Evaluate outcomes, grounded citations, evidence coverage, and term proxy."""
+    """评估结果、基于证据的引用、证据覆盖和术语代理指标。"""
     outcome_hits = 0
     valid_citations = 0
     citation_hits = 0

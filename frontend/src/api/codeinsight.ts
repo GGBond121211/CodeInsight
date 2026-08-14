@@ -10,19 +10,19 @@ async function postJson<TResponse>(path: string, request: object): Promise<TResp
   })
 
   if (!response.ok) {
-    let message = `Request failed with status ${response.status}`
+    let message = `请求失败，状态码为 ${response.status}`
     try {
       const payload = (await response.json()) as { detail?: string }
       if (payload.detail) message = payload.detail
     } catch {
-      // Keep the status-based fallback when the server did not return JSON.
+      // 服务端没有返回 JSON 时，保留基于状态码的回退信息。
     }
     throw new Error(message)
   }
   return (await response.json()) as TResponse
 }
 
-/* Disabled public client wiring; retained for a future explicit restoration.
+/* 停用的公开客户端接线；为将来明确恢复而保留。
 export function searchRepository(request: SearchRequest): Promise<SearchResponse> {
   return postJson<SearchResponse>('/search', request)
 }

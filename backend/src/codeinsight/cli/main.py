@@ -1,4 +1,4 @@
-"""CodeInsight command-line entry point."""
+"""CodeInsight 命令行入口。"""
 
 from __future__ import annotations
 
@@ -21,31 +21,27 @@ from codeinsight.domain.source import SourceChunk
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.openai_chat import OpenAIChatModel
 
-PROJECT_DESCRIPTION = (
-    "CodeInsight understands source repositories with verifiable file and line evidence."
-)
+PROJECT_DESCRIPTION = "CodeInsight 理解源码仓库，并提供可核验的文件和行号证据。"
 
 
 def _positive_int(value: str) -> int:
     limit = int(value)
     if limit <= 0:
-        raise argparse.ArgumentTypeError("limit must be positive")
+        raise argparse.ArgumentTypeError("limit 必须是正整数")
     return limit
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codeinsight", description=PROJECT_DESCRIPTION)
     commands = parser.add_subparsers(dest="command")
-    # Disabled public CLI entries. Their helper implementations remain below because
-    # Auto Answer still reuses the same search, linear-answer, and Agent engines.
-    # search = commands.add_parser("search", help="search a repository")
-    # answer = commands.add_parser("answer", help="answer a repository question with citations")
+    # 已停用的公开 CLI 入口。下面仍保留辅助实现，因为 Auto Answer 继续复用相同的
+    # search、线性回答和 Agent 引擎。
+    # search = commands.add_parser("search", help="搜索仓库")
+    # answer = commands.add_parser("answer", help="带引用回答仓库问题")
     # agent_answer = commands.add_parser(
-    #     "agent-answer", help="answer with citation review and bounded revision"
+    #     "agent-answer", help="通过引用审查和有界修订回答"
     # )
-    auto_answer = commands.add_parser(
-        "auto-answer", help="route a multilingual question and answer with public plan metadata"
-    )
+    auto_answer = commands.add_parser("auto-answer", help="路由多语言问题，并返回公开计划元数据")
     auto_answer.add_argument("--repo", required=True, metavar="PATH")
     auto_answer.add_argument("question", metavar="QUESTION")
     auto_answer.add_argument("--limit", type=_positive_int, default=5, metavar="N")
@@ -54,7 +50,7 @@ def _parser() -> argparse.ArgumentParser:
         choices=("linear", "agent"),
         default=None,
         dest="force_route",
-        help="override the router's public execution route",
+        help="覆盖 Router 选择的公开执行路线",
     )
     return parser
 
@@ -85,7 +81,7 @@ def _search(repo: str, question: str, limit: int, retrieval_mode: str) -> int:
         print(str(error), file=sys.stderr)
         return 1
     if not results:
-        print("no matching results found", file=sys.stderr)
+        print("没有找到匹配结果", file=sys.stderr)
         return 1
     for item in results:
         chunk = item.chunk
@@ -122,16 +118,16 @@ def _answer(repo: str, question: str, limit: int, retrieval_mode: str) -> int:
 
     print(result.answer)
     if result.citations:
-        print("evidence:")
+        print("证据：")
         for citation in result.citations:
             print(
                 f"- [{citation.evidence_id}] {citation.relative_path}:"
                 f"{citation.start_line}-{citation.end_line}"
             )
-    print(f"retrieval: {result.retrieval_mode}")
-    print(f"model: {result.model or 'not-called'}")
-    print(f"prompt: {result.prompt_version}")
-    print(f"tokens: input={result.input_tokens or 0} output={result.output_tokens or 0}")
+    print(f"检索模式：{result.retrieval_mode}")
+    print(f"模型：{result.model or '未调用'}")
+    print(f"Prompt：{result.prompt_version}")
+    print(f"Token 用量：输入={result.input_tokens or 0} 输出={result.output_tokens or 0}")
     return 0
 
 
@@ -162,20 +158,20 @@ def _agent_answer(repo: str, question: str, limit: int, retrieval_mode: str) -> 
     result = agent_result.result
     print(result.answer)
     if result.citations:
-        print("evidence:")
+        print("证据：")
         for citation in result.citations:
             print(
                 f"- [{citation.evidence_id}] {citation.relative_path}:"
                 f"{citation.start_line}-{citation.end_line}"
             )
-    print("agent-events:")
+    print("Agent 事件：")
     for event in agent_result.events:
         print(f"- {event.sequence}. {event.step}: {event.summary}")
-    print(f"revisions: {agent_result.revisions}")
-    print(f"retrieval: {result.retrieval_mode}")
-    print(f"model: {result.model or 'not-called'}")
-    print(f"prompt: {result.prompt_version}")
-    print(f"tokens: input={agent_result.input_tokens} output={agent_result.output_tokens}")
+    print(f"修订次数：{agent_result.revisions}")
+    print(f"检索模式：{result.retrieval_mode}")
+    print(f"模型：{result.model or '未调用'}")
+    print(f"Prompt：{result.prompt_version}")
+    print(f"Token 用量：输入={agent_result.input_tokens} 输出={agent_result.output_tokens}")
     return 0
 
 
@@ -231,35 +227,35 @@ def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) 
 
     print(result.answer)
     if result.citations:
-        print("evidence:")
+        print("证据：")
         for citation in result.citations:
             print(
                 f"- [{citation.evidence_id}] {citation.relative_path}:"
                 f"{citation.start_line}-{citation.end_line}"
             )
-    print(f"route: {router_result.plan.execution_route}")
+    print(f"执行路线：{router_result.plan.execution_route}")
     print(
-        f"router: model={router_result.model or 'not-called'} "
-        f"tokens={router_result.input_tokens}/{router_result.output_tokens} "
-        f"elapsed_ms={router_result.elapsed_milliseconds:.1f}"
+        f"Router：模型={router_result.model or '未调用'} "
+        f"Token={router_result.input_tokens}/{router_result.output_tokens} "
+        f"耗时_ms={router_result.elapsed_milliseconds:.1f}"
     )
-    print(f"embedding_input_tokens: {result.embedding_input_tokens}")
-    print(f"fallback: {router_result.fallback_reason or 'none'}")
-    print("events:")
+    print(f"Embedding 输入 Token：{result.embedding_input_tokens}")
+    print(f"回退原因：{router_result.fallback_reason or '无'}")
+    print("事件：")
     for event in events:
         print(f"- {event.sequence}. {event.step}: {event.summary}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse command-line arguments and return the process exit code."""
+    """解析命令行参数并返回进程退出码。"""
     try:
         arguments = _parser().parse_args(argv)
     except SystemExit as error:
         if argv is not None and "--help" in argv:
             raise
         return int(error.code)
-    # Disabled public CLI dispatch for search / answer / agent-answer.
+    # search / answer / agent-answer 的公开 CLI 分发已停用。
     if arguments.command == "auto-answer":
         return _auto_answer(
             arguments.repo,

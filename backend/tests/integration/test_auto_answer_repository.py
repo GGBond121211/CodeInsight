@@ -136,8 +136,8 @@ def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
         semantic_embed=fake_embed,
     )
 
-    # One batch builds the shared repository index and one query embedding is
-    # generated for the subquestion; the exact index batch size is fixture-dependent.
+    # 一次批处理构建共享仓库索引，另一次查询 Embedding 为子问题生成；
+    # 具体索引批大小取决于 fixture。
     assert result.embedding_input_tokens > 5
 
 

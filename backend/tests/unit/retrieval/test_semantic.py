@@ -1,4 +1,4 @@
-"""Tests for deterministic, evidence-preserving semantic retrieval."""
+"""确定性且保留证据映射的语义检索测试。"""
 
 import pytest
 
@@ -63,7 +63,7 @@ def test_index_rejects_inconsistent_embedding_count() -> None:
     def bad_embedder(texts):
         return EmbeddingBatch("fake", ((1.0, 0.0),), 1)
 
-    with pytest.raises(ValueError, match="vector count"):
+    with pytest.raises(ValueError, match="向量数量"):
         build_semantic_index(_chunks(), bad_embedder)
 
 
@@ -73,5 +73,5 @@ def test_query_dimension_mismatch_is_explicit() -> None:
     def wrong_dimension(_texts):
         return EmbeddingBatch("fake", ((1.0, 0.0, 0.0),), 1)
 
-    with pytest.raises(ValueError, match="dimensions"):
+    with pytest.raises(ValueError, match="维度"):
         search_chunks_semantic("fragile", index, wrong_dimension)

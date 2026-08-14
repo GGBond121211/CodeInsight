@@ -1,4 +1,4 @@
-"""Tests for deterministic retrieval tokenization."""
+"""确定性检索分词测试。"""
 
 from codeinsight.retrieval.tokenizer import tokenize, tokenize_path
 

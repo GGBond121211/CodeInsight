@@ -1,4 +1,4 @@
-"""Local persistent semantic indexes with file-level incremental rebuilds."""
+"""支持按文件增量重建的本地持久化语义索引。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ CHUNKING_VERSION = "fixed-lines-v1"
 
 
 def default_semantic_cache_root() -> Path:
-    """Return an OS-local cache directory outside analyzed repositories."""
+    """返回位于被分析仓库之外的操作系统本地缓存目录。"""
     configured = os.environ.get("CODEINSIGHT_SEMANTIC_CACHE_DIR")
     if configured:
         return Path(configured).expanduser()
@@ -32,7 +32,7 @@ def default_semantic_cache_root() -> Path:
 
 
 def embedding_model_id(embed: EmbeddingFunction) -> str | None:
-    """Read a stable public model ID from a bound embedding adapter method."""
+    """从绑定的 Embedding 适配器方法中读取稳定的公开模型 ID。"""
     owner = getattr(embed, "__self__", None)
     model = getattr(owner, "model", None) or getattr(embed, "model", None)
     return model if isinstance(model, str) and model.strip() else None
@@ -106,7 +106,7 @@ def _embed_chunks(
 ) -> tuple[str, int, tuple[tuple[float, ...], ...]]:
     batch = embed(tuple(chunk.text for chunk in chunks))
     if len(batch.vectors) != len(chunks):
-        raise ValueError("embedding provider returned an unexpected vector count")
+        raise ValueError("Embedding 提供方返回的向量数量不符合预期")
     return batch.model, batch.dimensions, batch.vectors
 
 
@@ -119,7 +119,7 @@ def build_persistent_semantic_index(
     chunk_max_lines: int,
     cache_root: str | Path | None = None,
 ) -> SemanticIndex:
-    """Load unchanged vectors and embed only files whose content changed."""
+    """加载未变化的向量，只为内容发生变化的文件生成 Embedding。"""
     root_path = Path(root).resolve()
     storage_root = Path(cache_root) if cache_root is not None else default_semantic_cache_root()
     path = _cache_path(
@@ -162,9 +162,9 @@ def build_persistent_semantic_index(
     if changed_chunks:
         returned_model, returned_dimensions, changed_vectors = _embed_chunks(changed_chunks, embed)
         if returned_model != model:
-            raise ValueError("embedding provider model changed during index build")
+            raise ValueError("索引构建期间 Embedding 提供方的模型发生变化")
         if dimensions is not None and returned_dimensions != dimensions:
-            raise ValueError("embedding dimensions changed during incremental index build")
+            raise ValueError("增量索引构建期间 Embedding 维度发生变化")
         dimensions = returned_dimensions
         offset = 0
         for relative_path in changed_paths:
@@ -184,7 +184,7 @@ def build_persistent_semantic_index(
         ordered_vectors.extend(vectors)
 
     if not ordered_chunks:
-        raise ValueError("semantic index requires at least one source chunk")
+        raise ValueError("语义索引至少需要一个源码块")
     manifest_payload = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "repository_root": str(root_path),

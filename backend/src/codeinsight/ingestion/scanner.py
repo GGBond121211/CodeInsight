@@ -1,4 +1,4 @@
-"""Read supported text files from a repository for code understanding."""
+"""读取仓库中的受支持文本文件，用于理解代码。"""
 
 import os
 from pathlib import Path
@@ -11,12 +11,12 @@ REASON_READ_ERROR = "read_error"
 
 
 def scan_repository(root: str | Path) -> ScanResult:
-    """Read supported text files below *root* in stable relative-path order."""
+    """按稳定的相对路径顺序读取 *root* 下的受支持文本文件。"""
     root_path = Path(root)
     if not root_path.exists():
-        raise RepositoryScanError(f"repository root does not exist: {root_path}")
+        raise RepositoryScanError(f"仓库根目录不存在：{root_path}")
     if not root_path.is_dir():
-        raise RepositoryScanError(f"repository root is not a directory: {root_path}")
+        raise RepositoryScanError(f"仓库根路径不是目录：{root_path}")
 
     files: list[SourceFile] = []
     skipped: list[SkippedFile] = []

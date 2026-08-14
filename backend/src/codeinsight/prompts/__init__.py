@@ -1,1 +1,1 @@
-"""Runtime prompts used by CodeInsight answer flows."""
+"""CodeInsight 回答流程使用的运行时 Prompt。"""

@@ -1,4 +1,4 @@
-"""In-process cosine semantic retrieval with evidence-preserving results."""
+"""进程内的余弦相似度语义检索，并保留证据映射。"""
 
 from __future__ import annotations
 
@@ -29,16 +29,16 @@ def _chunk_id(chunk: SourceChunk) -> str:
 
 def _validate_batch(batch: EmbeddingBatch, expected_count: int) -> int:
     if len(batch.vectors) != expected_count:
-        raise ValueError("embedding provider returned an unexpected vector count")
+        raise ValueError("Embedding 提供方返回的向量数量不符合预期")
     if not batch.vectors:
-        raise ValueError("semantic index requires at least one embedding")
+        raise ValueError("语义索引至少需要一个 Embedding")
     dimensions = len(batch.vectors[0])
     if dimensions == 0:
-        raise ValueError("embedding vectors must not be empty")
+        raise ValueError("Embedding 向量不能为空")
     if any(len(vector) != dimensions for vector in batch.vectors):
-        raise ValueError("embedding vectors must have equal dimensions")
+        raise ValueError("Embedding 向量的维度必须一致")
     if any(not math.isfinite(value) for vector in batch.vectors for value in vector):
-        raise ValueError("embedding vectors must contain finite values")
+        raise ValueError("Embedding 向量必须包含有限值")
     return dimensions
 
 
@@ -49,9 +49,9 @@ def build_semantic_index(
     language_coverage: str = "multilingual",
     service: str = "openai-compatible",
 ) -> SemanticIndex:
-    """Embed *chunks* once and build an evidence-preserving in-memory index."""
+    """对 *chunks* 一次性生成 Embedding，并构建保留证据映射的内存索引。"""
     if not chunks:
-        raise ValueError("semantic index requires at least one source chunk")
+        raise ValueError("语义索引至少需要一个源码块")
     batch = embed(tuple(chunk.text for chunk in chunks))
     dimensions = _validate_batch(batch, len(chunks))
     entry_ids = tuple(_chunk_id(chunk) for chunk in chunks)
@@ -79,7 +79,7 @@ def build_semantic_index(
 
 def _cosine_similarity(first: Sequence[float], second: Sequence[float]) -> float:
     if len(first) != len(second):
-        raise ValueError("query and indexed embedding dimensions do not match")
+        raise ValueError("查询向量与索引向量的维度不匹配")
     first_norm = math.sqrt(sum(value * value for value in first))
     second_norm = math.sqrt(sum(value * value for value in second))
     if first_norm == 0.0 or second_norm == 0.0:
@@ -97,15 +97,15 @@ def search_chunks_semantic(
     limit: int = 5,
     min_score: float = 0.20,
 ) -> tuple[RankedChunk, ...]:
-    """Return high-enough cosine matches while preserving source evidence."""
+    """返回余弦相似度足够高的匹配结果，同时保留源码证据。"""
     if limit <= 0:
-        raise ValueError("limit must be positive")
+        raise ValueError("limit 必须是正整数")
     if not query.strip():
         return ()
     query_batch = embed((query,))
     _validate_batch(query_batch, 1)
     if query_batch.dimensions != index.metadata.dimensions:
-        raise ValueError("query embedding dimensions do not match semantic index")
+        raise ValueError("查询 Embedding 的维度与语义索引不匹配")
     scored = [
         (entry, _cosine_similarity(query_batch.vectors[0], entry.embedding))
         for entry in index.entries

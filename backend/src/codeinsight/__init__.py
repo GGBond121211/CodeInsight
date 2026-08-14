@@ -1,1 +1,1 @@
-"""CodeInsight backend package."""
+"""CodeInsight 后端包。"""

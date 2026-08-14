@@ -1,4 +1,4 @@
-"""Internal LangGraph state for the citation refinement Agent."""
+"""引用修订 Agent 使用的内部 LangGraph 状态。"""
 
 from pathlib import Path
 from typing import TypedDict

@@ -10,7 +10,7 @@ export function EvidenceList({ citations }: EvidenceListProps) {
   return (
     <section className="evidence-section" aria-labelledby="evidence-heading">
       <div className="section-label" id="evidence-heading">
-        Verified evidence
+        已核验的证据
       </div>
       <div className="evidence-list">
         {citations.map((citation) => (

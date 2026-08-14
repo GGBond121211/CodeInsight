@@ -1,4 +1,4 @@
-"""Smoke tests for package imports and CLI help behavior."""
+"""包导入和 CLI 帮助行为的冒烟测试。"""
 
 import importlib
 

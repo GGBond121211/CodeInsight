@@ -90,8 +90,8 @@ def test_invalid_model_payload_raises(content: str) -> None:
 @pytest.mark.parametrize(
     ("environment", "message"),
     [
-        ({"CODEINSIGHT_MODEL": "test-model"}, "CODEINSIGHT_API_KEY is required"),
-        ({"CODEINSIGHT_API_KEY": "secret"}, "CODEINSIGHT_MODEL is required"),
+        ({"CODEINSIGHT_MODEL": "test-model"}, "必须配置 CODEINSIGHT_API_KEY"),
+        ({"CODEINSIGHT_API_KEY": "secret"}, "必须配置 CODEINSIGHT_MODEL"),
     ],
 )
 def test_missing_configuration_raises(environment: dict[str, str], message: str) -> None:
@@ -145,7 +145,7 @@ def test_sdk_error_becomes_safe_model_call_error() -> None:
     completions = FakeCompletions(error=OpenAIError("request included secret-value"))
     model = OpenAIChatModel(client=_fake_client(completions), model="test-model")  # type: ignore[arg-type]
 
-    with pytest.raises(ModelCallError, match="^model request failed$") as raised:
+    with pytest.raises(ModelCallError, match="^模型请求失败$") as raised:
         model.generate("system", "user")
 
     assert "secret-value" not in str(raised.value)

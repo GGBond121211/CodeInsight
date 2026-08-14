@@ -1,4 +1,4 @@
-"""Tests for repository text reading."""
+"""仓库文本读取测试。"""
 
 from pathlib import Path
 

@@ -1,4 +1,4 @@
-"""Deterministic tokenization for explainable lexical retrieval."""
+"""用于可解释词法检索的确定性分词。"""
 
 import re
 
@@ -34,7 +34,7 @@ def _unique(tokens: list[str]) -> tuple[str, ...]:
 
 
 def tokenize_terms(text: str) -> tuple[str, ...]:
-    """Split text into normalized terms while retaining repeated occurrences."""
+    """把文本切分为规范化词项，同时保留重复出现的词项。"""
     tokens: list[str] = []
     for match in _IDENTIFIER.findall(text):
         lowered = match.lower()
@@ -45,12 +45,12 @@ def tokenize_terms(text: str) -> tuple[str, ...]:
 
 
 def tokenize(text: str) -> tuple[str, ...]:
-    """Split text into normalized tokens, deduplicated by first occurrence."""
+    """把文本切分为规范化 token，并按首次出现顺序去重。"""
     return _unique(list(tokenize_terms(text)))
 
 
 def tokenize_path(path: str) -> tuple[str, ...]:
-    """Tokenize a repository-relative path honoring both path separators."""
+    """对仓库相对路径分词，同时兼容两种路径分隔符。"""
     tokens: list[str] = []
     for component in _PATH_SEPARATOR.split(path):
         if component:
@@ -59,5 +59,5 @@ def tokenize_path(path: str) -> tuple[str, ...]:
 
 
 def tokenize_query(text: str) -> tuple[str, ...]:
-    """Tokenize a query and remove common question words."""
+    """对查询分词，并移除常见疑问词。"""
     return tuple(token for token in tokenize(text) if token not in _QUERY_STOP_WORDS)

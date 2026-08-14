@@ -1,4 +1,4 @@
-"""Immutable values produced by the repository answer Agent."""
+"""仓库回答 Agent 生成的不可变值对象。"""
 
 from dataclasses import dataclass
 

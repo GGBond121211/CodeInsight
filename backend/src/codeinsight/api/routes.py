@@ -1,4 +1,4 @@
-"""Versioned HTTP routes backed by CodeInsight application use cases."""
+"""由 CodeInsight 应用用例提供支持的版本化 HTTP 路由。"""
 
 from collections.abc import Callable
 from dataclasses import replace
@@ -155,15 +155,14 @@ def create_router(
     model_factory: ModelFactory,
     embedding_factory: EmbeddingFactory = OpenAIEmbeddingModel.from_environment,
 ) -> APIRouter:
-    """Create the API router with an injectable model composition boundary."""
+    """创建带有可注入模型组合边界的 API Router。"""
     router = APIRouter(prefix="/api/v1")
 
     @router.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
         return HealthResponse()
 
-    # Disabled product entry: keep the implementation for possible restoration,
-    # but do not register POST /api/v1/search.
+    # 已停用的产品入口：保留实现以便将来明确恢复，但不注册 POST /api/v1/search。
     # @router.post("/search", response_model=SearchResponse)
     def search(request: SearchRequest) -> SearchResponse:
         try:
@@ -196,7 +195,7 @@ def create_router(
             ],
         )
 
-    # Disabled product entry: Auto Answer still reuses answer_repository internally.
+    # 已停用的产品入口：Auto Answer 内部仍复用 answer_repository。
     # @router.post("/answer", response_model=AnswerResponse)
     def answer(request: AnswerRequest) -> AnswerResponse:
         try:
@@ -238,7 +237,7 @@ def create_router(
             ),
         )
 
-    # Disabled product entry: Auto Answer still reuses the Agent workflow internally.
+    # 已停用的产品入口：Auto Answer 内部仍复用 Agent 工作流。
     # @router.post("/agent/answer", response_model=AgentAnswerResponse)
     def agent_answer(request: AgentAnswerRequest) -> AgentAnswerResponse:
         try:

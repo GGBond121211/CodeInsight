@@ -1,4 +1,4 @@
-"""Unit tests for retrieval evaluation metrics."""
+"""检索评测指标单元测试。"""
 
 from dataclasses import FrozenInstanceError
 

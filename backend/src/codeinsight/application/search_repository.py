@@ -1,4 +1,4 @@
-"""End-to-end repository search use case."""
+"""端到端的仓库搜索用例。"""
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -21,9 +21,9 @@ HYBRID_CANDIDATE_LIMIT = 20
 
 
 def candidate_retrieval_modes(primary_mode: str) -> tuple[str, ...]:
-    """Return deterministic candidate modes for one planned subquestion."""
+    """为一个已规划的子问题返回确定性的候选检索模式。"""
     if primary_mode not in {"lexical", "bm25", "hybrid"}:
-        raise ValueError(f"unsupported retrieval mode: {primary_mode}")
+        raise ValueError(f"不支持的检索模式：{primary_mode}")
     if primary_mode == "hybrid":
         return ("bm25",)
     modes = [primary_mode, "bm25"]
@@ -38,7 +38,7 @@ def build_repository_semantic_index(
     cache_root: str | Path | None = None,
     semantic_model: str | None = None,
 ) -> SemanticIndex:
-    """Load or incrementally build one evidence-preserving semantic index."""
+    """加载或增量构建一个保留证据映射的语义索引。"""
     scan_result = scan_repository(root)
     model = semantic_model or embedding_model_id(semantic_embed)
     if model is not None:
@@ -65,15 +65,13 @@ def retrieve_subquestion_evidence(
     semantic_index: SemanticIndex | None = None,
     search=None,
 ) -> tuple[RankedChunk, ...]:
-    """Retrieve and rerank evidence independently for one subquestion.
+    """独立检索并重排一个子问题的证据。
 
-    The Router-selected sparse mode remains primary. When a shared semantic
-    index is available, semantic candidates are added without rebuilding the
-    index. The optional ``search`` hook keeps Agent tests and application
-    injection boundaries intact.
+    Router 选择的稀疏模式仍然是主模式。如果共享语义索引可用，则加入语义候选，
+    不重复构建索引。可选的 ``search`` hook 用于保持 Agent 测试和应用层注入边界不变。
     """
     if limit <= 0:
-        raise ValueError("limit must be positive")
+        raise ValueError("limit 必须是正整数")
     search_fn = search or search_repository
     candidate_limit = max(limit, min(HYBRID_CANDIDATE_LIMIT, limit * 4))
     modes = candidate_retrieval_modes(primary_mode)
@@ -120,7 +118,7 @@ def _search_scanned_repository(
     fixed_chunks = chunk_scan_result(scan_result, max_lines=chunk_max_lines)
     if retrieval_mode == "hybrid":
         if semantic_embed is None:
-            raise ValueError("hybrid retrieval requires an embedding model")
+            raise ValueError("hybrid 检索需要 Embedding 模型")
         index = semantic_index or build_semantic_index(fixed_chunks, semantic_embed)
         candidate_limit = max(limit, min(HYBRID_CANDIDATE_LIMIT, limit * 4))
         semantic_results = search_chunks_semantic(
@@ -150,7 +148,7 @@ def _search_scanned_repository(
         return search_chunks_lexical(question, fixed_chunks, limit=limit)
     if retrieval_mode == "bm25":
         return search_chunks_bm25(question, fixed_chunks, limit=limit)
-    raise ValueError(f"unsupported retrieval mode: {retrieval_mode}")
+    raise ValueError(f"不支持的检索模式：{retrieval_mode}")
 
 
 def search_repository(
@@ -163,11 +161,10 @@ def search_repository(
     semantic_embed: SemanticEmbed | None = None,
     semantic_index: SemanticIndex | None = None,
 ) -> tuple[RankedChunk, ...]:
-    """Scan *root*, chunk it, and return the top *limit* matches for *question*.
+    """扫描 *root*、切分文件，并返回 *question* 的前 *limit* 个匹配结果。
 
-    This is the read-only application use case: scan -> chunk -> search.
-    Exceptions from the underlying layers are intentionally not caught, and no
-    caching, retry, configuration, or extra interface is introduced.
+    这是只读应用用例：扫描 -> 切分 -> 搜索。
+    下层异常会有意向上抛出；这里不额外引入缓存、重试、配置或接口。
     """
     scan_result = scan_repository(root)
     return _search_scanned_repository(

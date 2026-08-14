@@ -1,4 +1,4 @@
-"""Stable candidate fusion and code-aware reranking for repository evidence."""
+"""对仓库证据执行稳定的候选融合和代码感知重排。"""
 
 from __future__ import annotations
 
@@ -28,10 +28,9 @@ def _code_relevance(
     result: RankedChunk,
     retrieval_reasons: set[str],
 ) -> float:
-    """Score exact code identity without asking another language model.
+    """不请求另一个语言模型，直接为精确代码身份相关性评分。
 
-    Symbol and path matches are stronger than incidental body matches. These
-    signals operate after RRF and never manufacture new evidence.
+    符号和路径匹配比偶然的正文匹配更强。这些信号在 RRF 之后工作，绝不会制造新证据。
     """
     query_tokens = set(tokenize_query(question))
     if not query_tokens:
@@ -52,12 +51,11 @@ def _rerank(
     *,
     limit: int,
 ) -> tuple[RankedChunk, ...]:
-    """Fuse candidates and apply small explainable code-relevance features.
+    """融合候选，并应用少量可解释的代码相关性特征。
 
-    This is intentionally deterministic and model-free.  RRF gives each
-    retriever a comparable rank signal; exact query-token overlap and
-    multi-source agreement then break ties in favor of repository evidence
-    that is both identifiable and independently supported.
+    这里有意保持确定性且不依赖模型。RRF 为每个检索器提供可比较的排名信号；
+    精确查询词重叠和多来源一致性会进一步打破平局，让既可定位又有独立支持的
+    仓库证据优先。
     """
     scores: defaultdict[tuple[str, int, int], float] = defaultdict(float)
     chunks: dict[tuple[str, int, int], RankedChunk] = {}
@@ -77,8 +75,7 @@ def _rerank(
         result = chunks[key]
         code_relevance = _code_relevance(question, result, reasons[key]) if question else 0.0
         agreement = min(1.0, (len(source_names[key]) - 1) / 2)
-        # RRF scores are small, so keep the lexical/structural features as
-        # tie-break-strength signals rather than allowing them to dominate.
+        # RRF 分数较小，因此把词法/结构特征作为打破平局的信号，避免它们占据主导。
         score = base_score * 100.0 + code_relevance + agreement * 0.12
         reranked.append((score, key))
 
@@ -105,9 +102,9 @@ def rerank_ranked_chunks(
     *,
     limit: int = 5,
 ) -> tuple[RankedChunk, ...]:
-    """Rerank independently generated candidates for one subquestion."""
+    """重排一个子问题独立生成的候选结果。"""
     if limit <= 0:
-        raise ValueError("limit must be positive")
+        raise ValueError("limit 必须是正整数")
     if not sources:
         return ()
     return _rerank(question, sources, limit=limit)
@@ -118,9 +115,9 @@ def fuse_ranked_chunks(
     *,
     limit: int = 5,
 ) -> tuple[RankedChunk, ...]:
-    """Backward-compatible weighted RRF fusion without query features."""
+    """不使用查询特征，提供向后兼容的加权 RRF 融合。"""
     if limit <= 0:
-        raise ValueError("limit must be positive")
+        raise ValueError("limit 必须是正整数")
     if not sources:
         return ()
     return _rerank(None, sources, limit=limit)

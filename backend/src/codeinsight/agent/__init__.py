@@ -1,1 +1,1 @@
-"""LangGraph workflows for evidence-grounded repository answers."""
+"""基于证据回答仓库问题的 LangGraph 工作流。"""

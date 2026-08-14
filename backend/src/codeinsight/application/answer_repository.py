@@ -1,4 +1,4 @@
-"""Repository question answering over retrieved source evidence."""
+"""基于检索到的源码证据回答仓库问题。"""
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -29,16 +29,16 @@ def map_model_answer(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
 ) -> RepositoryAnswer:
-    """Map model evidence IDs to trusted repository paths and line ranges."""
+    """把模型返回的 evidence ID 映射为可信的仓库路径和行号范围。"""
     identifiers = tuple(evidence_ids or (f"E{index}" for index in range(1, len(results) + 1)))
     if len(identifiers) != len(results):
-        raise ModelResponseError("evidence ID count must match result count")
+        raise ModelResponseError("evidence ID 数量必须与结果数量一致")
     evidence = {
         evidence_id: result.chunk for evidence_id, result in zip(identifiers, results, strict=True)
     }
     unknown = [item for item in generated.evidence_ids if item not in evidence]
     if unknown:
-        raise ModelResponseError(f"model cited unknown evidence ID: {unknown[0]}")
+        raise ModelResponseError(f"模型引用了未知的 evidence ID：{unknown[0]}")
 
     citations = tuple(
         AnswerCitation(
@@ -71,7 +71,7 @@ def answer_repository(
     retrieval_mode: str = "hybrid",
     semantic_embed: SemanticEmbed | None = None,
 ) -> RepositoryAnswer:
-    """Answer one repository question using only retrieved source chunks."""
+    """只使用检索到的源码块回答一个仓库问题。"""
     results = search_repository(
         root,
         question,
@@ -83,7 +83,7 @@ def answer_repository(
     if not results:
         return RepositoryAnswer(
             outcome=INSUFFICIENT_EVIDENCE,
-            answer="The repository does not contain enough evidence to answer this question.",
+            answer="仓库中没有足够证据回答这个问题。",
             citations=(),
             retrieval_mode=retrieval_mode,
             model=None,

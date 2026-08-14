@@ -1,4 +1,4 @@
-"""Immutable answer and citation value types."""
+"""不可变的回答和引用值对象。"""
 
 from dataclasses import dataclass
 
@@ -50,7 +50,7 @@ class RepositoryAnswer:
 
 @dataclass(frozen=True)
 class SubQuestionAnswer:
-    """Answer and global citations for one Smart Answer subquestion."""
+    """一个 Smart Answer 子问题的回答和全局引用。"""
 
     question: str
     intent: str
@@ -62,7 +62,7 @@ class SubQuestionAnswer:
 
 @dataclass(frozen=True)
 class AutoAnswerEvent:
-    """A public Smart Answer event summary without hidden model reasoning."""
+    """不包含模型隐藏推理的公开 Smart Answer 事件摘要。"""
 
     sequence: int
     step: str
@@ -71,7 +71,7 @@ class AutoAnswerEvent:
 
 @dataclass(frozen=True)
 class AutoAnswer:
-    """Public multi-question answer with route and cost metadata."""
+    """带有路线和成本元数据的公开多问题回答。"""
 
     outcome: str
     answer: str

@@ -1,4 +1,4 @@
-"""Tests for deterministic lexical ranking."""
+"""确定性词法排序测试。"""
 
 import pytest
 
@@ -51,5 +51,5 @@ def test_limit_zero_scores_and_empty_query() -> None:
 
 @pytest.mark.parametrize("limit", [0, -1])
 def test_non_positive_limit_raises(limit: int) -> None:
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="正整数"):
         search_chunks("query", (), limit=limit)

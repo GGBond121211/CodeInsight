@@ -24,18 +24,18 @@ export function QuestionForm({
 
   return (
     <form className="question-card" onSubmit={submit}>
-      <div className="mode-tabs" aria-label="Query mode">
+      <div className="mode-tabs" aria-label="查询模式">
         <button className="mode-tab active" type="button" aria-current="page">
           Smart Answer
         </button>
-        {/* Disabled entry controls retained conceptually for explicit restoration:
-            Grounded answer -> answer
-            Verified Agent -> agent
-            Inspect retrieval -> search */}
+        {/* 为将来明确恢复而保留的停用入口概念：
+            基于证据的回答 -> answer
+            已核验的 Agent -> agent
+            检查检索 -> search */}
       </div>
 
       <label>
-        Repository path
+        仓库路径
         <input
           value={repositoryRoot}
           onChange={(event) => onRepositoryRootChange(event.target.value)}
@@ -45,23 +45,22 @@ export function QuestionForm({
       </label>
 
       <label>
-        Question
+        问题
         <textarea
           value={question}
           onChange={(event) => onQuestionChange(event.target.value)}
-          placeholder="How does this repository validate incoming requests?"
+          placeholder="这个仓库如何校验传入请求？"
           rows={4}
           required
         />
       </label>
       <p className="field-hint">
-        HTTPX demo: use ../work/benchmarks/httpx/httpx and ask how the top-level get helper
-        dispatches a request.
+        HTTPX 演示：使用 ../work/benchmarks/httpx/httpx，并询问顶层 get helper 如何分发请求。
       </p>
 
       <div className="form-footer">
         <button className="primary-action" disabled={loading} type="submit">
-          {loading ? 'Working…' : 'Run Smart Answer'}
+          {loading ? '处理中…' : '运行 Smart Answer'}
         </button>
       </div>
     </form>

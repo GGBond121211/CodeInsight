@@ -1,4 +1,4 @@
-"""Integration coverage for the shared retrieval engine used by Auto Answer."""
+"""Auto Answer 使用的共享检索引擎集成测试。"""
 
 from pathlib import Path
 
@@ -43,5 +43,5 @@ def test_internal_hybrid_combines_bm25_and_semantic_candidates() -> None:
 
 @pytest.mark.parametrize("removed_mode", ["ast-bm25", "graph-bm25"])
 def test_removed_retrieval_modes_are_rejected(removed_mode: str) -> None:
-    with pytest.raises(ValueError, match="unsupported retrieval mode"):
+    with pytest.raises(ValueError, match="不支持的检索模式"):
         search_repository(FIXTURE_ROOT, "Where is checkout?", retrieval_mode=removed_mode)

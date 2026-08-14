@@ -1,1 +1,1 @@
-"""Source-code retrieval."""
+"""源码检索。"""

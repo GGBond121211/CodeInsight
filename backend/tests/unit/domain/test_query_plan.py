@@ -1,4 +1,4 @@
-"""Tests for the public Smart Answer query plan contract."""
+"""公开 Smart Answer 查询计划契约测试。"""
 
 import pytest
 
@@ -32,7 +32,7 @@ def test_query_plan_preserves_original_and_serializes_public_fields() -> None:
 
 def test_plan_requires_unique_matching_retrieval_modes() -> None:
     subquestion = SubQuestion("Where is checkout?", "symbol_lookup", "bm25")
-    with pytest.raises(ValueError, match="must match"):
+    with pytest.raises(ValueError, match="必须与 subquestion 的 retrieval_mode 匹配"):
         QueryPlan(
             original_question="Where is checkout?",
             language="en",
@@ -45,7 +45,7 @@ def test_plan_requires_unique_matching_retrieval_modes() -> None:
 
 
 def test_plan_rejects_invalid_route_and_confidence() -> None:
-    with pytest.raises(ValueError, match="execution route"):
+    with pytest.raises(ValueError, match="execution_route 不受支持"):
         QueryPlan(
             original_question="question",
             language="en",
@@ -55,7 +55,7 @@ def test_plan_rejects_invalid_route_and_confidence() -> None:
             execution_route="tool-loop",
             confidence=0.8,
         )
-    with pytest.raises(ValueError, match="between 0 and 1"):
+    with pytest.raises(ValueError, match="0 和 1 之间"):
         QueryPlan(
             original_question="question",
             language="en",

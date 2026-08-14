@@ -1,4 +1,4 @@
-"""Tests for the QueryPlan-aware LangGraph retrieval state."""
+"""QueryPlan 感知的 LangGraph 检索状态测试。"""
 
 from pathlib import Path
 
@@ -86,7 +86,7 @@ def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() ->
     assert result.subquestions[1].citations == ()
     assert "How does checkout compute the total?" not in complete.prompts[0]
     assert "How does checkout validate input?" not in complete.prompts[1]
-    assert "subquestions" in result.events[0].summary
+    assert "子问题" in result.events[0].summary
     assert complete.calls == 3
 
 

@@ -1,1 +1,1 @@
-"""External infrastructure implementations."""
+"""外部基础设施实现。"""

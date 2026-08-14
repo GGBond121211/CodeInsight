@@ -1,1 +1,1 @@
-"""Deterministic evaluation helpers for CodeInsight."""
+"""CodeInsight 的确定性评测辅助工具。"""

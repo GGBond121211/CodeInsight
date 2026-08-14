@@ -1,1 +1,1 @@
-"""Repository ingestion."""
+"""仓库内容摄取。"""

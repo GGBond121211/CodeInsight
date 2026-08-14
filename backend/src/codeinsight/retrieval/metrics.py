@@ -1,4 +1,4 @@
-"""Retrieval quality metrics over evaluation cases and scanned chunks."""
+"""基于评测用例和扫描结果块计算检索质量指标。"""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ from codeinsight.retrieval.lexical import search_chunks as search_chunks_lexical
 
 @dataclass(frozen=True)
 class RetrievalMetrics:
-    """Aggregate retrieval quality over the applicable evaluation cases."""
+    """汇总适用评测用例上的检索质量。"""
 
     case_count: int
     applicable_case_count: int
@@ -70,7 +70,7 @@ def _search_chunks(
         return search_chunks_lexical(question, chunks, limit=limit)
     if retrieval_mode == "bm25":
         return search_chunks_bm25(question, chunks, limit=limit)
-    raise ValueError(f"unsupported retrieval mode: {retrieval_mode}")
+        raise ValueError(f"不支持的检索模式：{retrieval_mode}")
 
 
 def evaluate_cases(
@@ -79,14 +79,12 @@ def evaluate_cases(
     *,
     retrieval_mode: str = "lexical",
 ) -> RetrievalMetrics:
-    """Evaluate retrieval quality over *cases* using *chunks*.
+    """使用 *chunks* 评估 *cases* 上的检索质量。
 
-    Every case counts toward ``case_count``.  Only answered cases that carry a
-    non-empty ``expected.evidence`` list are applicable; each one is searched
-    with the selected retrieval mode and an evidence item is covered when one
-    returned chunk matches its path and line span.
-    ``insufficient_evidence`` cases are counted but never searched, and
-    ``reason_code`` values never contribute to any score.
+    每个用例都会计入 ``case_count``。只有带有非空 ``expected.evidence`` 列表的
+    answered 用例才适用；每个适用用例都使用指定检索模式搜索，当返回块匹配证据项的
+    路径和行号范围时，认为该证据项被覆盖。
+    ``insufficient_evidence`` 用例会计数但不会搜索，``reason_code`` 不会贡献任何分数。
     """
     case_count = len(cases)
     applicable = [case for case in cases if _evidence_items(case)]

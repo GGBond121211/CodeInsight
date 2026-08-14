@@ -1,4 +1,4 @@
-"""Structured LLM Query Router with a deterministic linear fallback."""
+"""结构化 LLM Query Router，以及确定性的 Linear 回退方案。"""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ class QueryRouterResult:
 
 
 def fallback_plan(question: str, reason: str) -> QueryPlan:
-    """Build the documented BM25 + linear fallback plan."""
+    """构造文档中约定的 BM25 + Linear 回退计划。"""
     subquestion = SubQuestion(question, "unknown", "bm25")
     return QueryPlan(
         original_question=question,
@@ -71,12 +71,12 @@ def fallback_plan(question: str, reason: str) -> QueryPlan:
 def _require_string(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise ModelResponseError(f"router field {key} must be a non-empty string")
+        raise ModelResponseError(f"Router 字段 {key} 必须是非空字符串")
     return value.strip()
 
 
 def _decode_json_object(content: str) -> dict[str, Any]:
-    """Decode a JSON object while tolerating a markdown wrapper from a model."""
+    """解析 JSON 对象，并兼容模型返回的 Markdown 代码围栏。"""
     candidate = content.strip()
     if candidate.startswith("```"):
         lines = candidate.splitlines()
@@ -91,55 +91,55 @@ def _decode_json_object(content: str) -> dict[str, Any]:
         start = candidate.find("{")
         end = candidate.rfind("}")
         if start < 0 or end <= start:
-            raise ModelResponseError("router response is not valid JSON") from None
+            raise ModelResponseError("Router 返回内容不是有效 JSON") from None
         try:
             payload = json.loads(candidate[start : end + 1])
         except json.JSONDecodeError as error:
-            raise ModelResponseError("router response is not valid JSON") from error
+            raise ModelResponseError("Router 返回内容不是有效 JSON") from error
     if not isinstance(payload, dict):
-        raise ModelResponseError("router response must be a JSON object")
+        raise ModelResponseError("Router 返回内容必须是 JSON 对象")
     return payload
 
 
 def parse_query_plan(original_question: str, content: str) -> QueryPlan:
-    """Parse and strictly validate a router JSON response."""
+    """解析并严格校验 Router 返回的 JSON。"""
     payload = _decode_json_object(content)
     if frozenset(payload) != ROUTER_KEYS:
-        raise ModelResponseError("router response has an unsupported JSON shape")
+        raise ModelResponseError("Router 返回的 JSON 结构不受支持")
 
     language = _require_string(payload, "language")
     language = _LANGUAGE_ALIASES.get(language.lower(), language.lower())
     if language not in SUPPORTED_LANGUAGES:
-        raise ModelResponseError("router response has an unsupported language")
+        raise ModelResponseError("Router 返回了不支持的语言")
     normalized_question = _require_string(payload, "normalized_question")
     execution_route = _require_string(payload, "execution_route")
     if execution_route not in SUPPORTED_EXECUTION_ROUTES:
-        raise ModelResponseError("router response has an unsupported execution route")
+        raise ModelResponseError("Router 返回了不支持的执行路线")
     confidence = payload.get("confidence")
     if isinstance(confidence, str):
         try:
             confidence = float(confidence.strip())
         except ValueError as error:
-            raise ModelResponseError("router confidence must be numeric") from error
+            raise ModelResponseError("Router 的 confidence 必须是数字") from error
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-        raise ModelResponseError("router confidence must be numeric")
+        raise ModelResponseError("Router 的 confidence 必须是数字")
 
     raw_subquestions = payload.get("subquestions")
     if not isinstance(raw_subquestions, list):
-        raise ModelResponseError("router subquestions must be a list")
+        raise ModelResponseError("Router 的 subquestions 必须是列表")
     subquestions: list[SubQuestion] = []
     for raw in raw_subquestions:
         if not isinstance(raw, dict) or frozenset(raw) != SUBQUESTION_KEYS:
-            raise ModelResponseError("router subquestion has an unsupported JSON shape")
+            raise ModelResponseError("Router 子问题的 JSON 结构不受支持")
         question = _require_string(raw, "question")
         intent = _require_string(raw, "intent")
         intent = _INTENT_ALIASES.get(intent.lower(), intent.lower())
         if intent not in SUPPORTED_INTENTS:
-            raise ModelResponseError("router subquestion has an unsupported intent")
+            raise ModelResponseError("Router 子问题的 intent 不受支持")
         retrieval_mode = _require_string(raw, "retrieval_mode")
         retrieval_mode = _RETRIEVAL_ALIASES.get(retrieval_mode.lower(), retrieval_mode.lower())
         if retrieval_mode not in ROUTER_RETRIEVAL_MODES:
-            raise ModelResponseError("router subquestion has an unsupported retrieval mode")
+            raise ModelResponseError("Router 子问题的 retrieval_mode 不受支持")
         subquestions.append(SubQuestion(question, intent, retrieval_mode))
 
     retrieval_modes = tuple(dict.fromkeys(item.retrieval_mode for item in subquestions))
@@ -160,7 +160,7 @@ def route_question(
     complete,
     min_confidence: float = MIN_ROUTER_CONFIDENCE,
 ) -> QueryRouterResult:
-    """Call the router once and return a safe linear fallback on failure."""
+    """调用一次 Router；失败时返回安全的 Linear 回退计划。"""
     started = perf_counter()
     input_tokens = 0
     output_tokens = 0
@@ -173,7 +173,7 @@ def route_question(
         output_tokens = completion.output_tokens or 0
         plan = parse_query_plan(question, completion.content)
         if plan.confidence < min_confidence:
-            raise ModelResponseError("router confidence is below the configured threshold")
+            raise ModelResponseError("Router 的 confidence 低于配置阈值")
         return QueryRouterResult(
             plan=plan,
             used_fallback=False,

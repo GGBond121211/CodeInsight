@@ -1,1 +1,1 @@
-"""Application use cases."""
+"""应用层用例。"""

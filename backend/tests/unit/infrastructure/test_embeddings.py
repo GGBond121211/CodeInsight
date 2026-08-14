@@ -1,4 +1,4 @@
-"""Tests for the OpenAI-compatible embedding adapter without network calls."""
+"""不发起网络请求的 OpenAI-compatible Embedding 适配器测试。"""
 
 from types import SimpleNamespace
 
@@ -95,7 +95,7 @@ def test_embedding_adapter_rejects_incomplete_response() -> None:
     )
     model = OpenAIEmbeddingModel(client=_fake_client(embeddings), model="test-embedding")  # type: ignore[arg-type]
 
-    with pytest.raises(ModelResponseError, match="count"):
+    with pytest.raises(ModelResponseError, match="数量"):
         model.embed(("first", "second"))
 
 

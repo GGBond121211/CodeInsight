@@ -14,32 +14,32 @@ export function AutoAnswerPanel({ result }: AutoAnswerPanelProps) {
         <header className="result-header">
           <div>
             <span className="eyebrow">Smart Answer</span>
-            <h2>Router-guided explanation</h2>
+            <h2>Router 引导的解释</h2>
           </div>
           <span className="status-pill">{status.toUpperCase()}</span>
         </header>
         <p className="answer-copy">{result.answer}</p>
         <EvidenceList citations={result.citations} />
         <footer className="metadata-row">
-          <span>{result.model ?? 'model not called'}</span>
+          <span>{result.model ?? '未调用模型'}</span>
           <span>{result.plan.execution_route}</span>
-          <span>{result.plan.confidence.toFixed(2)} confidence</span>
+          <span>置信度 {result.plan.confidence.toFixed(2)}</span>
           <span>
-            router {result.router_usage.input_tokens}/{result.router_usage.output_tokens}
+            Router Token：{result.router_usage.input_tokens}/{result.router_usage.output_tokens}
           </span>
-          <span>embedding {result.embedding_input_tokens} input tokens</span>
+          <span>Embedding 输入 Token：{result.embedding_input_tokens}</span>
         </footer>
       </section>
 
-      <section className="result-card" aria-label="Router plan">
+      <section className="result-card" aria-label="Router 计划">
         <header className="result-header">
           <div>
-            <span className="eyebrow">Public route plan</span>
-            <h2>{result.plan.subquestions.length} subquestions</h2>
+            <span className="eyebrow">公开执行计划</span>
+            <h2>{result.plan.subquestions.length} 个子问题</h2>
           </div>
           <span className="status-pill">{result.plan.retrieval_modes.join(' + ') || 'none'}</span>
         </header>
-        <p className="field-hint">{result.fallback_reason ?? 'Router completed without fallback.'}</p>
+        <p className="field-hint">{result.fallback_reason ?? 'Router 已完成，未发生回退。'}</p>
         <div className="search-results">
           {result.subquestions.map((item, index) => (
             <article className="search-row" key={`${item.question}:${index}`}>

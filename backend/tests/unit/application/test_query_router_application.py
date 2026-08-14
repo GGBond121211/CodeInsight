@@ -1,4 +1,4 @@
-"""Tests for strict QueryPlan parsing and Router fallback."""
+"""严格 QueryPlan 解析和 Router 回退测试。"""
 
 import json
 
@@ -78,9 +78,9 @@ def test_router_cannot_disable_mandatory_semantic_with_a_hybrid_choice() -> None
     try:
         parse_query_plan("question", json.dumps(payload))
     except ModelResponseError as error:
-        assert "retrieval mode" in str(error)
+        assert "retrieval_mode 不受支持" in str(error)
     else:
-        raise AssertionError("Router should choose only the sparse retrieval enhancement")
+        raise AssertionError("Router 只能选择稀疏检索增强")
 
 
 def test_router_returns_bm25_linear_fallback_on_invalid_output() -> None:
@@ -124,6 +124,6 @@ def test_router_rejects_evidence_fields() -> None:
     try:
         parse_query_plan("question", json.dumps(payload))
     except ModelResponseError as error:
-        assert "JSON shape" in str(error)
+        assert "JSON 结构不受支持" in str(error)
     else:
-        raise AssertionError("router must reject evidence fields")
+        raise AssertionError("Router 必须拒绝 evidence 字段")

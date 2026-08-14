@@ -1,4 +1,4 @@
-"""Unit tests for fixed-size source file chunking."""
+"""固定大小源码文件切分单元测试。"""
 
 import pytest
 

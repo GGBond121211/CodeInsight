@@ -1,4 +1,4 @@
-"""Explainable BM25 retrieval over SourceChunk instances."""
+"""对 SourceChunk 执行可解释的 BM25 检索。"""
 
 import math
 import re
@@ -87,9 +87,9 @@ def search_chunks_bm25(
     k1: float = 1.2,
     b: float = 0.75,
 ) -> tuple[RankedChunk, ...]:
-    """Rank chunks with BM25 body scoring plus code-retrieval field bonuses."""
+    """使用 BM25 正文评分和代码检索字段加分为块排序。"""
     if limit <= 0:
-        raise ValueError("limit must be positive")
+        raise ValueError("limit 必须是正整数")
     query_tokens = tokenize_query(query)
     if not query_tokens or not chunks:
         return ()

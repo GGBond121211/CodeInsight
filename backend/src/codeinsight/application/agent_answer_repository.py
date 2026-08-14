@@ -1,4 +1,4 @@
-"""Application entry point for the bounded citation refinement Agent."""
+"""有界引用修订 Agent 的应用层入口。"""
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -20,7 +20,7 @@ def agent_answer_repository(
     retrieval_mode: str = "hybrid",
     semantic_embed: SemanticEmbed | None = None,
 ) -> AgentRepositoryAnswer:
-    """Answer with retrieval, citation review, and at most five revisions."""
+    """通过检索、引用审查和最多五次修订来回答问题。"""
     return run_citation_agent(
         root,
         question,

@@ -1,4 +1,4 @@
-"""LangGraph citation review and bounded answer revision workflow."""
+"""LangGraph 引用审查和有界答案修订工作流。"""
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -85,9 +85,7 @@ def _validate_local_citations(generated: ModelAnswer, evidence_ids: Sequence[str
     supplied = frozenset(evidence_ids)
     unknown = [item for item in generated.evidence_ids if item not in supplied]
     if unknown:
-        raise ModelResponseError(
-            f"subquestion answer used evidence outside its local group: {unknown[0]}"
-        )
+        raise ModelResponseError(f"子问题答案使用了其本地证据组之外的 evidence ID：{unknown[0]}")
     return generated
 
 
@@ -101,7 +99,7 @@ def _aggregate_outcome(outcomes: Sequence[str]) -> str:
 
 def _combine_subquestion_drafts(plan: QueryPlan, drafts: Sequence[ModelAnswer]) -> ModelAnswer:
     if len(plan.subquestions) != len(drafts):
-        raise ValueError("subquestion draft count must match query plan")
+        raise ValueError("子问题草稿数量必须与 QueryPlan 匹配")
     answer = "\n\n".join(
         f"{index}. {subquestion.question}\n{draft.answer}"
         for index, (subquestion, draft) in enumerate(
@@ -127,7 +125,7 @@ def _map_subquestion_answers(state: CitationAgentState) -> tuple[SubQuestionAnsw
     drafts = state["subquestion_drafts"]
     evidence_groups = state["subquestion_evidence"]
     if not (len(plan.subquestions) == len(drafts) == len(evidence_groups)):
-        raise ValueError("query plan, evidence, and draft counts must match")
+        raise ValueError("QueryPlan、证据和草稿数量必须匹配")
     answers = []
     for subquestion, evidence, draft in zip(
         plan.subquestions, evidence_groups, drafts, strict=True
@@ -261,13 +259,13 @@ def run_citation_agent(
     semantic_embed: SemanticEmbed | None = None,
     query_plan: QueryPlan | None = None,
 ) -> AgentRepositoryAnswer:
-    """Run one retrieve/draft/critic/reviser workflow with at most five revisions."""
+    """运行一次检索/起草/审查/修订工作流，最多修订五次。"""
     embedding_input_tokens = 0
 
     def tracked_semantic_embed(texts: Sequence[str]) -> EmbeddingBatch:
         nonlocal embedding_input_tokens
         if semantic_embed is None:
-            raise ValueError("hybrid retrieval requires an embedding model")
+            raise ValueError("hybrid 检索需要 Embedding 模型")
         batch = semantic_embed(texts)
         embedding_input_tokens += batch.input_tokens or 0
         return batch
@@ -300,11 +298,11 @@ def run_citation_agent(
             )
             groups = ()
             evidence_groups = ()
-        summary = f"Retrieved {len(results)} evidence blocks."
+        summary = f"已检索 {len(results)} 个证据块。"
         if state.get("query_plan"):
             summary = (
-                f"Retrieved {len(results)} deduplicated evidence blocks for "
-                f"{len(state['query_plan'].subquestions)} subquestions."
+                f"已为 {len(state['query_plan'].subquestions)} 个子问题检索并去重，"
+                f"得到 {len(results)} 个证据块。"
             )
         return {
             "results": results,
@@ -321,7 +319,7 @@ def run_citation_agent(
     def finalize_no_evidence(state: CitationAgentState) -> CitationAgentState:
         answer = RepositoryAnswer(
             outcome=INSUFFICIENT_EVIDENCE,
-            answer="The repository does not contain enough evidence to answer this question.",
+            answer="仓库中没有足够证据回答这个问题。",
             citations=(),
             retrieval_mode=state["retrieval_mode"],
             model=None,
@@ -329,9 +327,7 @@ def run_citation_agent(
             input_tokens=0,
             output_tokens=0,
         )
-        events = _event(
-            state, "finalize", "Stopped without a model call because no evidence matched."
-        )
+        events = _event(state, "finalize", "没有匹配到证据，未调用模型并已停止。")
         return {
             "events": events,
             "agent_result": AgentRepositoryAnswer(
@@ -354,10 +350,7 @@ def run_citation_agent(
                     generated_items.append(
                         ModelAnswer(
                             outcome=INSUFFICIENT_EVIDENCE,
-                            answer=(
-                                "The repository does not contain enough evidence to answer "
-                                "this subquestion."
-                            ),
+                            answer=("仓库中没有足够证据回答这个子问题。"),
                             evidence_ids=(),
                             model="",
                             input_tokens=0,
@@ -387,7 +380,7 @@ def run_citation_agent(
                 "events": _event(
                     state,
                     "draft",
-                    f"Drafted {len(generated_items)} subquestion answers independently.",
+                    f"已独立起草 {len(generated_items)} 个子问题答案。",
                 ),
                 **_usage_updates(state, completions),
             }
@@ -397,7 +390,7 @@ def run_citation_agent(
         generated = _parsed_answer(completion)
         return {
             "draft": generated,
-            "events": _event(state, "draft", f"Drafted a {generated.outcome} answer."),
+            "events": _event(state, "draft", f"已起草一个结果为 {generated.outcome} 的答案。"),
             **_usage_update(state, completion),
         }
 
@@ -446,9 +439,9 @@ def run_citation_agent(
                     )
                 ),
                 feedback=(
-                    "All subquestion answers passed independent citation review."
+                    "所有子问题答案都通过了独立引用审查。"
                     if pending == 0
-                    else f"{pending} subquestion answer(s) require revision."
+                    else f"有 {pending} 个子问题答案需要修订。"
                 ),
             )
             return {
@@ -460,7 +453,7 @@ def run_citation_agent(
                 "events": _event(
                     state,
                     "review",
-                    f"Independently reviewed subquestions; {pending} require revision.",
+                    f"已独立审查子问题；有 {pending} 个需要修订。",
                 ),
                 **_usage_updates(state, completions),
             }
@@ -475,7 +468,7 @@ def run_citation_agent(
         result = parse_citation_review(completion.content, supplied_ids)
         return {
             "review": result,
-            "events": _event(state, "review", f"Citation review verdict: {result.verdict}."),
+            "events": _event(state, "review", f"引用审查结论：{result.verdict}。"),
             **_usage_update(state, completion),
         }
 
@@ -504,7 +497,7 @@ def run_citation_agent(
                 if accepted[index]:
                     continue
                 if review_result is None:
-                    raise ValueError("pending subquestion must have critic feedback")
+                    raise ValueError("待修订的子问题必须有审查反馈")
                 system_prompt, user_prompt = build_revision_prompt(
                     evidence.question,
                     evidence.results,
@@ -528,8 +521,8 @@ def run_citation_agent(
                 "events": _event(
                     state,
                     "revise",
-                    f"Revised only failed subquestions ({revision}/"
-                    f"{state.get('max_revisions', MAX_REVISIONS)}).",
+                    f"只修订了未通过的子问题（第 {revision}/"
+                    f"{state.get('max_revisions', MAX_REVISIONS)} 次）。",
                 ),
                 **_usage_updates(state, completions),
             }
@@ -549,8 +542,8 @@ def run_citation_agent(
             "events": _event(
                 state,
                 "revise",
-                f"Revised the answer from critic feedback ({state.get('revisions', 0) + 1}/"
-                f"{state.get('max_revisions', MAX_REVISIONS)}).",
+                f"根据审查反馈修订答案（第 {state.get('revisions', 0) + 1}/"
+                f"{state.get('max_revisions', MAX_REVISIONS)} 次）。",
             ),
             **_usage_update(state, completion),
         }
@@ -561,7 +554,7 @@ def run_citation_agent(
                 state,
                 state["draft"],
                 embedding_input_tokens=embedding_input_tokens,
-                summary="Accepted the insufficient-evidence draft without citation review.",
+                summary="证据不足的草稿无需引用审查，已接受。",
             )
         }
 
@@ -572,7 +565,7 @@ def run_citation_agent(
                 state["draft"],
                 evidence_ids=state["review"].supported_evidence_ids,
                 embedding_input_tokens=embedding_input_tokens,
-                summary="Accepted the reviewed draft.",
+                summary="已接受通过审查的草稿。",
             )
         }
 
@@ -603,9 +596,9 @@ def run_citation_agent(
                 evidence_ids=evidence_ids,
                 embedding_input_tokens=embedding_input_tokens,
                 summary=(
-                    "Finalized after the critic accepted the revised answer."
+                    "审查者接受修订后的答案，流程已完成。"
                     if state["review"].verdict == REVIEW_PASS
-                    else "Finalized the best answer after reaching the five-revision limit."
+                    else "达到五次修订上限，已完成当前最佳答案。"
                 ),
             )
         }

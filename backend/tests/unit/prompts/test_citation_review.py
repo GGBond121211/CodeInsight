@@ -35,7 +35,7 @@ def test_review_and_revision_prompts_preserve_evidence_ids() -> None:
     assert CITATION_REVIEW_VERSION == "citation-review-v2"
     assert AGENT_PROMPT_VERSION == "citation-agent-v3"
     assert "[E2] src/service.py:5-9" in review_user
-    assert "smallest complete" in review_system
+    assert "最小且完整" in review_system
     assert "Remove E1." in revision_user
     assert '"citations":["E2"]' in revision_system
 

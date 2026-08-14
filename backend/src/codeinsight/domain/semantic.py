@@ -1,4 +1,4 @@
-"""Immutable values for evidence-preserving semantic retrieval."""
+"""保留证据映射的语义检索不可变值对象。"""
 
 from dataclasses import dataclass
 
@@ -7,7 +7,7 @@ from codeinsight.domain.source import SourceChunk
 
 @dataclass(frozen=True)
 class EmbeddingBatch:
-    """Embedding vectors returned by one provider call."""
+    """一次提供方调用返回的 Embedding 向量。"""
 
     model: str
     vectors: tuple[tuple[float, ...], ...]
@@ -20,7 +20,7 @@ class EmbeddingBatch:
 
 @dataclass(frozen=True)
 class SemanticModelMetadata:
-    """Public metadata needed to identify a semantic index."""
+    """用于标识语义索引的公开元数据。"""
 
     model: str
     dimensions: int
@@ -31,7 +31,7 @@ class SemanticModelMetadata:
 
 @dataclass(frozen=True)
 class SemanticIndexEntry:
-    """One vector linked back to a stable source chunk and fingerprint."""
+    """一个关联到稳定源码块和指纹的向量。"""
 
     chunk_id: str
     chunk: SourceChunk
@@ -42,7 +42,7 @@ class SemanticIndexEntry:
 
 @dataclass(frozen=True)
 class SemanticIndex:
-    """An in-process semantic index; no persistence or database is implied."""
+    """进程内语义索引；不代表存在持久化或数据库。"""
 
     metadata: SemanticModelMetadata
     entries: tuple[SemanticIndexEntry, ...]

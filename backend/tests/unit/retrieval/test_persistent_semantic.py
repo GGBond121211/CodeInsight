@@ -1,4 +1,4 @@
-"""Tests for file-level persistent semantic index reuse."""
+"""按文件复用持久化语义索引测试。"""
 
 import json
 

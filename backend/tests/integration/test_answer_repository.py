@@ -22,7 +22,7 @@ def _generated_answer(
     *,
     evidence_ids: tuple[str, ...] = ("E1",),
 ) -> ModelAnswer:
-    assert "Repository evidence" in user_prompt
+    assert "仓库证据" in user_prompt
     assert "citations" in system_prompt
     return ModelAnswer(
         outcome="answered",
@@ -71,7 +71,7 @@ def test_answer_preserves_parser_deduplication_order() -> None:
 
 
 def test_answer_rejects_unknown_evidence_id() -> None:
-    with pytest.raises(ModelResponseError, match="unknown evidence ID: E99"):
+    with pytest.raises(ModelResponseError, match="未知的 evidence ID：E99"):
         answer_repository(
             FIXTURE_ROOT,
             "Where is checkout defined?",
@@ -109,7 +109,7 @@ def test_no_results_are_insufficient_without_calling_model(monkeypatch) -> None:
 
 def test_model_insufficient_result_has_no_citations() -> None:
     def insufficient(system_prompt: str, user_prompt: str) -> ModelAnswer:
-        assert "Repository evidence" in user_prompt
+        assert "仓库证据" in user_prompt
         return ModelAnswer(
             outcome=INSUFFICIENT_EVIDENCE,
             answer="The evidence does not identify a provider.",

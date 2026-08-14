@@ -1,11 +1,11 @@
-"""Immutable value types returned by repository scanning."""
+"""仓库扫描返回的不可变值对象。"""
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class SourceFile:
-    """A text file read from the scanned repository."""
+    """从已扫描仓库中读取的文本文件。"""
 
     relative_path: str
     text: str
@@ -13,7 +13,7 @@ class SourceFile:
 
 @dataclass(frozen=True)
 class SkippedFile:
-    """A path that was deliberately not read, together with the reason."""
+    """有意跳过读取的路径及其原因。"""
 
     relative_path: str
     reason: str
@@ -21,7 +21,7 @@ class SkippedFile:
 
 @dataclass(frozen=True)
 class ScanResult:
-    """The outcome of a repository scan."""
+    """仓库扫描结果。"""
 
     files: tuple[SourceFile, ...]
     skipped: tuple[SkippedFile, ...]
@@ -29,7 +29,7 @@ class ScanResult:
 
 @dataclass(frozen=True)
 class SourceChunk:
-    """A source slice with stable lines and optional language-aware context."""
+    """带有稳定行号和可选语言上下文的源码切片。"""
 
     relative_path: str
     start_line: int

@@ -10,9 +10,9 @@ def test_prompt_labels_evidence_with_path_and_lines() -> None:
 
     assert PROMPT_VERSION == "code-answer-v2"
     assert '"citations":["E1"]' in system_prompt
-    assert "non-empty explanatory sentence" in system_prompt
-    assert "include every implementation block" in system_prompt
-    assert "briefly state what is unsupported" in system_prompt
+    assert "非空的解释性句子" in system_prompt
+    assert "包含支撑结论所需的全部实现代码块" in system_prompt
+    assert "简要说明无法支持的部分" in system_prompt
     assert "[E1] src/app.py:3-5" in user_prompt
     assert "Where is run defined?" in user_prompt
 

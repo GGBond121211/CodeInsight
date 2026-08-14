@@ -1,1 +1,1 @@
-"""Command-line interface."""
+"""命令行接口。"""

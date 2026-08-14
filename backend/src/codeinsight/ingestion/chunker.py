@@ -1,18 +1,17 @@
-"""Split source files into fixed-size, non-overlapping line chunks."""
+"""把源码文件切分为固定大小且互不重叠的行块。"""
 
 from codeinsight.domain.source import ScanResult, SourceChunk, SourceFile
 
 
 def chunk_source_file(source: SourceFile, *, max_lines: int = 80) -> tuple[SourceChunk, ...]:
-    """Split *source* into chunks of at most *max_lines* logical lines.
+    """把 *source* 切分为最多包含 *max_lines* 个逻辑行的块。
 
-    CRLF and lone CR line endings are normalized to LF before splitting.
-    Line numbers are 1-based and inclusive over the original file's logical
-    lines. Chunk text is the chunk's lines joined with LF and never gets an
-    artificial trailing newline.
+    切分前会把 CRLF 和单独的 CR 换行统一为 LF。
+    行号以原文件的逻辑行为准，从 1 开始并且两端都包含。块文本使用 LF 连接，
+    不会人为添加末尾换行。
     """
     if max_lines <= 0:
-        raise ValueError("max_lines must be a positive integer")
+        raise ValueError("max_lines 必须是正整数")
     lines = _logical_lines(source.text)
     if not lines:
         return ()
@@ -31,9 +30,9 @@ def chunk_source_file(source: SourceFile, *, max_lines: int = 80) -> tuple[Sourc
 
 
 def chunk_scan_result(scan_result: ScanResult, *, max_lines: int = 80) -> tuple[SourceChunk, ...]:
-    """Chunk every file in *scan_result*, preserving its file order."""
+    """切分 *scan_result* 中的每个文件，并保留文件顺序。"""
     if max_lines <= 0:
-        raise ValueError("max_lines must be a positive integer")
+        raise ValueError("max_lines 必须是正整数")
     chunks: list[SourceChunk] = []
     for source in scan_result.files:
         chunks.extend(chunk_source_file(source, max_lines=max_lines))
@@ -41,7 +40,7 @@ def chunk_scan_result(scan_result: ScanResult, *, max_lines: int = 80) -> tuple[
 
 
 def _logical_lines(text: str) -> list[str]:
-    """Return the file's logical lines after normalizing CRLF and CR to LF."""
+    """把 CRLF 和 CR 统一为 LF 后返回文件的逻辑行。"""
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     if not normalized:
         return []

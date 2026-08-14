@@ -1,4 +1,4 @@
-"""Tests for stable sparse/semantic fusion."""
+"""稳定稀疏/语义融合测试。"""
 
 import pytest
 
@@ -36,7 +36,7 @@ def test_fusion_rewards_evidence_seen_by_multiple_retrievers() -> None:
 def test_fusion_is_stable_and_validates_limit() -> None:
     sources = (("semantic", (_result("src/z.py", 1, "semantic_match"),)),)
     assert fuse_ranked_chunks(sources, limit=1)[0].retrieval_reason == "semantic_match"
-    with pytest.raises(ValueError, match="limit"):
+    with pytest.raises(ValueError, match="limit 必须是正整数"):
         fuse_ranked_chunks(sources, limit=0)
 
 

@@ -1,4 +1,4 @@
-"""Multi-question Smart Answer evidence orchestration."""
+"""多问题 Smart Answer 的证据编排。"""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _empty_subquestion(question, intent, retrieval_mode) -> SubQuestionAnswer:
         intent=intent,
         retrieval_mode=retrieval_mode,
         outcome=INSUFFICIENT_EVIDENCE,
-        answer="The repository does not contain enough evidence to answer this subquestion.",
+        answer="仓库中没有足够证据回答这个子问题。",
         citations=(),
     )
 
@@ -60,14 +60,14 @@ def auto_answer_repository(
     chunk_max_lines: int = 80,
     semantic_embed: SemanticEmbed | None = None,
 ) -> AutoAnswer:
-    """Retrieve and answer each public subquestion with local evidence coverage."""
+    """分别检索并回答每个公开子问题，同时记录本地证据覆盖情况。"""
     plan: QueryPlan = router_result.plan
     embedding_input_tokens = 0
 
     def tracked_semantic_embed(texts: Sequence[str]) -> EmbeddingBatch:
         nonlocal embedding_input_tokens
         if semantic_embed is None:
-            raise ValueError("hybrid retrieval requires an embedding model")
+            raise ValueError("hybrid 检索需要 Embedding 模型")
         batch = semantic_embed(texts)
         embedding_input_tokens += batch.input_tokens or 0
         return batch
@@ -76,7 +76,7 @@ def auto_answer_repository(
     if plan.execution_route == "insufficient" or not subquestions:
         return AutoAnswer(
             outcome=INSUFFICIENT_EVIDENCE,
-            answer="The question could not be mapped to a repository query.",
+            answer="无法将这个问题映射到仓库查询。",
             citations=(),
             retrieval_mode="auto",
             model=None,
@@ -91,15 +91,11 @@ def auto_answer_repository(
             router_elapsed_milliseconds=router_result.elapsed_milliseconds,
             embedding_input_tokens=embedding_input_tokens,
             fallback_reason=router_result.fallback_reason,
-            events=(
-                AutoAnswerEvent(
-                    1, "route", "Stopped because the router produced no executable subquestion."
-                ),
-            ),
+            events=(AutoAnswerEvent(1, "route", "Router 没有生成可执行的子问题，已停止。"),),
         )
 
     if semantic_embed is None:
-        raise ValueError("normal answer retrieval requires an embedding model")
+        raise ValueError("普通回答检索需要 Embedding 模型")
     retrieval_embed = tracked_semantic_embed
     semantic_index = build_repository_semantic_index(
         root,
@@ -223,13 +219,13 @@ def auto_answer_repository(
             AutoAnswerEvent(
                 1,
                 "route",
-                f"Prepared {len(answers)} public subquestions on the linear route.",
+                f"已在线性路线准备 {len(answers)} 个公开子问题。",
             ),
             AutoAnswerEvent(
                 2,
                 "finalize",
-                f"Completed {outcome}; local evidence covered "
-                f"{covered_subquestions}/{len(answers)} subquestions.",
+                f"已完成，结果为 {outcome}；本地证据覆盖 "
+                f"{covered_subquestions}/{len(answers)} 个子问题。",
             ),
         ),
     )
