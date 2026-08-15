@@ -77,18 +77,20 @@ def _covers(citation: dict, expected: dict) -> bool:
 
 
 def _evidence_payload(results, evidence_ids) -> list[dict]:
-    return [
-        {
-            "evidence_id": evidence_id,
-            "path": result.chunk.relative_path,
-            "start_line": result.chunk.start_line,
-            "end_line": result.chunk.end_line,
-            "rank": result.rank,
-            "score": result.score,
-            "retrieval_reason": result.retrieval_reason,
-        }
-        for result, evidence_id in zip(results, evidence_ids, strict=True)
-    ]
+    payload = []
+    for result, evidence_id in zip(results, evidence_ids, strict=True):
+        payload.append(
+            {
+                "evidence_id": evidence_id,
+                "path": result.chunk.relative_path,
+                "start_line": result.chunk.start_line,
+                "end_line": result.chunk.end_line,
+                "rank": result.rank,
+                "score": result.score,
+                "retrieval_reason": result.retrieval_reason,
+            }
+        )
+    return payload
 
 
 class FrozenEvidenceSet:
@@ -100,15 +102,15 @@ class FrozenEvidenceSet:
             "semantic_index_id": payload["semantic_index_id"],
             "embedding_model": payload["embedding_model"],
         }
-        self._groups = {
-            (row["case_id"], row["subquestion_id"]): row["groups"]
-            for row in payload["subquestions"]
-        }
-        self._files = {
-            path.relative_to(FIXTURE_ROOT).as_posix(): path.read_text(encoding="utf-8").splitlines()
-            for path in FIXTURE_ROOT.rglob("*")
-            if path.is_file()
-        }
+        self._groups = {}
+        for row in payload["subquestions"]:
+            key = (row["case_id"], row["subquestion_id"])
+            self._groups[key] = row["groups"]
+        self._files = {}
+        for path in FIXTURE_ROOT.rglob("*"):
+            if path.is_file():
+                relative_path = path.relative_to(FIXTURE_ROOT).as_posix()
+                self._files[relative_path] = path.read_text(encoding="utf-8").splitlines()
 
     def evidence(self, case_id: str, subquestion_id: str, hybrid: bool) -> tuple:
         group = "A5" if hybrid else "A2"
@@ -144,39 +146,59 @@ def _answer_metrics(
     answer: StructuredCaseAnswer,
     evidence_groups: list[tuple[tuple, tuple[str, ...]]],
 ) -> dict:
-    evidence_by_id = {
-        evidence_id: {
-            "path": result.chunk.relative_path,
-            "start_line": result.chunk.start_line,
-            "end_line": result.chunk.end_line,
-        }
-        for results, evidence_ids in evidence_groups
-        for result, evidence_id in zip(results, evidence_ids, strict=True)
-    }
+    evidence_by_id = {}
+    for results, evidence_ids in evidence_groups:
+        for result, evidence_id in zip(results, evidence_ids, strict=True):
+            evidence_by_id[evidence_id] = {
+                "path": result.chunk.relative_path,
+                "start_line": result.chunk.start_line,
+                "end_line": result.chunk.end_line,
+            }
     metrics = []
     for expected, actual in zip(case["subquestions"], answer.subquestions, strict=True):
-        citations = [evidence_by_id[item] for item in actual.evidence_ids]
+        citations = []
+        for item in actual.evidence_ids:
+            citations.append(evidence_by_id[item])
         expected_evidence = expected["expected_evidence"]
-        evidence_hits = [
-            any(_covers(citation, item) for citation in citations) for item in expected_evidence
-        ]
+        evidence_hits = []
+        for item in expected_evidence:
+            item_is_covered = False
+            for citation in citations:
+                if _covers(citation, item):
+                    item_is_covered = True
+                    break
+            evidence_hits.append(item_is_covered)
         outcome_hit = actual.outcome == expected["expected_outcome"]
         if expected["expected_outcome"] == INSUFFICIENT_EVIDENCE:
             grounded = outcome_hit and not citations
             recall = None
         else:
             recall = sum(evidence_hits) / len(evidence_hits) if evidence_hits else 0.0
-            grounded = outcome_hit and bool(evidence_hits) and all(evidence_hits)
-        precision_hits = [
-            any(_covers(citation, item) for item in expected_evidence) for citation in citations
-        ]
+            all_evidence_hits = True
+            for was_hit in evidence_hits:
+                if not was_hit:
+                    all_evidence_hits = False
+                    break
+            grounded = outcome_hit and bool(evidence_hits) and all_evidence_hits
+        precision_hits = []
+        for citation in citations:
+            citation_is_precise = False
+            for item in expected_evidence:
+                if _covers(citation, item):
+                    citation_is_precise = True
+                    break
+            precision_hits.append(citation_is_precise)
+        precision_hit_count = 0
+        for was_hit in precision_hits:
+            if was_hit:
+                precision_hit_count += 1
         metrics.append(
             {
                 "subquestion_id": expected["id"],
                 "outcome_hit": outcome_hit,
                 "citation_validity": 1.0,
                 "citation_precision": (
-                    sum(precision_hits) / len(precision_hits)
+                    precision_hit_count / len(precision_hits)
                     if precision_hits
                     else (1.0 if expected["expected_outcome"] == INSUFFICIENT_EVIDENCE else 0.0)
                 ),
@@ -186,17 +208,29 @@ def _answer_metrics(
                 "human_review_status": "not_human_reviewed",
             }
         )
+    outcome_hit_count = 0
+    citation_precision_values = []
+    evidence_recall_values = []
+    grounded_pass = True
+    for item in metrics:
+        if item["outcome_hit"]:
+            outcome_hit_count += 1
+        citation_precision_values.append(item["citation_precision"])
+        if item["evidence_recall"] is not None:
+            evidence_recall_values.append(item["evidence_recall"])
+        if not item["automated_grounded_pass"]:
+            grounded_pass = False
+
     return {
         "subquestions": metrics,
-        "outcome_accuracy": sum(item["outcome_hit"] for item in metrics) / len(metrics),
-        "citation_precision": sum(item["citation_precision"] for item in metrics) / len(metrics),
+        "outcome_accuracy": outcome_hit_count / len(metrics),
+        "citation_precision": sum(citation_precision_values) / len(metrics),
         "evidence_recall": (
-            sum(item["evidence_recall"] for item in metrics if item["evidence_recall"] is not None)
-            / sum(item["evidence_recall"] is not None for item in metrics)
-            if any(item["evidence_recall"] is not None for item in metrics)
+            sum(evidence_recall_values) / len(evidence_recall_values)
+            if evidence_recall_values
             else None
         ),
-        "automated_grounded_pass": all(item["automated_grounded_pass"] for item in metrics),
+        "automated_grounded_pass": grounded_pass,
         "human_verified_complete_pass": None,
         "human_review_status": "not_human_reviewed",
     }
@@ -209,13 +243,15 @@ def _run_critic(
     draft: StructuredCaseAnswer,
 ) -> dict:
     current = draft
-    allowed = {
-        subquestion["id"]: frozenset(evidence_ids)
-        for subquestion, (_, evidence_ids) in zip(
-            case["subquestions"], evidence_groups, strict=True
-        )
-    }
-    expected_ids = tuple(item["id"] for item in case["subquestions"])
+    allowed = {}
+    for subquestion, (_, evidence_ids) in zip(
+        case["subquestions"], evidence_groups, strict=True
+    ):
+        allowed[subquestion["id"]] = frozenset(evidence_ids)
+    expected_ids_list = []
+    for item in case["subquestions"]:
+        expected_ids_list.append(item["id"])
+    expected_ids = tuple(expected_ids_list)
     snapshots = {"0": current.to_model_dict()}
     trajectory = []
     total_input = 0
@@ -252,7 +288,12 @@ def _run_critic(
             "review_output_tokens": review.output_tokens,
             "review_elapsed_milliseconds": elapsed,
         }
-        if all(item.verdict == "pass" for item in review.reviews):
+        review_passed = True
+        for item in review.reviews:
+            if item.verdict != "pass":
+                review_passed = False
+                break
+        if review_passed:
             event["answer"] = current.to_model_dict()
             trajectory.append(event)
             stop_reason = "critic_pass"
@@ -325,10 +366,16 @@ def run_case_condition(
     allowed: dict[str, frozenset[str]] = {}
     for subquestion in case["subquestions"]:
         results = candidates.evidence(case["case_id"], subquestion["id"], hybrid)
-        evidence_ids = tuple(f"{subquestion['id']}E{index}" for index in range(1, len(results) + 1))
+        evidence_id_list = []
+        for index in range(1, len(results) + 1):
+            evidence_id_list.append(f"{subquestion['id']}E{index}")
+        evidence_ids = tuple(evidence_id_list)
         evidence_groups.append((results, evidence_ids))
         allowed[subquestion["id"]] = frozenset(evidence_ids)
-    expected_ids = tuple(item["id"] for item in case["subquestions"])
+    expected_ids_list = []
+    for item in case["subquestions"]:
+        expected_ids_list.append(item["id"])
+    expected_ids = tuple(expected_ids_list)
     prompt = build_structured_draft_prompt(
         case["case_id"],
         case["original_question"],
@@ -345,16 +392,17 @@ def run_case_condition(
         input_tokens=completion.input_tokens,
         output_tokens=completion.output_tokens,
     )
-    evidence_payload = [
-        {
-            "subquestion_id": subquestion["id"],
-            "question": subquestion["question"],
-            "evidence": _evidence_payload(results, evidence_ids),
-        }
-        for subquestion, (results, evidence_ids) in zip(
-            case["subquestions"], evidence_groups, strict=True
+    evidence_payload = []
+    for subquestion, (results, evidence_ids) in zip(
+        case["subquestions"], evidence_groups, strict=True
+    ):
+        evidence_payload.append(
+            {
+                "subquestion_id": subquestion["id"],
+                "question": subquestion["question"],
+                "evidence": _evidence_payload(results, evidence_ids),
+            }
         )
-    ]
     base = {
         "case_id": case["case_id"],
         "split": case["split"],
@@ -426,23 +474,25 @@ def run_case_condition(
 
 def _error_rows(case: dict, repeat: int, hybrid: bool, error: Exception) -> list[dict]:
     groups = ("B10", "B11") if hybrid else ("B00", "B01")
-    return [
-        {
-            "case_id": case["case_id"],
-            "split": case["split"],
-            "language": case["language"],
-            "category": case["category"],
-            "repeat": repeat,
-            "group": group,
-            "error": f"{type(error).__name__}: {error}",
-            "metrics": {
-                "automated_grounded_pass": False,
-                "human_verified_complete_pass": None,
-                "human_review_status": "not_human_reviewed",
-            },
-        }
-        for group in groups
-    ]
+    rows = []
+    for group in groups:
+        rows.append(
+            {
+                "case_id": case["case_id"],
+                "split": case["split"],
+                "language": case["language"],
+                "category": case["category"],
+                "repeat": repeat,
+                "group": group,
+                "error": f"{type(error).__name__}: {error}",
+                "metrics": {
+                    "automated_grounded_pass": False,
+                    "human_verified_complete_pass": None,
+                    "human_review_status": "not_human_reviewed",
+                },
+            }
+        )
+    return rows
 
 
 def build_answer_results(
@@ -450,7 +500,10 @@ def build_answer_results(
 ) -> tuple[list, list, dict]:
     cases = selected_cases(split)
     candidates = FrozenEvidenceSet(retrieval_path)
-    tasks = [(case, repeat) for case in cases for repeat in range(1, repetitions + 1)]
+    tasks = []
+    for case in cases:
+        for repeat in range(1, repetitions + 1):
+            tasks.append((case, repeat))
     random.Random(SEED).shuffle(tasks)
     rows = []
     trajectories = []
@@ -468,6 +521,10 @@ def build_answer_results(
             except Exception as error:  # noqa: BLE001 - preserve condition error
                 rows.extend(_error_rows(case, repeat, hybrid, error))
             completed_conditions += 1
+            errors_so_far = 0
+            for item in rows:
+                if item["error"] is not None:
+                    errors_so_far += 1
             print(
                 json.dumps(
                     {
@@ -475,13 +532,16 @@ def build_answer_results(
                         "case_id": case["case_id"],
                         "repeat": repeat,
                         "condition": "hybrid" if hybrid else "sparse",
-                        "errors_so_far": sum(item["error"] is not None for item in rows),
+                        "errors_so_far": errors_so_far,
                     },
                     ensure_ascii=False,
                 ),
                 flush=True,
             )
-    error_count = sum(item["error"] is not None for item in rows)
+    error_count = 0
+    for item in rows:
+        if item["error"] is not None:
+            error_count += 1
     return (
         rows,
         trajectories,
@@ -535,7 +595,12 @@ def main() -> int:
         output_dir / "critic-trajectories.jsonl",
         output_dir / "answer-run-manifest.json",
     )
-    if any(path.exists() for path in output_paths):
+    output_already_exists = False
+    for path in output_paths:
+        if path.exists():
+            output_already_exists = True
+            break
+    if output_already_exists:
         parser.error("one or more answer ablation outputs already exist")
     api_key = os.environ.get("CODEINSIGHT_API_KEY")
     model_name = os.environ.get("CODEINSIGHT_MODEL")
@@ -572,9 +637,12 @@ def main() -> int:
             "summary": summary,
         },
     )
+    output_names = []
+    for path in output_paths:
+        output_names.append(str(path))
     print(
         json.dumps(
-            {"outputs": [str(path) for path in output_paths], "summary": summary},
+            {"outputs": output_names, "summary": summary},
             ensure_ascii=False,
         )
     )

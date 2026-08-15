@@ -26,18 +26,28 @@ def _load_document() -> dict:
 def _fake_search(root, question, *, limit, chunk_max_lines, retrieval_mode):
     del root, chunk_max_lines, retrieval_mode
     chunk = SourceChunk("src/shop/service.py", 10, 19, "def checkout...", "checkout")
-    return tuple(
-        RankedChunk(chunk=chunk, score=1.0, rank=rank, retrieval_reason="direct_match")
-        for rank in range(1, min(limit, 1) + 1)
-    )
+    results = []
+    for rank in range(1, min(limit, 1) + 1):
+        results.append(
+            RankedChunk(chunk=chunk, score=1.0, rank=rank, retrieval_reason="direct_match")
+        )
+    return tuple(results)
 
 
 def test_evidence_items_flatten_subquestion_evidence_without_duplicates() -> None:
     cases = _load_document()["cases"]
-    partial = next(case for case in cases if case["id"] == "t11-v2-multi-record-refund-a")
+    partial = None
+    for case in cases:
+        if case["id"] == "t11-v2-multi-record-refund-a":
+            partial = case
+            break
+    assert partial is not None
     evidence = evidence_items(partial)
     assert len(evidence) == 2
-    assert {item["path"] for item in evidence} == {
+    evidence_paths = set()
+    for item in evidence:
+        evidence_paths.add(item["path"])
+    assert evidence_paths == {
         "src/shop/customer/records.py",
         "src/shop/admin/records.py",
     }
@@ -45,10 +55,23 @@ def test_evidence_items_flatten_subquestion_evidence_without_duplicates() -> Non
 
 def test_case_groups_cover_required_task_11_dimensions() -> None:
     cases = _load_document()["cases"]
-    mixed = next(case for case in cases if case["language"] == "zh-en")
-    noisy = next(case for case in cases if case["category"] == "noisy_query")
-    multi = next(case for case in cases if case["category"] == "multi_intent")
-    semantic = next(case for case in cases if case["category"] == "semantic_paraphrase")
+    mixed = None
+    noisy = None
+    multi = None
+    semantic = None
+    for case in cases:
+        if mixed is None and case["language"] == "zh-en":
+            mixed = case
+        if noisy is None and case["category"] == "noisy_query":
+            noisy = case
+        if multi is None and case["category"] == "multi_intent":
+            multi = case
+        if semantic is None and case["category"] == "semantic_paraphrase":
+            semantic = case
+    assert mixed is not None
+    assert noisy is not None
+    assert multi is not None
+    assert semantic is not None
 
     assert "mixed_language" in case_groups(mixed)
     assert "typo_or_noise" in case_groups(noisy)
@@ -67,7 +90,11 @@ def test_insufficient_cases_are_excluded_from_retrieval_scores() -> None:
         assert metrics["case_count"] == 100
         assert metrics["applicable_case_count"] == 92
         assert metrics["failure_counts"].get("insufficient_evidence", 0) == 0
-    assert sum(not evidence_items(case) for case in cases) == 8
+    without_evidence = 0
+    for case in cases:
+        if not evidence_items(case):
+            without_evidence += 1
+    assert without_evidence == 8
 
 
 def test_aggregate_metrics_are_zero_safe() -> None:

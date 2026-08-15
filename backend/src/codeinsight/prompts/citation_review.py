@@ -109,19 +109,32 @@ def parse_citation_review(content: str, supplied_ids: frozenset[str]) -> Citatio
     feedback = payload.get("feedback")
     if verdict not in SUPPORTED_REVIEW_VERDICTS:
         raise ModelResponseError("引用审查结果包含不支持的 verdict")
-    if (
-        not isinstance(citations, list)
-        or not citations
-        or not all(isinstance(item, str) for item in citations)
-    ):
+    citations_are_strings = True
+    if isinstance(citations, list):
+        for item in citations:
+            if not isinstance(item, str):
+                citations_are_strings = False
+                break
+    else:
+        citations_are_strings = False
+    if not citations_are_strings or not citations:
         raise ModelResponseError("引用审查结果必须包含支持的 evidence ID")
-    unknown = [item for item in citations if item not in supplied_ids]
+
+    unknown: list[str] = []
+    for item in citations:
+        if item not in supplied_ids:
+            unknown.append(item)
     if unknown:
         raise ModelResponseError(f"引用审查结果使用了未知 evidence ID：{unknown[0]}")
     if not isinstance(feedback, str) or not feedback.strip():
         raise ModelResponseError("引用审查 feedback 不能为空")
+    unique_citations: list[str] = []
+    for citation in citations:
+        if citation not in unique_citations:
+            unique_citations.append(citation)
+
     return CitationReview(
         verdict=verdict,
-        supported_evidence_ids=tuple(dict.fromkeys(citations)),
+        supported_evidence_ids=tuple(unique_citations),
         feedback=feedback.strip(),
     )

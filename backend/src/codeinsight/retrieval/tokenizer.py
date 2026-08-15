@@ -30,7 +30,14 @@ _QUERY_STOP_WORDS = frozenset(
 
 
 def _unique(tokens: list[str]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(tokens))
+    unique_tokens: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        unique_tokens.append(token)
+    return tuple(unique_tokens)
 
 
 def tokenize_terms(text: str) -> tuple[str, ...]:
@@ -39,8 +46,11 @@ def tokenize_terms(text: str) -> tuple[str, ...]:
     for match in _IDENTIFIER.findall(text):
         lowered = match.lower()
         tokens.append(lowered)
-        tokens.extend(part for part in lowered.split("_") if part)
-        tokens.extend(part.lower() for part in _CAMEL_PART.findall(match))
+        for part in lowered.split("_"):
+            if part:
+                tokens.append(part)
+        for part in _CAMEL_PART.findall(match):
+            tokens.append(part.lower())
     return tuple(tokens)
 
 
@@ -60,4 +70,8 @@ def tokenize_path(path: str) -> tuple[str, ...]:
 
 def tokenize_query(text: str) -> tuple[str, ...]:
     """对查询分词，并移除常见疑问词。"""
-    return tuple(token for token in tokenize(text) if token not in _QUERY_STOP_WORDS)
+    query_tokens: list[str] = []
+    for token in tokenize(text):
+        if token not in _QUERY_STOP_WORDS:
+            query_tokens.append(token)
+    return tuple(query_tokens)

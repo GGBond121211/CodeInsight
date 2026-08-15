@@ -50,13 +50,28 @@ SELECTED_CASE_IDS = (
 
 def build_document() -> dict:
     source = json.loads(SOURCE_PATH.read_text(encoding="utf-8"))
-    by_id = {case["id"]: case for case in source["cases"]}
-    missing = [case_id for case_id in SELECTED_CASE_IDS if case_id not in by_id]
+    by_id = {}
+    for case in source["cases"]:
+        by_id[case["id"]] = case
+    missing = []
+    for case_id in SELECTED_CASE_IDS:
+        if case_id not in by_id:
+            missing.append(case_id)
     if missing:
         raise ValueError(f"selected temporary cases are missing: {missing}")
-    cases = [deepcopy(by_id[case_id]) for case_id in SELECTED_CASE_IDS]
-    if len(cases) != 30 or len({case["id"] for case in cases}) != 30:
+    cases = []
+    for case_id in SELECTED_CASE_IDS:
+        cases.append(deepcopy(by_id[case_id]))
+    case_ids = set()
+    for case in cases:
+        case_ids.add(case["id"])
+    if len(cases) != 30 or len(case_ids) != 30:
         raise ValueError("temporary asset must contain 30 unique cases")
+    categories = []
+    languages = []
+    for case in cases:
+        categories.append(case["category"])
+        languages.append(case["language"])
     return {
         "schema_version": 1,
         "case_set": "task11_multilingual_temporary_30",
@@ -72,8 +87,8 @@ def build_document() -> dict:
                 "hand-curated coverage of every category, both zh/zh-en forms, and hard variants"
             ),
             "case_count": 30,
-            "categories": dict(sorted(Counter(case["category"] for case in cases).items())),
-            "languages": dict(sorted(Counter(case["language"] for case in cases).items())),
+            "categories": dict(sorted(Counter(categories).items())),
+            "languages": dict(sorted(Counter(languages).items())),
             "preserves_original_cases": True,
         },
         "cases": cases,

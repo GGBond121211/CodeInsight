@@ -73,7 +73,9 @@ def test_document_shape() -> None:
     assert document["fixture"] == EXPECTED_FIXTURE
     cases = document["cases"]
     assert len(cases) == EXPECTED_CASE_COUNT
-    ids = [case["id"] for case in cases]
+    ids = []
+    for case in cases:
+        ids.append(case["id"])
     assert len(ids) == len(set(ids))
     assert OLD_CASE_IDS <= set(ids)
     assert HARD_CASE_IDS <= set(ids)
@@ -82,7 +84,9 @@ def test_document_shape() -> None:
 
 def test_required_categories_and_protects() -> None:
     cases = _load_cases()["cases"]
-    categories = {case["category"] for case in cases}
+    categories = set()
+    for case in cases:
+        categories.add(case["category"])
     assert REQUIRED_CATEGORIES <= categories
     for case in cases:
         assert case["id"]

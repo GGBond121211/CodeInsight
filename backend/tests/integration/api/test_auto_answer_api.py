@@ -23,7 +23,10 @@ FIXTURE_ROOT = BACKEND_ROOT / "backend" / "tests" / "fixtures" / "sample_repo"
 class _FakeEmbedding:
     @staticmethod
     def embed(texts):
-        return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+        vectors = []
+        for _ in texts:
+            vectors.append((1.0, 0.0))
+        return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
 class _FakeAutoModel:
@@ -66,9 +69,16 @@ def _router_payload() -> str:
     )
 
 
+def _model_factory(model):
+    def factory():
+        return model
+
+    return factory
+
+
 def test_auto_answer_returns_plan_subquestion_and_router_usage() -> None:
     model = _FakeAutoModel(_router_payload())
-    client = TestClient(create_app(lambda: model, _FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(create_app(_model_factory(model), _FakeEmbedding))  # type: ignore[arg-type]
 
     response = client.post(
         "/api/v1/auto/answer",
@@ -92,7 +102,7 @@ def test_auto_answer_returns_plan_subquestion_and_router_usage() -> None:
 
 def test_auto_answer_invalid_router_output_uses_linear_bm25_fallback() -> None:
     model = _FakeAutoModel("not-json")
-    client = TestClient(create_app(lambda: model, _FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(create_app(_model_factory(model), _FakeEmbedding))  # type: ignore[arg-type]
 
     response = client.post(
         "/api/v1/auto/answer",
@@ -159,9 +169,8 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
         30,
         10,
     )
-    monkeypatch.setattr(
-        "codeinsight.api.routes.run_citation_agent",
-        lambda *_args, **_kwargs: AgentRepositoryAnswer(
+    def fake_run_citation_agent(*_args, **_kwargs):
+        return AgentRepositoryAnswer(
             combined,
             0,
             (AgentEvent(1, "finalize", "Combined independent answers."),),
@@ -169,9 +178,13 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
             10,
             4,
             (validation, pricing),
-        ),
+        )
+
+    monkeypatch.setattr(
+        "codeinsight.api.routes.run_citation_agent",
+        fake_run_citation_agent,
     )
-    client = TestClient(create_app(lambda: model, _FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(create_app(_model_factory(model), _FakeEmbedding))  # type: ignore[arg-type]
 
     response = client.post(
         "/api/v1/auto/answer",
@@ -184,11 +197,16 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
     assert response.status_code == 200
     payload = response.json()
     assert payload["outcome"] == "partially_answered"
-    assert [item["outcome"] for item in payload["subquestions"]] == [
+    outcomes = []
+    answers = []
+    for item in payload["subquestions"]:
+        outcomes.append(item["outcome"])
+        answers.append(item["answer"])
+    assert outcomes == [
         "answered",
         "insufficient_evidence",
     ]
-    assert [item["answer"] for item in payload["subquestions"]] == [
+    assert answers == [
         "Validation answer.",
         "Pricing evidence is insufficient.",
     ]

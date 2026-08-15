@@ -80,10 +80,17 @@ def _failed_case_ids(cases: list[dict], chunks, retrieval_mode: str) -> list[str
         if not evidence:
             continue
         results = search(case["input"]["question"], chunks, limit=5)
-        if not all(
-            any(_covers(result.chunk, evidence_item) for result in results)
-            for evidence_item in evidence
-        ):
+        covers_all = True
+        for evidence_item in evidence:
+            evidence_is_covered = False
+            for result in results:
+                if _covers(result.chunk, evidence_item):
+                    evidence_is_covered = True
+                    break
+            if not evidence_is_covered:
+                covers_all = False
+                break
+        if not covers_all:
             failed.append(case["id"])
     return failed
 
@@ -121,10 +128,9 @@ def main() -> int:
         "BM25 body scoring with code-retrieval field bonuses.",
         "No embedding, vector retrieval, query rewriting, or synonym table was used.",
     ]
-    delta = {
-        metric: bm25_payload[metric] - lexical_payload[metric]
-        for metric in ("top1", "mean_reciprocal_rank", "recall_at_5", "valid_evidence_rate")
-    }
+    delta = {}
+    for metric in ("top1", "mean_reciprocal_rank", "recall_at_5", "valid_evidence_rate"):
+        delta[metric] = bm25_payload[metric] - lexical_payload[metric]
     comparison = {
         "case_count": lexical_payload["case_count"],
         "applicable_case_count": lexical_payload["applicable_case_count"],

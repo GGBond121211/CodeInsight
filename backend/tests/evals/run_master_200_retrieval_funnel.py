@@ -96,62 +96,132 @@ def _expected(case: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _stage_metrics(expected: list[dict[str, Any]], results) -> dict[str, Any]:
-    strict_hits = [any(_covers(result, item) for result in results) for item in expected]
-    overlap_hits = [any(_overlaps(result, item) for result in results) for item in expected]
+    strict_hits = []
+    for item in expected:
+        item_is_covered = False
+        for result in results:
+            if _covers(result, item):
+                item_is_covered = True
+                break
+        strict_hits.append(item_is_covered)
+
+    overlap_hits = []
+    for item in expected:
+        item_is_overlapped = False
+        for result in results:
+            if _overlaps(result, item):
+                item_is_overlapped = True
+                break
+        overlap_hits.append(item_is_overlapped)
+
+    strict_hit_count = 0
+    for was_hit in strict_hits:
+        if was_hit:
+            strict_hit_count += 1
+    overlap_hit_count = 0
+    for was_hit in overlap_hits:
+        if was_hit:
+            overlap_hit_count += 1
+    strict_complete = True
+    for was_hit in strict_hits:
+        if not was_hit:
+            strict_complete = False
+            break
+    overlap_complete = True
+    for was_hit in overlap_hits:
+        if not was_hit:
+            overlap_complete = False
+            break
     return {
-        "strict_recall": sum(strict_hits) / len(strict_hits) if strict_hits else 1.0,
-        "overlap_recall": sum(overlap_hits) / len(overlap_hits) if overlap_hits else 1.0,
-        "strict_complete": all(strict_hits),
-        "overlap_complete": all(overlap_hits),
+        "strict_recall": strict_hit_count / len(strict_hits) if strict_hits else 1.0,
+        "overlap_recall": overlap_hit_count / len(overlap_hits) if overlap_hits else 1.0,
+        "strict_complete": strict_complete,
+        "overlap_complete": overlap_complete,
     }
 
 
 def _citation_metrics(expected: list[dict[str, Any]], row: dict[str, Any]) -> dict[str, Any]:
     citations = (row.get("result") or {}).get("citations", ())
-    strict_hits = [
-        any(
-            citation_covers(
-                type(
-                    "Citation",
-                    (),
-                    {
-                        "relative_path": citation["relative_path"],
-                        "start_line": citation["start_line"],
-                        "end_line": citation["end_line"],
-                    },
-                )(),
-                item,
-            )
-            for citation in citations
-        )
-        for item in expected
-    ]
-    overlap_hits = [
-        any(_citation_overlaps(citation, item) for citation in citations) for item in expected
-    ]
+    strict_hits = []
+    for item in expected:
+        item_is_covered = False
+        for citation in citations:
+            citation_object = type(
+                "Citation",
+                (),
+                {
+                    "relative_path": citation["relative_path"],
+                    "start_line": citation["start_line"],
+                    "end_line": citation["end_line"],
+                },
+            )()
+            if citation_covers(citation_object, item):
+                item_is_covered = True
+                break
+        strict_hits.append(item_is_covered)
+
+    overlap_hits = []
+    for item in expected:
+        item_is_overlapped = False
+        for citation in citations:
+            if _citation_overlaps(citation, item):
+                item_is_overlapped = True
+                break
+        overlap_hits.append(item_is_overlapped)
+
+    strict_hit_count = 0
+    for was_hit in strict_hits:
+        if was_hit:
+            strict_hit_count += 1
+    overlap_hit_count = 0
+    for was_hit in overlap_hits:
+        if was_hit:
+            overlap_hit_count += 1
+    strict_complete = True
+    for was_hit in strict_hits:
+        if not was_hit:
+            strict_complete = False
+            break
+    overlap_complete = True
+    for was_hit in overlap_hits:
+        if not was_hit:
+            overlap_complete = False
+            break
     return {
-        "strict_recall": sum(strict_hits) / len(strict_hits) if strict_hits else 1.0,
-        "overlap_recall": sum(overlap_hits) / len(overlap_hits) if overlap_hits else 1.0,
-        "strict_complete": all(strict_hits),
-        "overlap_complete": all(overlap_hits),
+        "strict_recall": strict_hit_count / len(strict_hits) if strict_hits else 1.0,
+        "overlap_recall": overlap_hit_count / len(overlap_hits) if overlap_hits else 1.0,
+        "strict_complete": strict_complete,
+        "overlap_complete": overlap_complete,
     }
 
 
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     stages = ("raw_union", "fused_top20", "reranked_top5", "final_citations")
+    expected_evidence_counts = []
+    coverable_rates = []
+    for row in rows:
+        expected_evidence_counts.append(row["expected_evidence_count"])
+        coverable_rates.append(row["annotation_single_chunk_coverable_rate"])
     result = {
         "case_count": len(rows),
-        "expected_evidence_count": sum(row["expected_evidence_count"] for row in rows),
-        "annotation_single_chunk_coverable_rate": mean(
-            row["annotation_single_chunk_coverable_rate"] for row in rows
-        ),
+        "expected_evidence_count": sum(expected_evidence_counts),
+        "annotation_single_chunk_coverable_rate": mean(coverable_rates),
     }
     for stage in stages:
+        strict_recall_values = []
+        overlap_recall_values = []
+        strict_complete_values = []
+        overlap_complete_values = []
+        for row in rows:
+            strict_recall_values.append(row[stage]["strict_recall"])
+            overlap_recall_values.append(row[stage]["overlap_recall"])
+            strict_complete_values.append(row[stage]["strict_complete"])
+            overlap_complete_values.append(row[stage]["overlap_complete"])
         result[stage] = {
-            "strict_recall": mean(row[stage]["strict_recall"] for row in rows),
-            "overlap_recall": mean(row[stage]["overlap_recall"] for row in rows),
-            "strict_complete_case_rate": mean(row[stage]["strict_complete"] for row in rows),
-            "overlap_complete_case_rate": mean(row[stage]["overlap_complete"] for row in rows),
+            "strict_recall": mean(strict_recall_values),
+            "overlap_recall": mean(overlap_recall_values),
+            "strict_complete_case_rate": mean(strict_complete_values),
+            "overlap_complete_case_rate": mean(overlap_complete_values),
         }
     return result
 
@@ -163,17 +233,26 @@ def main() -> int:
     args = parser.parse_args()
     repositories = args.repository or ["httpx", "click", "requests"]
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-    metadata = {item["id"]: item for item in document["repositories"]}
-    cases = [case for case in document["cases"] if case["repository_id"] in repositories]
+    metadata = {}
+    for item in document["repositories"]:
+        metadata[item["id"]] = item
+    cases = []
+    for case in document["cases"]:
+        if case["repository_id"] in repositories:
+            cases.append(case)
     latest = _latest_results()
-    planned_query_count = sum(
-        max(1, len(latest[case["id"]]["router"]["plan"]["subquestions"])) for case in cases
-    )
+    planned_query_count = 0
+    for case in cases:
+        subquestion_count = len(latest[case["id"]]["router"]["plan"]["subquestions"])
+        planned_query_count += max(1, subquestion_count)
+    repository_case_ids = []
+    for case in cases:
+        repository_case_ids.append(case["repository_id"])
     print(
         json.dumps(
             {
                 "case_count": len(cases),
-                "repositories": dict(Counter(case["repository_id"] for case in cases)),
+                "repositories": dict(Counter(repository_case_ids)),
                 "embedding_index_builds": len(repositories),
                 "embedding_query_calls": planned_query_count,
                 "chat_calls": 0,
@@ -192,12 +271,18 @@ def main() -> int:
         semantic_index = build_repository_semantic_index(
             root, chunk_max_lines=CHUNK_MAX_LINES, semantic_embed=embed_model.embed
         )
-        for case in (item for item in cases if item["repository_id"] == repository_id):
+        repository_cases = []
+        for item in cases:
+            if item["repository_id"] == repository_id:
+                repository_cases.append(item)
+        for case in repository_cases:
             row = latest[case["id"]]
             plan = row["router"]["plan"]
-            queries = [item["question"] for item in plan["subquestions"]] or [
-                case["input"]["question"]
-            ]
+            queries = []
+            for item in plan["subquestions"]:
+                queries.append(item["question"])
+            if not queries:
+                queries.append(case["input"]["question"])
             raw_by_key = {}
             fused_by_key = {}
             reranked_by_key = {}
@@ -207,8 +292,9 @@ def main() -> int:
                     query, semantic_index, embed_model.embed, limit=SOURCE_LIMIT
                 )
                 sources = (("bm25", bm25), ("semantic", semantic))
-                for item in (value for _, values in sources for value in values):
-                    raw_by_key[_key(item)] = item
+                for _, values in sources:
+                    for item in values:
+                        raw_by_key[_key(item)] = item
                 for item in fuse_ranked_chunks(sources, limit=SOURCE_LIMIT):
                     fused_by_key[_key(item)] = item
                 for item in rerank_ranked_chunks(query, sources, limit=FINAL_LIMIT):
@@ -217,15 +303,26 @@ def main() -> int:
             fused = tuple(fused_by_key.values())
             reranked = tuple(reranked_by_key.values())
             expected = _expected(case)
-            coverable = [any(_covers(chunk, item) for chunk in chunks) for item in expected]
+            coverable = []
+            for item in expected:
+                item_is_coverable = False
+                for chunk in chunks:
+                    if _covers(chunk, item):
+                        item_is_coverable = True
+                        break
+                coverable.append(item_is_coverable)
+            coverable_count = 0
+            for was_coverable in coverable:
+                if was_coverable:
+                    coverable_count += 1
             rows.append(
                 {
                     "case_id": case["id"],
                     "repository_id": repository_id,
                     "queries": queries,
-                    "expected_evidence_count": len(expected),
-                    "annotation_single_chunk_coverable_rate": (
-                        sum(coverable) / len(coverable) if coverable else 1.0
+                        "expected_evidence_count": len(expected),
+                        "annotation_single_chunk_coverable_rate": (
+                        coverable_count / len(coverable) if coverable else 1.0
                     ),
                     "raw_union": _stage_metrics(expected, raw),
                     "fused_top20": _stage_metrics(expected, fused),
@@ -238,16 +335,19 @@ def main() -> int:
                 flush=True,
             )
 
+    by_repository = {}
+    for repository_id in repositories:
+        repository_rows = []
+        for row in rows:
+            if row["repository_id"] == repository_id:
+                repository_rows.append(row)
+        by_repository[repository_id] = _summarize(repository_rows)
+
     payload = {
         "schema_version": 1,
         "case_count": len(rows),
         "summary": _summarize(rows),
-        "by_repository": {
-            repository_id: _summarize(
-                [row for row in rows if row["repository_id"] == repository_id]
-            )
-            for repository_id in repositories
-        },
+        "by_repository": by_repository,
         "rows": rows,
         "notes": [
             "Strict recall requires one chunk or citation to contain the full expected span.",

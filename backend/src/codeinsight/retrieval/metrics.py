@@ -87,7 +87,10 @@ def evaluate_cases(
     ``insufficient_evidence`` 用例会计数但不会搜索，``reason_code`` 不会贡献任何分数。
     """
     case_count = len(cases)
-    applicable = [case for case in cases if _evidence_items(case)]
+    applicable: list[dict] = []
+    for case in cases:
+        if _evidence_items(case):
+            applicable.append(case)
     if not applicable:
         return _zero_metrics(case_count)
 
@@ -105,24 +108,44 @@ def evaluate_cases(
             retrieval_mode=retrieval_mode,
         )
         returned_total += len(results)
-        returned_valid += sum(1 for item in results if _is_valid(item.chunk))
-        if results and all(_covers(results[0].chunk, item) for item in evidence):
+        for item in results:
+            if _is_valid(item.chunk):
+                returned_valid += 1
+
+        top1_covers_all = bool(results)
+        if top1_covers_all:
+            for item in evidence:
+                if not _covers(results[0].chunk, item):
+                    top1_covers_all = False
+                    break
+        if top1_covers_all:
             top1_hits += 1
         covering_rank = _coverage_rank(results, evidence)
         reciprocal_ranks.append(1.0 / covering_rank if covering_rank else 0.0)
-        if all(
-            any(_covers(result.chunk, evidence_item) for result in results)
-            for evidence_item in evidence
-        ):
+
+        covers_all = True
+        for evidence_item in evidence:
+            item_is_covered = False
+            for result in results:
+                if _covers(result.chunk, evidence_item):
+                    item_is_covered = True
+                    break
+            if not item_is_covered:
+                covers_all = False
+                break
+        if covers_all:
             recall_hits += 1
 
     applicable_count = len(applicable)
     valid_rate = returned_valid / returned_total if returned_total else 0.0
+    reciprocal_rank_total = 0.0
+    for reciprocal_rank in reciprocal_ranks:
+        reciprocal_rank_total += reciprocal_rank
     return RetrievalMetrics(
         case_count=case_count,
         applicable_case_count=applicable_count,
         top1=top1_hits / applicable_count,
-        mean_reciprocal_rank=sum(reciprocal_ranks) / applicable_count,
+        mean_reciprocal_rank=reciprocal_rank_total / applicable_count,
         recall_at_5=recall_hits / applicable_count,
         valid_evidence_rate=valid_rate,
     )

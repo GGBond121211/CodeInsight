@@ -37,14 +37,16 @@ def citation_overlaps(citation: AnswerCitation, evidence: dict) -> bool:
 
 def citations_jointly_cover(citations: Sequence[AnswerCitation], evidence: dict) -> bool:
     """判断同一文件中的多个引用是否共同覆盖完整要求。"""
-    intervals = sorted(
-        (
-            max(citation.start_line, evidence["start_line"]),
-            min(citation.end_line, evidence["end_line"]),
-        )
-        for citation in citations
-        if citation_overlaps(citation, evidence)
-    )
+    intervals: list[tuple[int, int]] = []
+    for citation in citations:
+        if citation_overlaps(citation, evidence):
+            intervals.append(
+                (
+                    max(citation.start_line, evidence["start_line"]),
+                    min(citation.end_line, evidence["end_line"]),
+                )
+            )
+    intervals.sort()
     if not intervals:
         return False
     covered_until = evidence["start_line"] - 1
@@ -94,11 +96,22 @@ def answer_failure_types(
     if result.outcome != expected["outcome"]:
         failures.append("outcome")
 
-    has_citation_failure = any(
-        not citation_is_valid(citation, fixture_root)
-        or not any(citation_overlaps(citation, item) for item in requirements)
-        for citation in result.citations
-    ) or any(not citations_jointly_cover(result.citations, item) for item in requirements)
+    has_citation_failure = False
+    for citation in result.citations:
+        citation_overlaps_requirement = False
+        for item in requirements:
+            if citation_overlaps(citation, item):
+                citation_overlaps_requirement = True
+                break
+        citation_is_usable = citation_is_valid(citation, fixture_root)
+        if not citation_is_usable or not citation_overlaps_requirement:
+            has_citation_failure = True
+            break
+    if not has_citation_failure:
+        for item in requirements:
+            if not citations_jointly_cover(result.citations, item):
+                has_citation_failure = True
+                break
     if has_citation_failure:
         failures.append("citation")
 
@@ -107,7 +120,11 @@ def answer_failure_types(
         terms_pass = result.outcome == INSUFFICIENT_EVIDENCE and not result.citations
     else:
         folded_answer = result.answer.casefold()
-        terms_pass = all(term.casefold() in folded_answer for term in required_terms)
+        terms_pass = True
+        for term in required_terms:
+            if term.casefold() not in folded_answer:
+                terms_pass = False
+                break
     if not terms_pass:
         failures.append("required_terms")
     return failures
@@ -140,23 +157,32 @@ def evaluate_answer_results(
             outcome_hits += 1
 
         citation_total += len(result.citations)
-        valid_citations += sum(
-            citation_is_valid(citation, fixture_root) for citation in result.citations
-        )
-        citation_hits += sum(
-            any(citation_overlaps(citation, item) for item in requirements)
-            for citation in result.citations
-        )
-        evidence_hits += sum(
-            citations_jointly_cover(result.citations, item) for item in requirements
-        )
+        for citation in result.citations:
+            if citation_is_valid(citation, fixture_root):
+                valid_citations += 1
+
+            citation_hits_requirement = False
+            for item in requirements:
+                if citation_overlaps(citation, item):
+                    citation_hits_requirement = True
+                    break
+            if citation_hits_requirement:
+                citation_hits += 1
+
+        for item in requirements:
+            if citations_jointly_cover(result.citations, item):
+                evidence_hits += 1
 
         required_terms = case.get("required_terms", ())
         if expected_outcome == INSUFFICIENT_EVIDENCE:
             term_case_passes = result.outcome == INSUFFICIENT_EVIDENCE and not result.citations
         else:
             folded_answer = result.answer.casefold()
-            term_case_passes = all(term.casefold() in folded_answer for term in required_terms)
+            term_case_passes = True
+            for term in required_terms:
+                if term.casefold() not in folded_answer:
+                    term_case_passes = False
+                    break
         required_term_case_hits += int(term_case_passes)
 
     case_count = len(cases)

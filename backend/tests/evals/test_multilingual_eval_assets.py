@@ -83,31 +83,52 @@ def test_document_shape_and_coverage() -> None:
 
     cases = document["cases"]
     assert len(cases) == EXPECTED_CASE_COUNT
-    ids = [case["id"] for case in cases]
+    ids = []
+    for case in cases:
+        ids.append(case["id"])
     assert len(ids) == len(set(ids))
-    assert all(case_id.startswith("t11-v2-") for case_id in ids)
+    for case_id in ids:
+        assert case_id.startswith("t11-v2-")
 
-    languages = {case["language"] for case in cases}
+    languages = set()
+    language_values = []
+    categories = []
+    scenarios_list = []
+    for case in cases:
+        languages.add(case["language"])
+        language_values.append(case["language"])
+        categories.append(case["category"])
+        scenarios_list.append(case["scenario"])
     assert languages == REQUIRED_LANGUAGES
-    assert sum(case["language"] == "zh" for case in cases) == 50
-    assert sum(case["language"] == "zh-en" for case in cases) == 50
-    assert Counter(case["category"] for case in cases) == EXPECTED_CATEGORY_COUNTS
+    assert language_values.count("zh") == 50
+    assert language_values.count("zh-en") == 50
+    assert Counter(categories) == EXPECTED_CATEGORY_COUNTS
     assert set(EXPECTED_CATEGORY_COUNTS) == REQUIRED_CATEGORIES
 
-    scenarios = Counter(case["scenario"] for case in cases)
+    scenarios = Counter(scenarios_list)
     assert len(scenarios) == EXPECTED_SCENARIO_COUNT
     assert set(scenarios.values()) == {4}
     for scenario in scenarios:
-        variants = [case for case in cases if case["scenario"] == scenario]
-        assert Counter(case["language"] for case in variants) == {"zh": 2, "zh-en": 2}
+        variants = []
+        for case in cases:
+            if case["scenario"] == scenario:
+                variants.append(case)
+        variant_languages = []
+        for case in variants:
+            variant_languages.append(case["language"])
+        assert Counter(variant_languages) == {"zh": 2, "zh-en": 2}
 
 
 def test_cases_are_nontrivial_and_do_not_duplicate_frozen_cases() -> None:
     document = _load_cases()
     with BASE_CASES_PATH.open(encoding="utf-8") as handle:
         frozen_cases = json.load(handle)["cases"]
-    frozen_questions = {case["input"].get("question") for case in frozen_cases}
-    questions = [case["input"]["question"] for case in document["cases"]]
+    frozen_questions = set()
+    for case in frozen_cases:
+        frozen_questions.add(case["input"].get("question"))
+    questions = []
+    for case in document["cases"]:
+        questions.append(case["input"]["question"])
     assert len(questions) == len(set(questions))
 
     for case in document["cases"]:
@@ -125,9 +146,11 @@ def test_cases_are_nontrivial_and_do_not_duplicate_frozen_cases() -> None:
 
 def test_cases_cover_realistic_conflict_and_noise_patterns() -> None:
     cases = _load_cases()["cases"]
-    feature_counts = Counter(
-        feature for case in cases for feature in set(case["challenge_features"])
-    )
+    features = []
+    for case in cases:
+        for feature in set(case["challenge_features"]):
+            features.append(feature)
+    feature_counts = Counter(features)
 
     assert REQUIRED_CHALLENGE_FEATURES <= set(feature_counts)
     assert feature_counts["mixed_language"] == 50
@@ -170,7 +193,8 @@ def test_outcome_contracts_are_consistent() -> None:
         if outcome == "answered":
             assert expected.get("evidence") or subquestions
             if subquestions:
-                assert all(item["outcome"] == "answered" for item in subquestions)
+                for item in subquestions:
+                    assert item["outcome"] == "answered"
 
         if outcome == "insufficient_evidence":
             assert not list(_iter_evidence(expected))
@@ -178,7 +202,9 @@ def test_outcome_contracts_are_consistent() -> None:
 
         if outcome == "partially_answered":
             assert subquestions
-            sub_outcomes = {item["outcome"] for item in subquestions}
+            sub_outcomes = set()
+            for item in subquestions:
+                sub_outcomes.add(item["outcome"])
             assert "answered" in sub_outcomes
             assert "insufficient_evidence" in sub_outcomes
 

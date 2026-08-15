@@ -42,7 +42,11 @@ except ImportError:  # Direct script execution.
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line:
+            rows.append(json.loads(line))
+    return rows
 
 
 def _mean(values: list[float]) -> float | None:
@@ -69,11 +73,15 @@ def _case_values(rows: list[dict], group: str, metric: str) -> dict[str, list[fl
 def _paired_differences(
     rows: list[dict], left: str, right: str, metric: str
 ) -> dict[str, list[float]]:
-    values = {
-        (row["case_id"], row["repeat"], row["group"]): _row_value(row, metric) for row in rows
-    }
+    values = {}
+    for row in rows:
+        key = (row["case_id"], row["repeat"], row["group"])
+        values[key] = _row_value(row, metric)
     differences: defaultdict[str, list[float]] = defaultdict(list)
-    pairs = sorted({(row["case_id"], row["repeat"]) for row in rows})
+    pairs = set()
+    for row in rows:
+        pairs.add((row["case_id"], row["repeat"]))
+    pairs = sorted(pairs)
     for case_id, repeat in pairs:
         left_key = (case_id, repeat, left)
         right_key = (case_id, repeat, right)
@@ -84,10 +92,13 @@ def _paired_differences(
 
 def _case_binary(rows: list[dict], group: str, metric: str) -> dict[str, bool]:
     values = _case_values(rows, group, metric)
-    return {
-        case_id: majority(tuple(bool(value) for value in repeats))
-        for case_id, repeats in values.items()
-    }
+    result = {}
+    for case_id, repeats in values.items():
+        boolean_repeats = []
+        for value in repeats:
+            boolean_repeats.append(bool(value))
+        result[case_id] = majority(tuple(boolean_repeats))
+    return result
 
 
 def _case_macro_metric(
@@ -103,7 +114,10 @@ def _case_macro_metric(
         value = row.get("metrics", {}).get(metric)
         if value is not None:
             values[row["case_id"]].append(float(value))
-    case_means = [sum(items) / len(items) for items in values.values() if items]
+    case_means = []
+    for items in values.values():
+        if items:
+            case_means.append(sum(items) / len(items))
     return _mean(case_means)
 
 
@@ -113,9 +127,14 @@ def _effect(rows: list[dict], left: str, right: str, metric: str) -> dict[str, A
     left_binary = _case_binary(rows, left, metric)
     right_binary = _case_binary(rows, right, metric)
     common = sorted(left_binary.keys() & right_binary.keys())
+    left_values = []
+    right_values = []
+    for case_id in common:
+        left_values.append(left_binary[case_id])
+        right_values.append(right_binary[case_id])
     binary = exact_mcnemar(
-        tuple(left_binary[case_id] for case_id in common),
-        tuple(right_binary[case_id] for case_id in common),
+        tuple(left_values),
+        tuple(right_values),
     )
     return {
         "comparison": f"{right} - {left}",
@@ -126,26 +145,47 @@ def _effect(rows: list[dict], left: str, right: str, metric: str) -> dict[str, A
 
 
 def _group_summary(rows: list[dict], group: str) -> dict[str, Any]:
-    selected = [row for row in rows if row["group"] == group]
-    elapsed = [
-        float(row["elapsed_milliseconds"])
-        for row in selected
-        if row.get("elapsed_milliseconds") is not None
-    ]
+    selected = []
+    for row in rows:
+        if row["group"] == group:
+            selected.append(row)
+    elapsed = []
+    for row in selected:
+        if row.get("elapsed_milliseconds") is not None:
+            elapsed.append(float(row["elapsed_milliseconds"]))
     automated = _case_binary(rows, group, "automated_grounded_pass")
-    human_rows = [
-        row
-        for row in selected
-        if row.get("metrics", {}).get("human_verified_complete_pass") is not None
-    ]
+    human_rows = []
+    for row in selected:
+        if row.get("metrics", {}).get("human_verified_complete_pass") is not None:
+            human_rows.append(row)
+    case_ids = set()
+    for row in selected:
+        case_ids.add(row["case_id"])
+    human_values = []
+    for row in human_rows:
+        human_values.append(float(row["metrics"]["human_verified_complete_pass"]))
+    automated_pass_count = 0
+    for passed in automated.values():
+        if passed:
+            automated_pass_count += 1
+    error_count = 0
+    model_calls = 0
+    input_tokens = 0
+    output_tokens = 0
+    for row in selected:
+        if row.get("error"):
+            error_count += 1
+        model_calls += int(row.get("model_calls", 0))
+        input_tokens += int(row.get("input_tokens", 0))
+        output_tokens += int(row.get("output_tokens", 0))
     return {
         "case_run_count": len(selected),
-        "case_count": len({row["case_id"] for row in selected}),
+        "case_count": len(case_ids),
         "automated_grounded_pass_case_rate": (
-            sum(automated.values()) / len(automated) if automated else None
+            automated_pass_count / len(automated) if automated else None
         ),
         "human_verified_complete_pass_case_rate": (
-            _mean([float(row["metrics"]["human_verified_complete_pass"]) for row in human_rows])
+            _mean(human_values)
             if human_rows
             else None
         ),
@@ -155,10 +195,10 @@ def _group_summary(rows: list[dict], group: str) -> dict[str, Any]:
         "evidence_recall": _case_macro_metric(
             selected, "evidence_recall", omit_insufficient_recall=True
         ),
-        "errors": sum(bool(row.get("error")) for row in selected),
-        "model_calls": sum(int(row.get("model_calls", 0)) for row in selected),
-        "input_tokens": sum(int(row.get("input_tokens", 0)) for row in selected),
-        "output_tokens": sum(int(row.get("output_tokens", 0)) for row in selected),
+        "errors": error_count,
+        "model_calls": model_calls,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "mean_elapsed_milliseconds": _mean(elapsed),
         "p95_elapsed_milliseconds": nearest_rank_percentile(elapsed, 0.95),
         "max_elapsed_milliseconds": max(elapsed) if elapsed else None,
@@ -166,15 +206,16 @@ def _group_summary(rows: list[dict], group: str) -> dict[str, Any]:
 
 
 def _rescue(rows: list[dict], baseline: str, critic: str) -> dict[str, Any]:
-    lookup = {
-        (row["case_id"], row["repeat"], row["group"]): bool(
-            _row_value(row, "automated_grounded_pass")
-        )
-        for row in rows
-    }
+    lookup = {}
+    for row in rows:
+        key = (row["case_id"], row["repeat"], row["group"])
+        lookup[key] = bool(_row_value(row, "automated_grounded_pass"))
     by_case: defaultdict[str, list[float]] = defaultdict(list)
     counts = {"fail_to_fail": 0, "rescue": 0, "regression": 0, "pass_to_pass": 0}
-    for case_id, repeat in sorted({(row["case_id"], row["repeat"]) for row in rows}):
+    pairs = set()
+    for row in rows:
+        pairs.add((row["case_id"], row["repeat"]))
+    for case_id, repeat in sorted(pairs):
         before_key = (case_id, repeat, baseline)
         after_key = (case_id, repeat, critic)
         if before_key not in lookup or after_key not in lookup:
@@ -207,76 +248,98 @@ def _interaction(rows: list[dict], metric: str) -> dict[str, Any]:
     sparse = _paired_differences(rows, "B00", "B01", metric)
     hybrid = _paired_differences(rows, "B10", "B11", metric)
     common = sorted(sparse.keys() & hybrid.keys())
-    interaction = {
-        case_id: [
-            right - left for left, right in zip(sparse[case_id], hybrid[case_id], strict=True)
-        ]
-        for case_id in common
-        if len(sparse[case_id]) == len(hybrid[case_id])
-    }
+    interaction = {}
+    for case_id in common:
+        if len(sparse[case_id]) != len(hybrid[case_id]):
+            continue
+        differences = []
+        for left, right in zip(sparse[case_id], hybrid[case_id], strict=True):
+            differences.append(right - left)
+        interaction[case_id] = differences
     return case_cluster_bootstrap(interaction, seed=SEED)
 
 
 def _breakdowns(rows: list[dict]) -> dict[str, Any]:
     breakdowns: dict[str, Any] = {}
-    dimensions = {
-        "split": sorted({row["split"] for row in rows}),
-        "language": sorted({row["language"] for row in rows}),
-        "category": sorted({row["category"] for row in rows}),
-    }
+    dimensions = {}
+    for dimension in ("split", "language", "category"):
+        values = set()
+        for row in rows:
+            values.add(row[dimension])
+        dimensions[dimension] = sorted(values)
     for dimension, values in dimensions.items():
-        breakdowns[dimension] = {
-            value: {
-                group: _group_summary([row for row in rows if row[dimension] == value], group)
-                for group in ANSWER_GROUPS
-            }
-            for value in values
-        }
+        dimension_breakdown = {}
+        for value in values:
+            value_rows = []
+            for row in rows:
+                if row[dimension] == value:
+                    value_rows.append(row)
+            group_summaries = {}
+            for group in ANSWER_GROUPS:
+                group_summaries[group] = _group_summary(value_rows, group)
+            dimension_breakdown[value] = group_summaries
+        breakdowns[dimension] = dimension_breakdown
     return breakdowns
 
 
 def _snapshot_grounded_pass(row: dict, snapshot: dict, case: dict) -> bool:
-    evidence_by_id = {
-        item["evidence_id"]: item for group in row["evidence_groups"] for item in group["evidence"]
-    }
-    outputs = {item["subquestion_id"]: item for item in snapshot["subquestion_outputs"]}
+    evidence_by_id = {}
+    for group in row["evidence_groups"]:
+        for item in group["evidence"]:
+            evidence_by_id[item["evidence_id"]] = item
+    outputs = {}
+    for item in snapshot["subquestion_outputs"]:
+        outputs[item["subquestion_id"]] = item
     for expected in case["subquestions"]:
         actual = outputs.get(expected["id"])
         if actual is None or actual["outcome"] != expected["expected_outcome"]:
             return False
-        citations = [evidence_by_id[item] for item in actual["citations"]]
+        citations = []
+        for item in actual["citations"]:
+            citations.append(evidence_by_id[item])
         if expected["expected_outcome"] == "insufficient_evidence":
             if citations:
                 return False
             continue
         for evidence in expected["expected_evidence"]:
-            if not any(
-                citation["path"] == evidence["path"]
-                and citation["start_line"] <= evidence["start_line"]
-                and citation["end_line"] >= evidence["end_line"]
-                for citation in citations
-            ):
+            evidence_is_covered = False
+            for citation in citations:
+                if (
+                    citation["path"] == evidence["path"]
+                    and citation["start_line"] <= evidence["start_line"]
+                    and citation["end_line"] >= evidence["end_line"]
+                ):
+                    evidence_is_covered = True
+                    break
+            if not evidence_is_covered:
                 return False
     return True
 
 
 def _revision_checkpoints(rows: list[dict], manifest: dict) -> dict[str, Any]:
-    cases = {case["case_id"]: case for case in manifest["cases"]}
+    cases = {}
+    for case in manifest["cases"]:
+        cases[case["case_id"]] = case
     result = {}
     for group in ("B01", "B11"):
-        selected = [
-            row
-            for row in rows
-            if row["group"] == group and not row.get("error") and row.get("snapshots")
-        ]
+        selected = []
+        for row in rows:
+            if row["group"] == group and not row.get("error") and row.get("snapshots"):
+                selected.append(row)
         checkpoints = {}
         previous_rate = None
         for checkpoint in ("0", "1", "3", "5"):
-            passes = [
-                _snapshot_grounded_pass(row, row["snapshots"][checkpoint], cases[row["case_id"]])
-                for row in selected
-            ]
-            rate = sum(passes) / len(passes) if passes else None
+            passes = []
+            for row in selected:
+                passed = _snapshot_grounded_pass(
+                    row, row["snapshots"][checkpoint], cases[row["case_id"]]
+                )
+                passes.append(passed)
+            pass_count = 0
+            for passed in passes:
+                if passed:
+                    pass_count += 1
+            rate = pass_count / len(passes) if passes else None
             checkpoints[checkpoint] = {
                 "case_run_count": len(passes),
                 "automated_grounded_pass_rate": rate,
@@ -287,21 +350,29 @@ def _revision_checkpoints(rows: list[dict], manifest: dict) -> dict[str, Any]:
             previous_rate = rate
         result[group] = {
             "checkpoints": checkpoints,
-            "revision_count_distribution": {
-                str(count): sum(row.get("revise_calls", 0) == count for row in selected)
-                for count in range(0, 6)
-            },
-            "reached_max_revision_rate": (
-                sum(row.get("revise_calls", 0) == 5 for row in selected) / len(selected)
-                if selected
-                else None
-            ),
+            "revision_count_distribution": {},
+            "reached_max_revision_rate": None,
         }
+        for count in range(0, 6):
+            revision_count = 0
+            for row in selected:
+                if row.get("revise_calls", 0) == count:
+                    revision_count += 1
+            result[group]["revision_count_distribution"][str(count)] = revision_count
+        max_revision_count = 0
+        for row in selected:
+            if row.get("revise_calls", 0) == 5:
+                max_revision_count += 1
+        result[group]["reached_max_revision_rate"] = (
+            max_revision_count / len(selected) if selected else None
+        )
     return result
 
 
 def _blind_review_pack(rows: list[dict], manifest: dict) -> tuple[dict[str, Any], dict[str, Any]]:
-    cases = {case["case_id"]: case for case in manifest["cases"]}
+    cases = {}
+    for case in manifest["cases"]:
+        cases[case["case_id"]] = case
     entries = []
     identities = []
     selected_stage = {"B00": "draft", "B01": "final", "B10": "draft", "B11": "final"}
@@ -309,18 +380,20 @@ def _blind_review_pack(rows: list[dict], manifest: dict) -> tuple[dict[str, Any]
         if row["split"] != "confirmation" or row.get("error"):
             continue
         stage = selected_stage[row["group"]]
+        claim_rubric = []
+        for subquestion in cases[row["case_id"]]["subquestions"]:
+            claim_rubric.append(
+                {
+                    "subquestion_id": subquestion["id"],
+                    "question": subquestion["question"],
+                    "atomic_claims": subquestion["atomic_claims"],
+                }
+            )
         entries.append(
             {
                 "identity_index": len(identities),
                 "original_question": cases[row["case_id"]]["original_question"],
-                "claim_rubric": [
-                    {
-                        "subquestion_id": subquestion["id"],
-                        "question": subquestion["question"],
-                        "atomic_claims": subquestion["atomic_claims"],
-                    }
-                    for subquestion in cases[row["case_id"]]["subquestions"]
-                ],
+                "claim_rubric": claim_rubric,
                 "answer": row[stage],
                 "evidence_groups": row["evidence_groups"],
                 "scores": None,
@@ -355,8 +428,11 @@ def _blind_review_pack(rows: list[dict], manifest: dict) -> tuple[dict[str, Any]
 
 
 def summarize_answer_rows(rows: list[dict], manifest: dict | None = None) -> dict[str, Any]:
+    group_summaries = {}
+    for group in ANSWER_GROUPS:
+        group_summaries[group] = _group_summary(rows, group)
     payload = {
-        "groups": {group: _group_summary(rows, group) for group in ANSWER_GROUPS},
+        "groups": group_summaries,
         "breakdowns": _breakdowns(rows),
         "effects": {
             "hybrid_without_critic": _effect(rows, "B00", "B10", "automated_grounded_pass"),

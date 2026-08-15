@@ -32,11 +32,10 @@ def evidence_items(case: dict) -> tuple[dict, ...]:
     expected = case.get("expected", {})
     candidates = list(expected.get("evidence", ()))
     if not candidates:
-        candidates.extend(
-            item
-            for subquestion in expected.get("subquestions", ())
-            for item in subquestion.get("evidence", ())
-        )
+        for subquestion in expected.get("subquestions", ()):
+            subquestion_evidence = subquestion.get("evidence", ())
+            for item in subquestion_evidence:
+                candidates.append(item)
     unique: list[dict] = []
     seen: set[tuple[str, int, int]] = set()
     for item in candidates:
@@ -58,23 +57,62 @@ def result_metrics(case: dict, result: RepositoryAnswer | AutoAnswer | None) -> 
             "evidence_recall": 0.0,
             "failure": "model_or_embedding_error",
         }
-    valid = [citation_is_valid(citation, FIXTURE_ROOT) for citation in result.citations]
-    supported = [
-        any(citation_covers(citation, item) for item in evidence) for citation in result.citations
-    ]
-    evidence_hit = [
-        any(citation_covers(citation, item) for citation in result.citations) for item in evidence
-    ]
+    valid: list[bool] = []
+    for citation in result.citations:
+        is_valid = citation_is_valid(citation, FIXTURE_ROOT)
+        valid.append(is_valid)
+
+    supported: list[bool] = []
+    for citation in result.citations:
+        citation_is_supported = False
+        for item in evidence:
+            if citation_covers(citation, item):
+                citation_is_supported = True
+                break
+        supported.append(citation_is_supported)
+
+    evidence_hit: list[bool] = []
+    for item in evidence:
+        item_is_covered = False
+        for citation in result.citations:
+            if citation_covers(citation, item):
+                item_is_covered = True
+                break
+        evidence_hit.append(item_is_covered)
+
+    valid_count = 0
+    for is_valid in valid:
+        if is_valid:
+            valid_count += 1
+    supported_count = 0
+    for is_supported in supported:
+        if is_supported:
+            supported_count += 1
+    evidence_hit_count = 0
+    for was_hit in evidence_hit:
+        if was_hit:
+            evidence_hit_count += 1
+
+    all_valid = True
+    for is_valid in valid:
+        if not is_valid:
+            all_valid = False
+            break
+    all_evidence_hit = True
+    for was_hit in evidence_hit:
+        if not was_hit:
+            all_evidence_hit = False
+            break
     failures: list[str] = []
     if result.outcome != expected["outcome"]:
         failures.append("outcome")
-    if not all(valid) or not all(evidence_hit):
+    if not all_valid or not all_evidence_hit:
         failures.append("citation")
     return {
         "outcome_hit": result.outcome == expected["outcome"],
-        "valid_citation_rate": sum(valid) / len(valid) if valid else 1.0,
-        "citation_precision": sum(supported) / len(supported) if supported else 1.0,
-        "evidence_recall": sum(evidence_hit) / len(evidence_hit) if evidence_hit else 1.0,
+        "valid_citation_rate": valid_count / len(valid) if valid else 1.0,
+        "citation_precision": supported_count / len(supported) if supported else 1.0,
+        "evidence_recall": evidence_hit_count / len(evidence_hit) if evidence_hit else 1.0,
         "failure": ",".join(failures) if failures else None,
     }
 
@@ -92,7 +130,9 @@ def expected_router_labels(case: dict) -> dict:
 def router_metrics(case: dict, router_result) -> dict:
     expected = expected_router_labels(case)
     plan = router_result.plan
-    actual_modes = {item.retrieval_mode for item in plan.subquestions}
+    actual_modes: set[str] = set()
+    for item in plan.subquestions:
+        actual_modes.add(item.retrieval_mode)
     return {
         "valid_plan": not router_result.used_fallback,
         "language_hit": plan.language == expected["language"],
@@ -105,15 +145,17 @@ def router_metrics(case: dict, router_result) -> dict:
 def _citation_payload(result: RepositoryAnswer | AutoAnswer | None) -> list[dict]:
     if result is None:
         return []
-    return [
-        {
-            "evidence_id": citation.evidence_id,
-            "relative_path": citation.relative_path,
-            "start_line": citation.start_line,
-            "end_line": citation.end_line,
-        }
-        for citation in result.citations
-    ]
+    payload: list[dict] = []
+    for citation in result.citations:
+        payload.append(
+            {
+                "evidence_id": citation.evidence_id,
+                "relative_path": citation.relative_path,
+                "start_line": citation.start_line,
+                "end_line": citation.end_line,
+            }
+        )
+    return payload
 
 
 def _group_names(case: dict) -> tuple[str, ...]:
@@ -224,6 +266,11 @@ def run_case(case: dict, mode: str, model, embedding_model) -> dict:
     if agent_result is not None:
         usage["embedding_input_tokens"] = agent_result.embedding_input_tokens or 0
 
+    agent_steps: list[str] = []
+    if agent_result is not None:
+        for event in agent_result.events:
+            agent_steps.append(event.step)
+
     return {
         "case_id": case["id"],
         "source_set": case["source_set"],
@@ -245,7 +292,7 @@ def run_case(case: dict, mode: str, model, embedding_model) -> dict:
         "embedding_input_tokens": usage["embedding_input_tokens"],
         "elapsed_milliseconds": elapsed,
         "revisions": agent_result.revisions if agent_result else 0,
-        "agent_steps": [event.step for event in agent_result.events] if agent_result else [],
+        "agent_steps": agent_steps,
         "error": error,
         "groups": _group_names(case),
         **metrics,
@@ -254,59 +301,95 @@ def run_case(case: dict, mode: str, model, embedding_model) -> dict:
 
 def summarize(results: list[dict]) -> dict:
     count = len(results)
-    router_results = [item["router"] for item in results if item["router"]]
+    router_results: list[dict] = []
+    outcome_hits = 0
+    valid_citation_total = 0.0
+    citation_precision_total = 0.0
+    evidence_recall_total = 0.0
+    total_model_calls = 0
+    total_embedding_calls = 0
+    total_router_input_tokens = 0
+    total_router_output_tokens = 0
+    total_answer_input_tokens = 0
+    total_answer_output_tokens = 0
+    total_embedding_input_tokens = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    elapsed_total = 0.0
+    error_count = 0
+
+    for item in results:
+        if item["router"]:
+            router_results.append(item["router"])
+        if item["outcome_hit"]:
+            outcome_hits += 1
+        valid_citation_total += item["valid_citation_rate"]
+        citation_precision_total += item["citation_precision"]
+        evidence_recall_total += item["evidence_recall"]
+        total_model_calls += item["model_calls"]
+        total_embedding_calls += item["embedding_calls"]
+        total_router_input_tokens += item["router_input_tokens"]
+        total_router_output_tokens += item["router_output_tokens"]
+        total_answer_input_tokens += item["answer_input_tokens"]
+        total_answer_output_tokens += item["answer_output_tokens"]
+        total_embedding_input_tokens += item["embedding_input_tokens"]
+        total_input_tokens += item["router_input_tokens"] + item["answer_input_tokens"]
+        total_output_tokens += item["router_output_tokens"] + item["answer_output_tokens"]
+        elapsed_total += item["elapsed_milliseconds"]
+        if item["error"] is not None:
+            error_count += 1
+
+    router_case_count = len(router_results)
+    valid_plan_count = 0
+    language_hit_count = 0
+    subquestion_count_hit_count = 0
+    retrieval_mode_hit_count = 0
+    execution_route_hit_count = 0
+    for item in router_results:
+        if item["valid_plan"]:
+            valid_plan_count += 1
+        if item["language_hit"]:
+            language_hit_count += 1
+        if item["subquestion_count_hit"]:
+            subquestion_count_hit_count += 1
+        if item["retrieval_mode_hit"]:
+            retrieval_mode_hit_count += 1
+        if item["execution_route_hit"]:
+            execution_route_hit_count += 1
+
     return {
         "case_count": count,
-        "outcome_accuracy": sum(item["outcome_hit"] for item in results) / count if count else 0.0,
-        "valid_citation_rate": sum(item["valid_citation_rate"] for item in results) / count
-        if count
-        else 0.0,
-        "citation_precision": sum(item["citation_precision"] for item in results) / count
-        if count
-        else 0.0,
-        "evidence_recall": sum(item["evidence_recall"] for item in results) / count
-        if count
-        else 0.0,
-        "total_model_calls": sum(item["model_calls"] for item in results),
-        "total_embedding_calls": sum(item["embedding_calls"] for item in results),
-        "total_router_input_tokens": sum(item["router_input_tokens"] for item in results),
-        "total_router_output_tokens": sum(item["router_output_tokens"] for item in results),
-        "total_answer_input_tokens": sum(item["answer_input_tokens"] for item in results),
-        "total_answer_output_tokens": sum(item["answer_output_tokens"] for item in results),
-        "total_embedding_input_tokens": sum(item["embedding_input_tokens"] for item in results),
-        "total_input_tokens": sum(
-            item["router_input_tokens"] + item["answer_input_tokens"] for item in results
-        ),
-        "total_output_tokens": sum(
-            item["router_output_tokens"] + item["answer_output_tokens"] for item in results
-        ),
-        "mean_elapsed_milliseconds": sum(item["elapsed_milliseconds"] for item in results) / count
-        if count
-        else 0.0,
-        "errors": sum(item["error"] is not None for item in results),
+        "outcome_accuracy": outcome_hits / count if count else 0.0,
+        "valid_citation_rate": valid_citation_total / count if count else 0.0,
+        "citation_precision": citation_precision_total / count if count else 0.0,
+        "evidence_recall": evidence_recall_total / count if count else 0.0,
+        "total_model_calls": total_model_calls,
+        "total_embedding_calls": total_embedding_calls,
+        "total_router_input_tokens": total_router_input_tokens,
+        "total_router_output_tokens": total_router_output_tokens,
+        "total_answer_input_tokens": total_answer_input_tokens,
+        "total_answer_output_tokens": total_answer_output_tokens,
+        "total_embedding_input_tokens": total_embedding_input_tokens,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "mean_elapsed_milliseconds": elapsed_total / count if count else 0.0,
+        "errors": error_count,
         "router": {
-            "case_count": len(router_results),
-            "valid_plan_rate": sum(item["valid_plan"] for item in router_results)
-            / len(router_results)
-            if router_results
+            "case_count": router_case_count,
+            "valid_plan_rate": valid_plan_count / router_case_count
+            if router_case_count
             else None,
-            "language_accuracy": sum(item["language_hit"] for item in router_results)
-            / len(router_results)
-            if router_results
+            "language_accuracy": language_hit_count / router_case_count
+            if router_case_count
             else None,
-            "subquestion_split_accuracy": sum(
-                item["subquestion_count_hit"] for item in router_results
-            )
-            / len(router_results)
-            if router_results
+            "subquestion_split_accuracy": subquestion_count_hit_count / router_case_count
+            if router_case_count
             else None,
-            "retrieval_mode_accuracy": sum(item["retrieval_mode_hit"] for item in router_results)
-            / len(router_results)
-            if router_results
+            "retrieval_mode_accuracy": retrieval_mode_hit_count / router_case_count
+            if router_case_count
             else None,
-            "execution_route_accuracy": sum(item["execution_route_hit"] for item in router_results)
-            / len(router_results)
-            if router_results
+            "execution_route_accuracy": execution_route_hit_count / router_case_count
+            if router_case_count
             else None,
         },
     }
@@ -317,7 +400,10 @@ def grouped_summary(results: list[dict]) -> dict:
     for item in results:
         for group in item["groups"]:
             grouped.setdefault(group, []).append(item)
-    return {group: summarize(items) for group, items in sorted(grouped.items())}
+    summaries: dict[str, dict] = {}
+    for group, items in sorted(grouped.items()):
+        summaries[group] = summarize(items)
+    return summaries
 
 
 def main() -> int:
@@ -333,7 +419,11 @@ def main() -> int:
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
     cases = document["cases"]
     if args.source_set:
-        cases = [case for case in cases if case["source_set"] == args.source_set]
+        selected_cases = []
+        for case in cases:
+            if case["source_set"] == args.source_set:
+                selected_cases.append(case)
+        cases = selected_cases
     if args.start < 0:
         parser.error("--start must be non-negative")
     if args.count is not None and args.count <= 0:
@@ -346,7 +436,10 @@ def main() -> int:
         if os.environ.get("CODEINSIGHT_EMBEDDING_MODEL")
         else None
     )
-    results = [run_case(case, args.mode, model, embedding_model) for case in cases]
+    results: list[dict] = []
+    for case in cases:
+        case_result = run_case(case, args.mode, model, embedding_model)
+        results.append(case_result)
     selection = {
         "source_set": args.source_set,
         "start": args.start,

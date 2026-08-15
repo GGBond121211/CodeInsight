@@ -49,22 +49,31 @@ class _FakeChatModel:
 
 def test_auto_answer_cli_routes_and_prints_public_metadata(monkeypatch, capsys) -> None:
     fake_model = _FakeChatModel()
+
+    def fake_chat_factory():
+        return fake_model
+
     monkeypatch.setattr(
         "codeinsight.cli.main.OpenAIChatModel.from_environment",
-        lambda: fake_model,
+        fake_chat_factory,
     )
-    fake_embedding = type(
-        "FakeEmbedding",
-        (),
-        {
-            "embed": staticmethod(
-                lambda texts: EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
-            )
-        },
-    )()
+
+    class FakeEmbedding:
+        @staticmethod
+        def embed(texts):
+            vectors = []
+            for _ in texts:
+                vectors.append((1.0, 0.0))
+            return EmbeddingBatch("fake", tuple(vectors), len(texts))
+
+    fake_embedding = FakeEmbedding()
+
+    def fake_embedding_factory():
+        return fake_embedding
+
     monkeypatch.setattr(
         "codeinsight.cli.main.OpenAIEmbeddingModel.from_environment",
-        lambda: fake_embedding,
+        fake_embedding_factory,
     )
 
     exit_code = main(

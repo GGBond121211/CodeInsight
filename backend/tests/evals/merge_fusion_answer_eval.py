@@ -26,30 +26,44 @@ def main() -> int:
 
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
     expected_cases = document["cases"]
-    expected_ids = [case["id"] for case in expected_cases]
-    batches = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
-    results = [item for batch in batches for item in batch.get("cases", [])]
-    result_ids = [item["case_id"] for item in results]
+    expected_ids = []
+    for case in expected_cases:
+        expected_ids.append(case["id"])
+    batches = []
+    for path in paths:
+        batches.append(json.loads(path.read_text(encoding="utf-8")))
+    results = []
+    for batch in batches:
+        for item in batch.get("cases", []):
+            results.append(item)
+    result_ids = []
+    for item in results:
+        result_ids.append(item["case_id"])
     if len(result_ids) != len(set(result_ids)):
         parser.error("batch artifacts contain duplicate case IDs")
     if set(result_ids) != set(expected_ids):
         missing = sorted(set(expected_ids) - set(result_ids))
         extra = sorted(set(result_ids) - set(expected_ids))
         parser.error(f"case ID mismatch; missing={missing[:5]}, extra={extra[:5]}")
-    by_id = {item["case_id"]: item for item in results}
-    ordered = [by_id[case_id] for case_id in expected_ids]
+    by_id = {}
+    for item in results:
+        by_id[item["case_id"]] = item
+    ordered = []
+    for case_id in expected_ids:
+        ordered.append(by_id[case_id])
     first = batches[0]
+    batch_names = []
+    for path in paths:
+        batch_names.append(path.name)
     payload = {
         "schema_version": 1,
         "case_set": document["case_set"],
         "mode": args.mode,
         "model": first.get("model"),
-        "embedding_model_configured": any(
-            batch.get("embedding_model_configured") for batch in batches
-        ),
+        "embedding_model_configured": any_embedding_model_configured(batches),
         "base_url_host": first.get("base_url_host"),
         "batch_count": len(batches),
-        "batches": [path.name for path in paths],
+        "batches": batch_names,
         "summary": summarize(ordered),
         "groups": grouped_summary(ordered),
         "sources": document["sources"],
@@ -73,6 +87,13 @@ def main() -> int:
         )
     )
     return 0
+
+
+def any_embedding_model_configured(batches: list[dict]) -> bool:
+    for batch in batches:
+        if batch.get("embedding_model_configured"):
+            return True
+    return False
 
 
 if __name__ == "__main__":

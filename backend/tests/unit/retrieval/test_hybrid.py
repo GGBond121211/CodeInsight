@@ -28,7 +28,10 @@ def test_fusion_rewards_evidence_seen_by_multiple_retrievers() -> None:
         limit=2,
     )
 
-    assert [item.chunk.relative_path for item in results] == ["src/b.py", "src/a.py"]
+    result_paths = []
+    for item in results:
+        result_paths.append(item.chunk.relative_path)
+    assert result_paths == ["src/b.py", "src/a.py"]
     assert results[0].retrieval_reason == "hybrid_match"
     assert results[0].rank == 1
 

@@ -11,6 +11,10 @@ def _completion(payload: dict) -> ModelCompletion:
     return ModelCompletion(json.dumps(payload), "fake-router", 11, 5)
 
 
+def _invalid_completion(_system: str, _user: str) -> ModelCompletion:
+    return ModelCompletion("not-json", "fake-router", 3, 1)
+
+
 def _payload() -> dict:
     return {
         "language": "mixed",
@@ -86,7 +90,7 @@ def test_router_cannot_disable_mandatory_semantic_with_a_hybrid_choice() -> None
 def test_router_returns_bm25_linear_fallback_on_invalid_output() -> None:
     result = route_question(
         "Where is checkout?",
-        complete=lambda _system, _user: ModelCompletion("not-json", "fake-router", 3, 1),
+        complete=_invalid_completion,
     )
 
     assert result.used_fallback is True
@@ -109,9 +113,13 @@ def test_router_falls_back_when_model_call_fails() -> None:
 def test_router_falls_back_below_confidence_threshold() -> None:
     payload = _payload()
     payload["confidence"] = 0.69
+
+    def complete_payload(_system: str, _user: str) -> ModelCompletion:
+        return _completion(payload)
+
     result = route_question(
         "checkout 先校验什么？",
-        complete=lambda _system, _user: _completion(payload),
+        complete=complete_payload,
     )
 
     assert result.used_fallback is True

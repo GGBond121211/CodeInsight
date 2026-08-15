@@ -17,10 +17,18 @@ def test_temporary_asset_has_stable_high_difficulty_coverage() -> None:
     document = _load()
     cases = document["cases"]
     assert document["case_set"] == "task11_multilingual_temporary_30"
-    assert [case["id"] for case in cases] == list(SELECTED_CASE_IDS)
+    case_ids = []
+    for case in cases:
+        case_ids.append(case["id"])
+    assert case_ids == list(SELECTED_CASE_IDS)
     assert len(cases) == 30
-    assert Counter(case["language"] for case in cases) == {"zh": 15, "zh-en": 15}
-    assert Counter(case["category"] for case in cases) == {
+    languages = []
+    categories = []
+    for case in cases:
+        languages.append(case["language"])
+        categories.append(case["category"])
+    assert Counter(languages) == {"zh": 15, "zh-en": 15}
+    assert Counter(categories) == {
         "ambiguity": 3,
         "boundary_behavior": 3,
         "code_document_conflict": 3,
@@ -38,11 +46,11 @@ def test_temporary_asset_preserves_expected_contracts() -> None:
         expected = case["expected"]
         evidence = expected.get("evidence", ())
         if "subquestions" in expected:
-            evidence = tuple(
-                item
-                for subquestion in expected["subquestions"]
-                for item in subquestion.get("evidence", ())
-            )
+            evidence_items = []
+            for subquestion in expected["subquestions"]:
+                for item in subquestion.get("evidence", ()):
+                    evidence_items.append(item)
+            evidence = tuple(evidence_items)
         if expected["outcome"] == "insufficient_evidence":
             assert not evidence
         else:

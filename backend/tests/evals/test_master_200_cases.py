@@ -22,8 +22,13 @@ def test_master_200_contract_and_provenance() -> None:
 
     assert master["schema_version"] == 1
     assert len(cases) == 200
-    assert len({case["id"] for case in cases}) == 200
-    assert Counter(case["repository_id"] for case in cases) == {
+    case_ids = set()
+    repository_ids = []
+    for case in cases:
+        case_ids.add(case["id"])
+        repository_ids.append(case["repository_id"])
+    assert len(case_ids) == 200
+    assert Counter(repository_ids) == {
         "sample_repo": 100,
         "httpx": 30,
         "click": 35,
@@ -31,22 +36,29 @@ def test_master_200_contract_and_provenance() -> None:
     }
 
     removable = {"repository_id", "source_set"}
-    restored_old = [
-        {key: value for key, value in case.items() if key not in removable} for case in cases[:100]
-    ]
+    restored_old = []
+    for case in cases[:100]:
+        restored_case = {}
+        for key, value in case.items():
+            if key not in removable:
+                restored_case[key] = value
+        restored_old.append(restored_case)
     assert restored_old == source["cases"]
 
     new_cases = cases[100:]
-    assert all(case["language"] in {"zh", "zh-en"} for case in new_cases)
-    assert all(case["difficulty"] == "very_hard" for case in new_cases)
-    assert all(len(case["challenge_features"]) >= 5 for case in new_cases)
-    assert all(case["expected"]["outcome"] == "answered" for case in new_cases)
-    assert all(case["expected"]["required_terms"] for case in new_cases)
+    for case in new_cases:
+        assert case["language"] in {"zh", "zh-en"}
+        assert case["difficulty"] == "very_hard"
+        assert len(case["challenge_features"]) >= 5
+        assert case["expected"]["outcome"] == "answered"
+        assert case["expected"]["required_terms"]
 
 
 def test_repository_fingerprints_and_every_evidence_span() -> None:
     master = load(MASTER)
-    repositories = {item["id"]: item for item in master["repositories"]}
+    repositories = {}
+    for item in master["repositories"]:
+        repositories[item["id"]] = item
     assert set(repositories) == {"sample_repo", "httpx", "click", "requests"}
 
     line_counts: dict[Path, int] = {}
@@ -77,10 +89,18 @@ def test_repository_fingerprints_and_every_evidence_span() -> None:
 
 def test_new_questions_are_unique_and_not_clean_english_prompts() -> None:
     cases = load(MASTER)["cases"][100:]
-    questions = [case["input"]["question"] for case in cases]
+    questions = []
+    for case in cases:
+        questions.append(case["input"]["question"])
     assert len(set(questions)) == 100
-    assert all(any("\u4e00" <= char <= "\u9fff" for char in question) for question in questions)
-    assert all(len(question) >= 45 for question in questions)
+    for question in questions:
+        contains_chinese = False
+        for char in question:
+            if "\u4e00" <= char <= "\u9fff":
+                contains_chinese = True
+                break
+        assert contains_chinese
+        assert len(question) >= 45
 
 
 def test_real_repository_evidence_requirements_are_chunk_compatible() -> None:
@@ -94,13 +114,10 @@ def test_real_repository_evidence_requirements_are_chunk_compatible() -> None:
             assert segments
             assert segments[0]["start_line"] == requirement["start_line"]
             assert segments[-1]["end_line"] == requirement["end_line"]
-            assert all(segment["path"] == requirement["path"] for segment in segments)
-            assert all(
-                segment["end_line"] - segment["start_line"] + 1 <= 80 for segment in segments
-            )
-            assert all(
-                left["end_line"] + 1 == right["start_line"]
-                for left, right in zip(segments, segments[1:])
-            )
+            for segment in segments:
+                assert segment["path"] == requirement["path"]
+                assert segment["end_line"] - segment["start_line"] + 1 <= 80
+            for left, right in zip(segments, segments[1:]):
+                assert left["end_line"] + 1 == right["start_line"]
             flattened.extend(segments)
         assert flattened == expected["evidence"]

@@ -75,21 +75,18 @@ def retrieve_subquestion_evidence(
     search_fn = search or search_repository
     candidate_limit = max(limit, min(HYBRID_CANDIDATE_LIMIT, limit * 4))
     modes = candidate_retrieval_modes(primary_mode)
-    sources = [
-        (
-            mode,
-            search_fn(
-                root,
-                question,
-                limit=candidate_limit,
-                chunk_max_lines=chunk_max_lines,
-                retrieval_mode=mode,
-                semantic_embed=None,
-                semantic_index=None,
-            ),
+    sources: list[tuple[str, tuple[RankedChunk, ...]]] = []
+    for mode in modes:
+        results = search_fn(
+            root,
+            question,
+            limit=candidate_limit,
+            chunk_max_lines=chunk_max_lines,
+            retrieval_mode=mode,
+            semantic_embed=None,
+            semantic_index=None,
         )
-        for mode in modes
-    ]
+        sources.append((mode, results))
     if semantic_embed is not None and semantic_index is not None:
         sources.append(
             (

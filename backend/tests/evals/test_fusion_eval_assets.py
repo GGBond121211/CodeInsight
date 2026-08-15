@@ -25,12 +25,19 @@ def test_fusion_has_both_sources_and_unique_cases() -> None:
     cases = document["cases"]
     assert document["case_set"] == "task11_multilingual_fusion_v1"
     assert len(cases) == 131
-    assert Counter(case["source_set"] for case in cases) == {
+    source_sets = []
+    case_ids = set()
+    questions = set()
+    for case in cases:
+        source_sets.append(case["source_set"])
+        case_ids.add(case["id"])
+        questions.add(case["input"]["question"])
+    assert Counter(source_sets) == {
         "legacy31": 31,
         "task11_v2_100": 100,
     }
-    assert len({case["id"] for case in cases}) == 131
-    assert len({case["input"]["question"] for case in cases}) == 131
+    assert len(case_ids) == 131
+    assert len(questions) == 131
 
 
 def test_fusion_preserves_source_evidence_contracts() -> None:
@@ -46,10 +53,19 @@ def test_fusion_preserves_source_evidence_contracts() -> None:
 def test_fusion_counts_are_quantifiable() -> None:
     document = _load()
     cases = document["cases"]
-    assert Counter(case["language"] for case in cases) == {
+    languages = []
+    evidence_flags = []
+    for case in cases:
+        languages.append(case["language"])
+        evidence_flags.append(bool(_evidence(case)))
+    assert Counter(languages) == {
         "zh-en": 65,
         "zh": 59,
         "en": 7,
     }
-    assert sum(bool(_evidence(case)) for case in cases) == 120
-    assert sum(not _evidence(case) for case in cases) == 11
+    assert sum(evidence_flags) == 120
+    missing_evidence_count = 0
+    for flag in evidence_flags:
+        if not flag:
+            missing_evidence_count += 1
+    assert missing_evidence_count == 11

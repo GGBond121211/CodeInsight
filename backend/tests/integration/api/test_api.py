@@ -28,7 +28,10 @@ class FakeModel:
 class FakeEmbedding:
     @staticmethod
     def embed(texts):
-        return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+        vectors = []
+        for _ in texts:
+            vectors.append((1.0, 0.0))
+        return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
 def test_health_and_auto_answer_are_the_only_registered_product_routes() -> None:

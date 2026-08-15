@@ -104,7 +104,10 @@ def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
 def _embed_chunks(
     chunks: Sequence[SourceChunk], embed: EmbeddingFunction
 ) -> tuple[str, int, tuple[tuple[float, ...], ...]]:
-    batch = embed(tuple(chunk.text for chunk in chunks))
+    chunk_texts: list[str] = []
+    for chunk in chunks:
+        chunk_texts.append(chunk.text)
+    batch = embed(tuple(chunk_texts))
     if len(batch.vectors) != len(chunks):
         raise ValueError("Embedding 提供方返回的向量数量不符合预期")
     return batch.model, batch.dimensions, batch.vectors
@@ -141,11 +144,17 @@ def build_persistent_semantic_index(
         source_fingerprint = _sha256(source.text)
         cached = cached_files.get(source.relative_path)
         if cached and cached.get("source_fingerprint") == source_fingerprint:
-            chunks = tuple(_chunk_from_payload(item) for item in cached.get("chunks", ()))
-            vectors = tuple(
-                tuple(float(value) for value in item["embedding"])
-                for item in cached.get("chunks", ())
-            )
+            cached_chunks = cached.get("chunks", ())
+            cached_chunk_list: list[SourceChunk] = []
+            cached_vector_list: list[tuple[float, ...]] = []
+            for item in cached_chunks:
+                cached_chunk_list.append(_chunk_from_payload(item))
+                vector_values: list[float] = []
+                for value in item["embedding"]:
+                    vector_values.append(float(value))
+                cached_vector_list.append(tuple(vector_values))
+            chunks = tuple(cached_chunk_list)
+            vectors = tuple(cached_vector_list)
         else:
             chunks = chunk_source_file(source, max_lines=chunk_max_lines)
             vectors = ()
@@ -177,9 +186,10 @@ def build_persistent_semantic_index(
     for source in scan_result.files:
         chunks = file_chunks[source.relative_path]
         vectors = file_vectors[source.relative_path]
-        files_payload[source.relative_path]["chunks"] = [
-            _chunk_payload(chunk, vector) for chunk, vector in zip(chunks, vectors, strict=True)
-        ]
+        payload_chunks: list[dict[str, Any]] = []
+        for chunk, vector in zip(chunks, vectors, strict=True):
+            payload_chunks.append(_chunk_payload(chunk, vector))
+        files_payload[source.relative_path]["chunks"] = payload_chunks
         ordered_chunks.extend(chunks)
         ordered_vectors.extend(vectors)
 
@@ -196,7 +206,7 @@ def build_persistent_semantic_index(
     }
     _write_manifest(path, manifest_payload)
     vectors = tuple(ordered_vectors)
-    return build_semantic_index(
-        tuple(ordered_chunks),
-        lambda _texts: EmbeddingBatch(model, vectors, 0),
-    )
+    def reuse_vectors(_texts: Sequence[str]) -> EmbeddingBatch:
+        return EmbeddingBatch(model, vectors, 0)
+
+    return build_semantic_index(tuple(ordered_chunks), reuse_vectors)

@@ -103,7 +103,10 @@ def search_chunks_bm25(
         document_frequencies.update(body_counts.keys())
 
     document_count = len(documents)
-    average_body_length = sum(item[2] for item in documents) / document_count
+    total_body_length = 0
+    for _, _, body_length in documents:
+        total_body_length += body_length
+    average_body_length = total_body_length / document_count
     if average_body_length == 0.0:
         return ()
 
@@ -125,8 +128,19 @@ def search_chunks_bm25(
         if score > 0.0:
             scored.append((score, chunk))
 
-    scored.sort(key=lambda item: (-item[0], item[1].relative_path, item[1].start_line))
-    return tuple(
-        RankedChunk(chunk=chunk, score=score, rank=rank)
-        for rank, (score, chunk) in enumerate(scored[:limit], start=1)
-    )
+    def sort_key(item: tuple[float, SourceChunk]) -> tuple[float, str, int]:
+        score, chunk = item
+        return (-score, chunk.relative_path, chunk.start_line)
+
+    scored.sort(key=sort_key)
+
+    ranked_chunks: list[RankedChunk] = []
+    for rank, (score, chunk) in enumerate(scored[:limit], start=1):
+        ranked_chunks.append(
+            RankedChunk(
+                chunk=chunk,
+                score=score,
+                rank=rank,
+            )
+        )
+    return tuple(ranked_chunks)

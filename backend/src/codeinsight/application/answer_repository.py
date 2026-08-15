@@ -30,25 +30,38 @@ def map_model_answer(
     output_tokens: int | None = None,
 ) -> RepositoryAnswer:
     """把模型返回的 evidence ID 映射为可信的仓库路径和行号范围。"""
-    identifiers = tuple(evidence_ids or (f"E{index}" for index in range(1, len(results) + 1)))
+    if evidence_ids:
+        identifiers = tuple(evidence_ids)
+    else:
+        generated_identifiers: list[str] = []
+        for index in range(1, len(results) + 1):
+            generated_identifiers.append(f"E{index}")
+        identifiers = tuple(generated_identifiers)
     if len(identifiers) != len(results):
         raise ModelResponseError("evidence ID 数量必须与结果数量一致")
-    evidence = {
-        evidence_id: result.chunk for evidence_id, result in zip(identifiers, results, strict=True)
-    }
-    unknown = [item for item in generated.evidence_ids if item not in evidence]
+    evidence: dict[str, object] = {}
+    for evidence_id, result in zip(identifiers, results, strict=True):
+        evidence[evidence_id] = result.chunk
+
+    unknown: list[str] = []
+    for item in generated.evidence_ids:
+        if item not in evidence:
+            unknown.append(item)
     if unknown:
         raise ModelResponseError(f"模型引用了未知的 evidence ID：{unknown[0]}")
 
-    citations = tuple(
-        AnswerCitation(
-            evidence_id=evidence_id,
-            relative_path=evidence[evidence_id].relative_path,
-            start_line=evidence[evidence_id].start_line,
-            end_line=evidence[evidence_id].end_line,
+    citation_list: list[AnswerCitation] = []
+    for evidence_id in generated.evidence_ids:
+        chunk = evidence[evidence_id]
+        citation_list.append(
+            AnswerCitation(
+                evidence_id=evidence_id,
+                relative_path=chunk.relative_path,
+                start_line=chunk.start_line,
+                end_line=chunk.end_line,
+            )
         )
-        for evidence_id in generated.evidence_ids
-    )
+    citations = tuple(citation_list)
     return RepositoryAnswer(
         outcome=generated.outcome,
         answer=generated.answer,

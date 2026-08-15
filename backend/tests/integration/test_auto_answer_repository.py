@@ -51,7 +51,10 @@ def _fake_generate(system_prompt: str, user_prompt: str) -> ModelAnswer:
 
 
 def _fake_embed(texts):
-    return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+    vectors = []
+    for _ in texts:
+        vectors.append((1.0, 0.0))
+    return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
 def test_auto_answer_keeps_answerable_subquestion_when_another_is_unsupported() -> None:
@@ -111,7 +114,10 @@ def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
     chunk = SourceChunk("src/shop/service.py", 10, 19, "def checkout():")
 
     def fake_embed(texts):
-        return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), 5)
+        vectors = []
+        for _ in texts:
+            vectors.append((1.0, 0.0))
+        return EmbeddingBatch("fake", tuple(vectors), 5)
 
     def fake_search(_root, _question, **kwargs):
         assert kwargs["semantic_embed"] is None
@@ -122,17 +128,20 @@ def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
         fake_search,
     )
 
-    result = auto_answer_repository(
-        FIXTURE_ROOT,
-        router_result=router_result,
-        generate=lambda _system, _user: ModelAnswer(
+    def generate_answer(_system: str, _user: str) -> ModelAnswer:
+        return ModelAnswer(
             "answered",
             "The semantic result is supported.",
             ("E1",),
             "fake-answer",
             2,
             1,
-        ),
+        )
+
+    result = auto_answer_repository(
+        FIXTURE_ROOT,
+        router_result=router_result,
+        generate=generate_answer,
         semantic_embed=fake_embed,
     )
 
@@ -155,9 +164,12 @@ def test_each_subquestion_keeps_its_own_candidate_capacity(monkeypatch) -> None:
         "codeinsight.application.auto_answer_repository.retrieve_subquestion_evidence",
         fake_retrieve,
     )
+    def fake_build_repository_index(*_args, **_kwargs):
+        return object()
+
     monkeypatch.setattr(
         "codeinsight.application.auto_answer_repository.build_repository_semantic_index",
-        lambda *_args, **_kwargs: object(),
+        fake_build_repository_index,
     )
     plan = QueryPlan(
         original_question="first and second",
@@ -171,23 +183,32 @@ def test_each_subquestion_keeps_its_own_candidate_capacity(monkeypatch) -> None:
         execution_route="linear",
         confidence=0.9,
     )
-    result = auto_answer_repository(
-        FIXTURE_ROOT,
-        router_result=QueryRouterResult(plan, False, None, "router", 1, 1, 1.0),
-        generate=lambda _system, user: ModelAnswer(
+    def generate_answer(_system: str, user: str) -> ModelAnswer:
+        evidence_ids = ("E1",)
+        if "first question" not in user:
+            evidence_ids = ("E2",)
+        return ModelAnswer(
             "answered",
             "supported",
-            ("E1",) if "first question" in user else ("E2",),
+            evidence_ids,
             "answer",
             1,
             1,
-        ),
+        )
+
+    result = auto_answer_repository(
+        FIXTURE_ROOT,
+        router_result=QueryRouterResult(plan, False, None, "router", 1, 1, 1.0),
+        generate=generate_answer,
         limit=5,
         semantic_embed=_fake_embed,
     )
 
     assert calls == [("first question", 5), ("second question", 5)]
-    assert [item.citations[0].relative_path for item in result.subquestions] == [
+    citation_paths = []
+    for item in result.subquestions:
+        citation_paths.append(item.citations[0].relative_path)
+    assert citation_paths == [
         "src/first.py",
         "src/second.py",
     ]
@@ -200,7 +221,10 @@ def test_auto_answer_passes_model_identity_through_usage_wrapper(monkeypatch) ->
         model = "persistent-model"
 
         def embed(self, texts):
-            return EmbeddingBatch(self.model, tuple((1.0, 0.0) for _ in texts), len(texts))
+            vectors = []
+            for _ in texts:
+                vectors.append((1.0, 0.0))
+            return EmbeddingBatch(self.model, tuple(vectors), len(texts))
 
     def fake_build(_root, **kwargs):
         captured.update(kwargs)
@@ -210,9 +234,12 @@ def test_auto_answer_passes_model_identity_through_usage_wrapper(monkeypatch) ->
         "codeinsight.application.auto_answer_repository.build_repository_semantic_index",
         fake_build,
     )
+    def empty_retrieve(*_args, **_kwargs):
+        return ()
+
     monkeypatch.setattr(
         "codeinsight.application.auto_answer_repository.retrieve_subquestion_evidence",
-        lambda *_args, **_kwargs: (),
+        empty_retrieve,
     )
     plan = QueryPlan(
         original_question="question",

@@ -64,11 +64,14 @@ def _usage_update(state: CitationAgentState, completion: ModelCompletion) -> dic
 def _usage_updates(
     state: CitationAgentState, completions: Sequence[ModelCompletion]
 ) -> dict[str, int]:
+    input_tokens = state.get("input_tokens", 0)
+    output_tokens = state.get("output_tokens", 0)
+    for item in completions:
+        input_tokens += item.input_tokens or 0
+        output_tokens += item.output_tokens or 0
     return {
-        "input_tokens": state.get("input_tokens", 0)
-        + sum(item.input_tokens or 0 for item in completions),
-        "output_tokens": state.get("output_tokens", 0)
-        + sum(item.output_tokens or 0 for item in completions),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
     }
 
 
@@ -83,15 +86,23 @@ def _parsed_answer(completion: ModelCompletion) -> ModelAnswer:
 
 def _validate_local_citations(generated: ModelAnswer, evidence_ids: Sequence[str]) -> ModelAnswer:
     supplied = frozenset(evidence_ids)
-    unknown = [item for item in generated.evidence_ids if item not in supplied]
+    unknown: list[str] = []
+    for item in generated.evidence_ids:
+        if item not in supplied:
+            unknown.append(item)
     if unknown:
         raise ModelResponseError(f"子问题答案使用了其本地证据组之外的 evidence ID：{unknown[0]}")
     return generated
 
 
 def _aggregate_outcome(outcomes: Sequence[str]) -> str:
-    answered = any(item == ANSWERED for item in outcomes)
-    insufficient = any(item == INSUFFICIENT_EVIDENCE for item in outcomes)
+    answered = False
+    insufficient = False
+    for item in outcomes:
+        if item == ANSWERED:
+            answered = True
+        if item == INSUFFICIENT_EVIDENCE:
+            insufficient = True
     if answered and insufficient:
         return PARTIALLY_ANSWERED
     return ANSWERED if answered else INSUFFICIENT_EVIDENCE
@@ -100,23 +111,33 @@ def _aggregate_outcome(outcomes: Sequence[str]) -> str:
 def _combine_subquestion_drafts(plan: QueryPlan, drafts: Sequence[ModelAnswer]) -> ModelAnswer:
     if len(plan.subquestions) != len(drafts):
         raise ValueError("子问题草稿数量必须与 QueryPlan 匹配")
-    answer = "\n\n".join(
-        f"{index}. {subquestion.question}\n{draft.answer}"
-        for index, (subquestion, draft) in enumerate(
-            zip(plan.subquestions, drafts, strict=True), start=1
-        )
-    )
-    evidence_ids = tuple(
-        dict.fromkeys(evidence_id for draft in drafts for evidence_id in draft.evidence_ids)
-    )
-    model = next((draft.model for draft in drafts if draft.model), "")
+    sections: list[str] = []
+    evidence_id_list: list[str] = []
+    model = ""
+    input_tokens = 0
+    output_tokens = 0
+    outcomes: list[str] = []
+    for index, (subquestion, draft) in enumerate(
+        zip(plan.subquestions, drafts, strict=True), start=1
+    ):
+        sections.append(f"{index}. {subquestion.question}\n{draft.answer}")
+        for evidence_id in draft.evidence_ids:
+            if evidence_id not in evidence_id_list:
+                evidence_id_list.append(evidence_id)
+        if not model and draft.model:
+            model = draft.model
+        input_tokens += draft.input_tokens or 0
+        output_tokens += draft.output_tokens or 0
+        outcomes.append(draft.outcome)
+
+    answer = "\n\n".join(sections)
     return ModelAnswer(
-        outcome=_aggregate_outcome(tuple(draft.outcome for draft in drafts)),
+        outcome=_aggregate_outcome(outcomes),
         answer=answer,
-        evidence_ids=evidence_ids,
+        evidence_ids=tuple(evidence_id_list),
         model=model,
-        input_tokens=sum(draft.input_tokens or 0 for draft in drafts),
-        output_tokens=sum(draft.output_tokens or 0 for draft in drafts),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -164,11 +185,17 @@ def _agent_result(
     if state.get("query_plan") and state.get("subquestion_drafts"):
         subquestions = _map_subquestion_answers(state)
         generated = _combine_subquestion_drafts(state["query_plan"], state["subquestion_drafts"])
-        citations = tuple(
-            dict.fromkeys(citation for item in subquestions for citation in item.citations)
-        )
+        citation_list = []
+        for item in subquestions:
+            for citation in item.citations:
+                if citation not in citation_list:
+                    citation_list.append(citation)
+        citations = tuple(citation_list)
+        outcomes = []
+        for item in subquestions:
+            outcomes.append(item.outcome)
         answer = RepositoryAnswer(
-            outcome=_aggregate_outcome(tuple(item.outcome for item in subquestions)),
+            outcome=_aggregate_outcome(outcomes),
             answer=generated.answer,
             citations=citations,
             retrieval_mode=state["retrieval_mode"],
@@ -228,24 +255,35 @@ def _retrieve_query_plan(
         for result in retrieved:
             key = (result.chunk.relative_path, result.chunk.start_line, result.chunk.end_line)
             unique.setdefault(key, result)
-    evidence_ids = {key: f"E{index}" for index, key in enumerate(unique, start=1)}
-    evidence_groups = tuple(
-        SubQuestionEvidence(
-            question=subquestion.question,
-            retrieval_mode=subquestion.retrieval_mode,
-            results=retrieved,
-            evidence_ids=tuple(
-                evidence_ids[(item.chunk.relative_path, item.chunk.start_line, item.chunk.end_line)]
-                for item in retrieved
-            ),
+    evidence_ids: dict[tuple[str, int, int], str] = {}
+    for index, key in enumerate(unique, start=1):
+        evidence_ids[key] = f"E{index}"
+
+    evidence_group_list: list[SubQuestionEvidence] = []
+    for subquestion, (_, retrieved) in zip(
+        plan.subquestions,
+        groups,
+        strict=True,
+    ):
+        group_evidence_ids: list[str] = []
+        for item in retrieved:
+            key = (item.chunk.relative_path, item.chunk.start_line, item.chunk.end_line)
+            group_evidence_ids.append(evidence_ids[key])
+        evidence_group_list.append(
+            SubQuestionEvidence(
+                question=subquestion.question,
+                retrieval_mode=subquestion.retrieval_mode,
+                results=retrieved,
+                evidence_ids=tuple(group_evidence_ids),
+            )
         )
-        for subquestion, (_, retrieved) in zip(plan.subquestions, groups, strict=True)
-    )
-    results = tuple(
-        RankedChunk(item.chunk, item.score, rank, item.retrieval_reason)
-        for rank, item in enumerate(unique.values(), start=1)
-    )
-    return results, tuple(groups), tuple(evidence_groups)
+
+    result_list: list[RankedChunk] = []
+    for rank, item in enumerate(unique.values(), start=1):
+        result_list.append(
+            RankedChunk(item.chunk, item.score, rank, item.retrieval_reason)
+        )
+    return tuple(result_list), tuple(groups), tuple(evidence_group_list)
 
 
 def run_citation_agent(
@@ -372,10 +410,13 @@ def run_citation_agent(
                 generated_items.append(generated)
                 accepted.append(generated.outcome == INSUFFICIENT_EVIDENCE)
             generated = _combine_subquestion_drafts(state["query_plan"], generated_items)
+            review_placeholders: list[None] = []
+            for _ in generated_items:
+                review_placeholders.append(None)
             return {
                 "draft": generated,
                 "subquestion_drafts": tuple(generated_items),
-                "subquestion_reviews": tuple(None for _ in generated_items),
+                "subquestion_reviews": tuple(review_placeholders),
                 "subquestion_accepted": tuple(accepted),
                 "events": _event(
                     state,
@@ -396,13 +437,14 @@ def run_citation_agent(
 
     def route_draft(state: CitationAgentState) -> str:
         if state.get("subquestion_drafts"):
-            return (
-                "finalize_draft"
-                if all(
-                    item.outcome == INSUFFICIENT_EVIDENCE for item in state["subquestion_drafts"]
-                )
-                else "review"
-            )
+            all_insufficient = True
+            for item in state["subquestion_drafts"]:
+                if item.outcome != INSUFFICIENT_EVIDENCE:
+                    all_insufficient = False
+                    break
+            if all_insufficient:
+                return "finalize_draft"
+            return "review"
         return "finalize_draft" if state["draft"].outcome == INSUFFICIENT_EVIDENCE else "review"
 
     def review(state: CitationAgentState) -> CitationAgentState:
@@ -429,15 +471,19 @@ def run_citation_agent(
                 if result.verdict == REVIEW_PASS:
                     drafts[index] = replace(draft, evidence_ids=result.supported_evidence_ids)
                     accepted[index] = True
-            pending = sum(not item for item in accepted)
+            pending = 0
+            for item in accepted:
+                if not item:
+                    pending += 1
             verdict = REVIEW_PASS if pending == 0 else REVIEW_REVISE
+            supported_evidence_ids: list[str] = []
+            for draft in drafts:
+                for evidence_id in draft.evidence_ids:
+                    if evidence_id not in supported_evidence_ids:
+                        supported_evidence_ids.append(evidence_id)
             aggregate_review = CitationReview(
                 verdict=verdict,
-                supported_evidence_ids=tuple(
-                    dict.fromkeys(
-                        evidence_id for draft in drafts for evidence_id in draft.evidence_ids
-                    )
-                ),
+                supported_evidence_ids=tuple(supported_evidence_ids),
                 feedback=(
                     "所有子问题答案都通过了独立引用审查。"
                     if pending == 0
@@ -464,7 +510,10 @@ def run_citation_agent(
             state["draft"],
         )
         completion = complete(system_prompt, user_prompt)
-        supplied_ids = frozenset(f"E{index}" for index, _ in enumerate(state["results"], start=1))
+        supplied_id_list: list[str] = []
+        for index, _ in enumerate(state["results"], start=1):
+            supplied_id_list.append(f"E{index}")
+        supplied_ids = frozenset(supplied_id_list)
         result = parse_citation_review(completion.content, supplied_ids)
         return {
             "review": result,
@@ -572,36 +621,45 @@ def run_citation_agent(
     def finalize_revised(state: CitationAgentState) -> CitationAgentState:
         result_state = state
         if state.get("subquestion_drafts"):
-            drafts = tuple(
-                replace(draft, evidence_ids=review_result.supported_evidence_ids)
-                if not accepted and review_result is not None
-                else draft
-                for draft, review_result, accepted in zip(
-                    state["subquestion_drafts"],
-                    state["subquestion_reviews"],
-                    state["subquestion_accepted"],
-                    strict=True,
-                )
-            )
+            revised_drafts: list[ModelAnswer] = []
+            for draft, review_result, accepted in zip(
+                state["subquestion_drafts"],
+                state["subquestion_reviews"],
+                state["subquestion_accepted"],
+                strict=True,
+            ):
+                if not accepted and review_result is not None:
+                    revised_drafts.append(
+                        replace(
+                            draft,
+                            evidence_ids=review_result.supported_evidence_ids,
+                        )
+                    )
+                else:
+                    revised_drafts.append(draft)
+            drafts = tuple(revised_drafts)
             result_state = {**state, "subquestion_drafts": drafts}
-        evidence_ids = (
-            ()
-            if state["draft"].outcome == INSUFFICIENT_EVIDENCE
-            else state["review"].supported_evidence_ids
-        )
+        evidence_ids: tuple[str, ...] = state["review"].supported_evidence_ids
+        if state["draft"].outcome == INSUFFICIENT_EVIDENCE:
+            evidence_ids = ()
+        if state["review"].verdict == REVIEW_PASS:
+            summary = "审查者接受修订后的答案，流程已完成。"
+        else:
+            summary = "达到五次修订上限，已完成当前最佳答案。"
         return {
             "agent_result": _agent_result(
                 result_state,
                 state["draft"],
                 evidence_ids=evidence_ids,
                 embedding_input_tokens=embedding_input_tokens,
-                summary=(
-                    "审查者接受修订后的答案，流程已完成。"
-                    if state["review"].verdict == REVIEW_PASS
-                    else "达到五次修订上限，已完成当前最佳答案。"
-                ),
+                summary=summary,
             )
         }
+
+    def route_revision_result(state: CitationAgentState) -> str:
+        if state["revised"].outcome == INSUFFICIENT_EVIDENCE:
+            return "finalize_revised"
+        return "review"
 
     graph = StateGraph(CitationAgentState)
     graph.add_node("retrieve", retrieve)
@@ -633,9 +691,7 @@ def run_citation_agent(
     graph.add_edge("finalize_reviewed", END)
     graph.add_conditional_edges(
         "revise",
-        lambda state: (
-            "finalize_revised" if state["revised"].outcome == INSUFFICIENT_EVIDENCE else "review"
-        ),
+        route_revision_result,
         {"finalize_revised": "finalize_revised", "review": "review"},
     )
     graph.add_edge("finalize_revised", END)

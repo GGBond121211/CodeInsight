@@ -141,7 +141,9 @@ def auto_answer_repository(
     answer_models: list[str] = []
     total_input_tokens = 0
     total_output_tokens = 0
-    covered_subquestions = sum(evidence.covered for _, evidence in per_subquestion)
+    covered_subquestions = 0
+    for _, evidence in per_subquestion:
+        covered_subquestions += evidence.covered
     for subquestion, evidence in per_subquestion:
         results = evidence.results
         identifiers = evidence.evidence_ids
@@ -182,22 +184,33 @@ def auto_answer_repository(
             )
         )
 
-    answered = [item for item in answers if item.outcome == ANSWERED]
-    insufficient = [item for item in answers if item.outcome == INSUFFICIENT_EVIDENCE]
+    answered: list[SubQuestionAnswer] = []
+    insufficient: list[SubQuestionAnswer] = []
+    for item in answers:
+        if item.outcome == ANSWERED:
+            answered.append(item)
+        if item.outcome == INSUFFICIENT_EVIDENCE:
+            insufficient.append(item)
     if answered and insufficient:
         outcome = PARTIALLY_ANSWERED
     elif answered:
         outcome = ANSWERED
     else:
         outcome = INSUFFICIENT_EVIDENCE
-    sections = [f"{index}. {item.question}\n{item.answer}" for index, item in enumerate(answers, 1)]
-    citations = tuple(
-        citation
-        for index, item in enumerate(answers)
-        for citation in item.citations
-        if citation
-        not in tuple(previous for prior in answers[:index] for previous in prior.citations)
-    )
+    sections: list[str] = []
+    for index, item in enumerate(answers, 1):
+        sections.append(f"{index}. {item.question}\n{item.answer}")
+
+    citation_list: list[object] = []
+    for index, item in enumerate(answers):
+        previous_citations: list[object] = []
+        for prior in answers[:index]:
+            for previous in prior.citations:
+                previous_citations.append(previous)
+        for citation in item.citations:
+            if citation not in previous_citations:
+                citation_list.append(citation)
+    citations = tuple(citation_list)
     return AutoAnswer(
         outcome=outcome,
         answer="\n\n".join(sections),

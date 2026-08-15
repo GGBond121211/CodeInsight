@@ -60,8 +60,13 @@ def test_same_scores_sort_by_path_then_line() -> None:
 
     results = search_chunks_bm25("same", chunks)
 
-    assert [item.chunk for item in results] == [chunks[2], chunks[1], chunks[0]]
-    assert [item.rank for item in results] == [1, 2, 3]
+    result_chunks = []
+    result_ranks = []
+    for item in results:
+        result_chunks.append(item.chunk)
+        result_ranks.append(item.rank)
+    assert result_chunks == [chunks[2], chunks[1], chunks[0]]
+    assert result_ranks == [1, 2, 3]
 
 
 def test_no_hit_and_empty_query_return_empty() -> None:

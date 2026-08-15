@@ -79,21 +79,26 @@ def _rerank(
         score = base_score * 100.0 + code_relevance + agreement * 0.12
         reranked.append((score, key))
 
-    ordered = sorted(
-        reranked,
-        key=lambda item: (-item[0], item[1][0], item[1][1], item[1][2]),
-    )[:limit]
-    return tuple(
-        RankedChunk(
-            chunk=chunks[key].chunk,
-            score=score,
-            rank=rank,
-            retrieval_reason=(
-                "hybrid_match" if len(reasons[key]) > 1 else next(iter(reasons[key]))
-            ),
+    def sort_key(item: tuple[float, tuple[str, int, int]]) -> tuple[float, str, int, int]:
+        score, key = item
+        return (-score, key[0], key[1], key[2])
+
+    ordered = sorted(reranked, key=sort_key)[:limit]
+
+    ranked_chunks: list[RankedChunk] = []
+    for rank, (score, key) in enumerate(ordered, start=1):
+        retrieval_reason = "hybrid_match"
+        if len(reasons[key]) <= 1:
+            retrieval_reason = next(iter(reasons[key]))
+        ranked_chunks.append(
+            RankedChunk(
+                chunk=chunks[key].chunk,
+                score=score,
+                rank=rank,
+                retrieval_reason=retrieval_reason,
+            )
         )
-        for rank, (score, key) in enumerate(ordered, start=1)
-    )
+    return tuple(ranked_chunks)
 
 
 def rerank_ranked_chunks(

@@ -44,39 +44,50 @@ EmbeddingFactory = Callable[[], OpenAIEmbeddingModel]
 
 
 def _first_line(text: str) -> str:
-    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+    for line in text.splitlines():
+        stripped_line = line.strip()
+        if stripped_line:
+            return stripped_line
+    return ""
 
 
 def _citation_responses(citations):
-    return [
-        CitationResponse(
-            evidence_id=citation.evidence_id,
-            relative_path=citation.relative_path,
-            start_line=citation.start_line,
-            end_line=citation.end_line,
+    responses = []
+    for citation in citations:
+        responses.append(
+            CitationResponse(
+                evidence_id=citation.evidence_id,
+                relative_path=citation.relative_path,
+                start_line=citation.start_line,
+                end_line=citation.end_line,
+            )
         )
-        for citation in citations
-    ]
+    return responses
 
 
 def _auto_from_agent(router_result: QueryRouterResult, agent_result) -> AutoAnswer:
     result = agent_result.result
     subquestions = agent_result.subquestions
     if not subquestions:
-        subquestions = tuple(
-            SubQuestionAnswer(
-                question=item.question,
-                intent=item.intent,
-                retrieval_mode=item.retrieval_mode,
-                outcome=result.outcome,
-                answer=result.answer,
-                citations=result.citations,
+        fallback_subquestions: list[SubQuestionAnswer] = []
+        for item in router_result.plan.subquestions:
+            fallback_subquestions.append(
+                SubQuestionAnswer(
+                    question=item.question,
+                    intent=item.intent,
+                    retrieval_mode=item.retrieval_mode,
+                    outcome=result.outcome,
+                    answer=result.answer,
+                    citations=result.citations,
+                )
             )
-            for item in router_result.plan.subquestions
+        subquestions = tuple(fallback_subquestions)
+    events_list: list[AutoAnswerEvent] = []
+    for event in agent_result.events:
+        events_list.append(
+            AutoAnswerEvent(event.sequence, event.step, event.summary)
         )
-    events = tuple(
-        AutoAnswerEvent(event.sequence, event.step, event.summary) for event in agent_result.events
-    )
+    events = tuple(events_list)
     return AutoAnswer(
         outcome=result.outcome,
         answer=result.answer,
@@ -100,6 +111,33 @@ def _auto_from_agent(router_result: QueryRouterResult, agent_result) -> AutoAnsw
 
 def _auto_response(result: AutoAnswer) -> AutoAnswerResponse:
     plan = result.plan.to_dict()
+    plan_subquestions: list[QueryPlanSubQuestionResponse] = []
+    for item in plan["subquestions"]:
+        plan_subquestions.append(QueryPlanSubQuestionResponse(**item))
+
+    subquestion_responses: list[AutoSubQuestionResponse] = []
+    for item in result.subquestions:
+        subquestion_responses.append(
+            AutoSubQuestionResponse(
+                question=item.question,
+                intent=item.intent,
+                retrieval_mode=item.retrieval_mode,
+                outcome=item.outcome,
+                answer=item.answer,
+                citations=_citation_responses(item.citations),
+            )
+        )
+
+    event_responses: list[AutoEventResponse] = []
+    for event in result.events:
+        event_responses.append(
+            AutoEventResponse(
+                sequence=event.sequence,
+                step=event.step,
+                summary=event.summary,
+            )
+        )
+
     return AutoAnswerResponse(
         outcome=result.outcome,
         answer=result.answer,
@@ -115,23 +153,13 @@ def _auto_response(result: AutoAnswer) -> AutoAnswerResponse:
             original_question=plan["original_question"],
             language=plan["language"],
             normalized_question=plan["normalized_question"],
-            subquestions=[QueryPlanSubQuestionResponse(**item) for item in plan["subquestions"]],
+            subquestions=plan_subquestions,
             retrieval_modes=plan["retrieval_modes"],
             execution_route=plan["execution_route"],
             confidence=plan["confidence"],
             fallback_reason=plan["fallback_reason"],
         ),
-        subquestions=[
-            AutoSubQuestionResponse(
-                question=item.question,
-                intent=item.intent,
-                retrieval_mode=item.retrieval_mode,
-                outcome=item.outcome,
-                answer=item.answer,
-                citations=_citation_responses(item.citations),
-            )
-            for item in result.subquestions
-        ],
+        subquestions=subquestion_responses,
         router_model=result.router_model,
         router_usage=TokenUsageResponse(
             input_tokens=result.router_input_tokens,
@@ -140,14 +168,7 @@ def _auto_response(result: AutoAnswer) -> AutoAnswerResponse:
         router_elapsed_milliseconds=result.router_elapsed_milliseconds,
         embedding_input_tokens=result.embedding_input_tokens,
         fallback_reason=result.fallback_reason,
-        events=[
-            AutoEventResponse(
-                sequence=event.sequence,
-                step=event.step,
-                summary=event.summary,
-            )
-            for event in result.events
-        ],
+        events=event_responses,
     )
 
 
@@ -178,9 +199,9 @@ def create_router(
             raise HTTPException(status_code=503, detail=str(error)) from error
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return SearchResponse(
-            retrieval_mode=request.retrieval_mode,
-            results=[
+        search_hits: list[SearchHitResponse] = []
+        for item in results:
+            search_hits.append(
                 SearchHitResponse(
                     rank=item.rank,
                     score=item.score,
@@ -191,8 +212,10 @@ def create_router(
                     symbol_path=item.chunk.symbol_path,
                     retrieval_reason=item.retrieval_reason,
                 )
-                for item in results
-            ],
+            )
+        return SearchResponse(
+            retrieval_mode=request.retrieval_mode,
+            results=search_hits,
         )
 
     # 已停用的产品入口：Auto Answer 内部仍复用 answer_repository。
@@ -219,15 +242,7 @@ def create_router(
         return AnswerResponse(
             outcome=result.outcome,
             answer=result.answer,
-            citations=[
-                CitationResponse(
-                    evidence_id=citation.evidence_id,
-                    relative_path=citation.relative_path,
-                    start_line=citation.start_line,
-                    end_line=citation.end_line,
-                )
-                for citation in result.citations
-            ],
+            citations=_citation_responses(result.citations),
             retrieval_mode=result.retrieval_mode,
             model=result.model,
             prompt_version=result.prompt_version,
@@ -259,18 +274,19 @@ def create_router(
             raise HTTPException(status_code=400, detail=str(error)) from error
 
         result = agent_result.result
+        agent_events: list[AgentEventResponse] = []
+        for event in agent_result.events:
+            agent_events.append(
+                AgentEventResponse(
+                    sequence=event.sequence,
+                    step=event.step,
+                    summary=event.summary,
+                )
+            )
         return AgentAnswerResponse(
             outcome=result.outcome,
             answer=result.answer,
-            citations=[
-                CitationResponse(
-                    evidence_id=citation.evidence_id,
-                    relative_path=citation.relative_path,
-                    start_line=citation.start_line,
-                    end_line=citation.end_line,
-                )
-                for citation in result.citations
-            ],
+            citations=_citation_responses(result.citations),
             retrieval_mode=result.retrieval_mode,
             model=result.model,
             prompt_version=result.prompt_version,
@@ -279,14 +295,7 @@ def create_router(
                 output_tokens=agent_result.output_tokens,
             ),
             revisions=agent_result.revisions,
-            events=[
-                AgentEventResponse(
-                    sequence=event.sequence,
-                    step=event.step,
-                    summary=event.summary,
-                )
-                for event in agent_result.events
-            ],
+            events=agent_events,
         )
 
     @router.post("/auto/answer", response_model=AutoAnswerResponse)

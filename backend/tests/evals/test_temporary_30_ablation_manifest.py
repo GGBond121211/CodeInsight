@@ -25,17 +25,35 @@ def test_manifest_freezes_all_cases_subquestions_and_split() -> None:
     asset, manifest = _documents()
     assert manifest["case_count"] == 30
     assert manifest["subquestion_count"] == 38
-    assert {case["case_id"] for case in manifest["cases"]} == {
-        case["id"] for case in asset["cases"]
-    }
-    assert Counter(case["split"] for case in manifest["cases"]) == {
+    manifest_ids = set()
+    for case in manifest["cases"]:
+        manifest_ids.add(case["case_id"])
+    asset_ids = set()
+    for case in asset["cases"]:
+        asset_ids.add(case["id"])
+    assert manifest_ids == asset_ids
+    split_values = []
+    for case in manifest["cases"]:
+        split_values.append(case["split"])
+    assert Counter(split_values) == {
         "diagnostic": 20,
         "confirmation": 10,
     }
-    confirmation = [case for case in manifest["cases"] if case["split"] == "confirmation"]
-    assert {case["case_id"] for case in confirmation} == CONFIRMATION_IDS
-    assert Counter(case["language"] for case in confirmation) == {"zh": 5, "zh-en": 5}
-    assert len({case["category"] for case in manifest["cases"]}) == 9
+    confirmation = []
+    for case in manifest["cases"]:
+        if case["split"] == "confirmation":
+            confirmation.append(case)
+    confirmation_ids = set()
+    confirmation_languages = []
+    for case in confirmation:
+        confirmation_ids.add(case["case_id"])
+        confirmation_languages.append(case["language"])
+    assert confirmation_ids == CONFIRMATION_IDS
+    assert Counter(confirmation_languages) == {"zh": 5, "zh-en": 5}
+    categories = set()
+    for case in manifest["cases"]:
+        categories.add(case["category"])
+    assert len(categories) == 9
 
 
 def test_scenarios_do_not_cross_splits() -> None:
@@ -43,16 +61,21 @@ def test_scenarios_do_not_cross_splits() -> None:
     splits_by_scenario: defaultdict[str, set[str]] = defaultdict(set)
     for case in manifest["cases"]:
         splits_by_scenario[case["scenario"]].add(case["split"])
-    assert all(len(splits) == 1 for splits in splits_by_scenario.values())
+    for splits in splits_by_scenario.values():
+        assert len(splits) == 1
 
 
 def test_evidence_claims_and_subquestion_ids_are_valid() -> None:
     _, manifest = _documents()
     claim_ids = []
     for case in manifest["cases"]:
-        assert [item["id"] for item in case["subquestions"]] == [
-            f"Q{index}" for index in range(1, len(case["subquestions"]) + 1)
-        ]
+        actual_ids = []
+        for item in case["subquestions"]:
+            actual_ids.append(item["id"])
+        expected_ids = []
+        for index in range(1, len(case["subquestions"]) + 1):
+            expected_ids.append(f"Q{index}")
+        assert actual_ids == expected_ids
         for subquestion in case["subquestions"]:
             if subquestion["expected_outcome"] == "insufficient_evidence":
                 assert subquestion["expected_evidence"] == []
