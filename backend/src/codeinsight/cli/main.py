@@ -56,7 +56,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _first_line(chunk: SourceChunk) -> str:
-    return next((line.strip() for line in chunk.text.splitlines() if line.strip()), "")
+    for line in chunk.text.splitlines():
+        stripped_line = line.strip()
+        if stripped_line:
+            return stripped_line
+    return ""
 
 
 def _search(repo: str, question: str, limit: int, retrieval_mode: str) -> int:

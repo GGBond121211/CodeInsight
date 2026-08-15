@@ -64,20 +64,22 @@ def _evidence_payload(
     for subquestion, (results, evidence_ids) in zip(subquestions, evidence_groups, strict=True):
         if len(results) != len(evidence_ids):
             raise ValueError("evidence IDs must match ranked results")
+        evidence_payload = []
+        for result, evidence_id in zip(results, evidence_ids, strict=True):
+            evidence_payload.append(
+                {
+                    "evidence_id": evidence_id,
+                    "path": result.chunk.relative_path,
+                    "start_line": result.chunk.start_line,
+                    "end_line": result.chunk.end_line,
+                    "text": result.chunk.text,
+                }
+            )
         payload.append(
             {
                 "subquestion_id": subquestion["id"],
                 "question": subquestion["question"],
-                "evidence": [
-                    {
-                        "evidence_id": evidence_id,
-                        "path": result.chunk.relative_path,
-                        "start_line": result.chunk.start_line,
-                        "end_line": result.chunk.end_line,
-                        "text": result.chunk.text,
-                    }
-                    for result, evidence_id in zip(results, evidence_ids, strict=True)
-                ],
+                "evidence": evidence_payload,
             }
         )
     return payload

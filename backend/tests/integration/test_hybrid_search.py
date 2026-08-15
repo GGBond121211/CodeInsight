@@ -29,8 +29,15 @@ def test_hybrid_can_recover_a_semantic_business_phrase() -> None:
     )
 
     assert results
-    assert any(item.chunk.relative_path == "src/shop/shipping/workflow.py" for item in results)
-    assert any(item.retrieval_reason in {"semantic_match", "hybrid_match"} for item in results)
+    has_shipping_workflow = False
+    has_semantic_reason = False
+    for item in results:
+        if item.chunk.relative_path == "src/shop/shipping/workflow.py":
+            has_shipping_workflow = True
+        if item.retrieval_reason in {"semantic_match", "hybrid_match"}:
+            has_semantic_reason = True
+    assert has_shipping_workflow
+    assert has_semantic_reason
 
 
 def test_hybrid_requires_an_explicit_embedding_function() -> None:

@@ -19,26 +19,33 @@ RUN_ROOT = PROJECT_ROOT / "outputs" / "evals" / "master-200" / "20260813T-master
 def _stored_result(payload: dict | None):
     if payload is None:
         return None
-    citations = tuple(
-        AnswerCitation(
-            item["evidence_id"],
-            item["relative_path"],
-            item["start_line"],
-            item["end_line"],
+    citation_list = []
+    for item in payload["citations"]:
+        citation_list.append(
+            AnswerCitation(
+                item["evidence_id"],
+                item["relative_path"],
+                item["start_line"],
+                item["end_line"],
+            )
         )
-        for item in payload["citations"]
-    )
+    citations = tuple(citation_list)
+    subquestions = []
+    for item in payload.get("subquestions", ()):
+        subquestions.append(SimpleNamespace(**item))
     return SimpleNamespace(
         outcome=payload["outcome"],
         answer=payload["answer"],
         citations=citations,
-        subquestions=tuple(SimpleNamespace(**item) for item in payload.get("subquestions", ())),
+        subquestions=tuple(subquestions),
     )
 
 
 def main() -> int:
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-    repositories = {item["id"]: item for item in document["repositories"]}
+    repositories = {}
+    for item in document["repositories"]:
+        repositories[item["id"]] = item
     latest = {}
     for line in (RUN_ROOT / "results.jsonl").read_text(encoding="utf-8").splitlines():
         if line.strip():

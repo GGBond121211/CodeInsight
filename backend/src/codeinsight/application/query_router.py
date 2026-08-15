@@ -142,7 +142,11 @@ def parse_query_plan(original_question: str, content: str) -> QueryPlan:
             raise ModelResponseError("Router 子问题的 retrieval_mode 不受支持")
         subquestions.append(SubQuestion(question, intent, retrieval_mode))
 
-    retrieval_modes = tuple(dict.fromkeys(item.retrieval_mode for item in subquestions))
+    retrieval_mode_list: list[str] = []
+    for item in subquestions:
+        if item.retrieval_mode not in retrieval_mode_list:
+            retrieval_mode_list.append(item.retrieval_mode)
+    retrieval_modes = tuple(retrieval_mode_list)
     return QueryPlan(
         original_question=original_question,
         language=language,

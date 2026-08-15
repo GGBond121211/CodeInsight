@@ -21,30 +21,39 @@ def _documents() -> tuple[dict, dict]:
 
 def test_httpx_answer_cases_are_frozen_before_live_run() -> None:
     document, source_document = _documents()
-    source_ids = {case["id"] for case in source_document["cases"]}
-    resolved_ids = [case.get("source_case_id", case.get("id")) for case in document["cases"]]
+    source_ids = set()
+    for case in source_document["cases"]:
+        source_ids.add(case["id"])
+    resolved_ids = []
+    for case in document["cases"]:
+        resolved_ids.append(case.get("source_case_id", case.get("id")))
 
     assert document["schema_version"] == 1
     assert document["source_cases"] == "tests/evals/httpx_cases.json"
     assert len(resolved_ids) == 8
     assert len(set(resolved_ids)) == 8
     assert FOCUS_IDS <= set(resolved_ids)
-    assert all(
-        case.get("source_case_id") in source_ids
-        for case in document["cases"]
-        if "source_case_id" in case
-    )
+    for case in document["cases"]:
+        if "source_case_id" in case:
+            assert case.get("source_case_id") in source_ids
 
 
 def test_httpx_answer_cases_cover_required_business_shapes() -> None:
     document, source_document = _documents()
-    source_by_id = {case["id"]: case for case in source_document["cases"]}
-    resolved = [
-        source_by_id[case["source_case_id"]] if "source_case_id" in case else case
-        for case in document["cases"]
-    ]
-    categories = {case["category"] for case in resolved}
-    insufficient = [case for case in document["cases"] if "source_case_id" not in case]
+    source_by_id = {}
+    for case in source_document["cases"]:
+        source_by_id[case["id"]] = case
+    resolved = []
+    insufficient = []
+    for case in document["cases"]:
+        if "source_case_id" in case:
+            resolved.append(source_by_id[case["source_case_id"]])
+        else:
+            resolved.append(case)
+            insufficient.append(case)
+    categories = set()
+    for case in resolved:
+        categories.add(case["category"])
 
     assert {
         "cross_file_call",
@@ -52,7 +61,12 @@ def test_httpx_answer_cases_cover_required_business_shapes() -> None:
         "symbol_lookup",
         "insufficient_evidence",
     } <= categories
-    assert any(case["id"] == "httpx-redirect-decision" for case in resolved)
+    has_redirect_decision = False
+    for case in resolved:
+        if case["id"] == "httpx-redirect-decision":
+            has_redirect_decision = True
+            break
+    assert has_redirect_decision
     assert len(insufficient) == 1
     assert insufficient[0]["expected"] == {
         "outcome": "insufficient_evidence",

@@ -25,8 +25,13 @@ def test_regular_text_files_are_read_in_sorted_order(tmp_path: Path) -> None:
 
     assert isinstance(result, ScanResult)
     assert isinstance(result.files[0], SourceFile)
-    assert [item.relative_path for item in result.files] == ["a.py", "b.txt", "sub/c.md"]
-    assert [item.text for item in result.files] == ["print(1)", "b", "# c"]
+    relative_paths = []
+    file_texts = []
+    for item in result.files:
+        relative_paths.append(item.relative_path)
+        file_texts.append(item.text)
+    assert relative_paths == ["a.py", "b.txt", "sub/c.md"]
+    assert file_texts == ["print(1)", "b", "# c"]
     assert result.skipped == ()
 
 
@@ -45,7 +50,10 @@ def test_generated_and_dependency_directories_are_pruned(tmp_path: Path) -> None
 
     result = scan_repository(repo)
 
-    assert [item.relative_path for item in result.files] == ["keep.py"]
+    relative_paths = []
+    for item in result.files:
+        relative_paths.append(item.relative_path)
+    assert relative_paths == ["keep.py"]
     assert result.skipped == ()
 
 
@@ -56,8 +64,14 @@ def test_unsupported_files_are_skipped(tmp_path: Path) -> None:
 
     result = scan_repository(repo)
 
-    assert [item.relative_path for item in result.files] == ["main.py"]
-    assert [(item.relative_path, item.reason) for item in result.skipped] == [
+    file_paths = []
+    for item in result.files:
+        file_paths.append(item.relative_path)
+    skipped_files = []
+    for item in result.skipped:
+        skipped_files.append((item.relative_path, item.reason))
+    assert file_paths == ["main.py"]
+    assert skipped_files == [
         ("notes.rst", "unsupported_extension")
     ]
 
@@ -70,8 +84,14 @@ def test_unreadable_text_isolated_as_a_file_skip(tmp_path: Path) -> None:
 
     result = scan_repository(repo)
 
-    assert [item.relative_path for item in result.files] == ["ok.txt"]
-    assert [(item.relative_path, item.reason) for item in result.skipped] == [
+    file_paths = []
+    for item in result.files:
+        file_paths.append(item.relative_path)
+    skipped_files = []
+    for item in result.skipped:
+        skipped_files.append((item.relative_path, item.reason))
+    assert file_paths == ["ok.txt"]
+    assert skipped_files == [
         ("broken.txt", REASON_READ_ERROR)
     ]
 

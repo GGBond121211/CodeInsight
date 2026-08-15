@@ -103,21 +103,31 @@ def _citation_dict(citation) -> dict[str, Any]:
 
 
 def _answer_payload(result: RepositoryAnswer | AutoAnswer) -> dict[str, Any]:
-    return {
-        "outcome": result.outcome,
-        "answer": result.answer,
-        "citations": [_citation_dict(item) for item in result.citations],
-        "subquestions": [
+    citations = []
+    for item in result.citations:
+        citations.append(_citation_dict(item))
+
+    subquestions = []
+    for item in getattr(result, "subquestions", ()):
+        subquestion_citations = []
+        for citation in item.citations:
+            subquestion_citations.append(_citation_dict(citation))
+        subquestions.append(
             {
                 "question": item.question,
                 "intent": item.intent,
                 "retrieval_mode": item.retrieval_mode,
                 "outcome": item.outcome,
                 "answer": item.answer,
-                "citations": [_citation_dict(citation) for citation in item.citations],
+                "citations": subquestion_citations,
             }
-            for item in getattr(result, "subquestions", ())
-        ],
+        )
+
+    return {
+        "outcome": result.outcome,
+        "answer": result.answer,
+        "citations": citations,
+        "subquestions": subquestions,
     }
 
 
@@ -140,26 +150,77 @@ def _metrics(case: dict[str, Any], result, root: Path, error: str | None) -> dic
 
     citations = result.citations
     requirements = expected_evidence_requirements(expected)
-    valid = [citation_is_valid(item, root) for item in citations]
-    supported = [
-        any(citation_overlaps(item, target) for target in requirements) for item in citations
-    ]
-    hits = [any(citation_covers(item, target) for item in citations) for target in evidence]
-    requirement_hits = [citations_jointly_cover(citations, target) for target in requirements]
+    valid = []
+    for item in citations:
+        valid.append(citation_is_valid(item, root))
+
+    supported = []
+    for item in citations:
+        citation_is_supported = False
+        for target in requirements:
+            if citation_overlaps(item, target):
+                citation_is_supported = True
+                break
+        supported.append(citation_is_supported)
+
+    hits = []
+    for target in evidence:
+        target_is_covered = False
+        for item in citations:
+            if citation_covers(item, target):
+                target_is_covered = True
+                break
+        hits.append(target_is_covered)
+
+    requirement_hits = []
+    for target in requirements:
+        requirement_hits.append(citations_jointly_cover(citations, target))
+
+    valid_count = 0
+    for is_valid in valid:
+        if is_valid:
+            valid_count += 1
+    supported_count = 0
+    for is_supported in supported:
+        if is_supported:
+            supported_count += 1
+    hit_count = 0
+    for was_hit in hits:
+        if was_hit:
+            hit_count += 1
+
+    complete_coverage = True
+    for requirement_hit in requirement_hits:
+        if not requirement_hit:
+            complete_coverage = False
+            break
+    valid_citations = True
+    for is_valid in valid:
+        if not is_valid:
+            valid_citations = False
+            break
+    supported_citations = True
+    for is_supported in supported:
+        if not is_supported:
+            supported_citations = False
+            break
+
     expected_outcome = expected["outcome"]
     outcome_hit = result.outcome == expected_outcome
     if citations:
-        citation_validity = sum(valid) / len(valid)
-        citation_precision = sum(supported) / len(supported) if evidence else 0.0
+        citation_validity = valid_count / len(valid)
+        citation_precision = supported_count / len(supported) if evidence else 0.0
     else:
         citation_validity = 1.0
         citation_precision = 1.0 if expected_outcome == "insufficient_evidence" else 0.0
-    evidence_recall = sum(hits) / len(hits) if hits else 1.0
-    complete_coverage = all(requirement_hits)
+    evidence_recall = hit_count / len(hits) if hits else 1.0
     required_terms = expected.get("required_terms", ())
-    required_terms_pass = all(
-        term.casefold() in result.answer.casefold() for term in required_terms
-    )
+    required_terms_pass = True
+    answer_casefolded = result.answer.casefold()
+    for term in required_terms:
+        if term.casefold() not in answer_casefolded:
+            required_terms_pass = False
+            break
     expected_subquestions = expected.get("subquestions", ())
     actual_subquestions: tuple[SubQuestionAnswer, ...] = getattr(result, "subquestions", ())
     expected_count = len(expected_subquestions) if expected_subquestions else 1
@@ -171,8 +232,8 @@ def _metrics(case: dict[str, Any], result, root: Path, error: str | None) -> dic
         grounded = (
             outcome_hit
             and complete_coverage
-            and all(valid)
-            and all(supported)
+            and valid_citations
+            and supported_citations
             and required_terms_pass
             and error is None
         )
@@ -181,9 +242,9 @@ def _metrics(case: dict[str, Any], result, root: Path, error: str | None) -> dic
         failures.append("service_or_model_error")
     if not outcome_hit:
         failures.append("outcome")
-    if not all(valid):
+    if not valid_citations:
         failures.append("invalid_citation")
-    if not all(supported):
+    if not supported_citations:
         failures.append("citation_precision")
     if not complete_coverage:
         failures.append("evidence_coverage")
@@ -235,7 +296,9 @@ def run_case(case: dict[str, Any], repository: dict[str, Any], chat, embedding) 
                 },
             )()
             revisions = agent_result.revisions
-            events = [asdict(item) for item in agent_result.events]
+            events = []
+            for item in agent_result.events:
+                events.append(asdict(item))
         else:
             result = auto_answer_repository(
                 root,
@@ -245,7 +308,9 @@ def run_case(case: dict[str, Any], repository: dict[str, Any], chat, embedding) 
                 if router_result.plan.execution_route != "insufficient"
                 else None,
             )
-            events = [asdict(item) for item in result.events]
+            events = []
+            for item in result.events:
+                events.append(asdict(item))
     except Exception as caught:  # noqa: BLE001 - each case is an isolation boundary
         error = f"{type(caught).__name__}: {caught}"
 
@@ -282,47 +347,93 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     count = len(rows)
     if not count:
         return {"case_count": 0}
-    latencies = [item["elapsed_milliseconds"] for item in rows]
-    routes = Counter(
-        item["router"]["plan"]["execution_route"] if item["router"] else "router_error"
-        for item in rows
-    )
+
+    latencies = []
+    routes = Counter()
+    outcome_hits = []
+    citation_validity = []
+    citation_precision = []
+    evidence_recall = []
+    complete_evidence_coverage = []
+    required_terms_case_rate = []
+    structured_subquestion_rate = []
+    subquestion_count_accuracy = []
+    automated_grounded_pass = []
+    error_count = 0
+    router_fallback_count = 0
+    chat_calls = 0
+    chat_input_tokens = 0
+    chat_output_tokens = 0
+    embedding_calls = 0
+    embedding_input_tokens = 0
+    failure_values = []
+
+    for item in rows:
+        latencies.append(item["elapsed_milliseconds"])
+        route = item["router"]["plan"]["execution_route"] if item["router"] else "router_error"
+        routes[route] += 1
+        outcome_hits.append(item["outcome_hit"])
+        citation_validity.append(item["citation_validity"])
+        citation_precision.append(item["citation_precision"])
+        evidence_recall.append(item["evidence_recall"])
+        complete_evidence_coverage.append(item["complete_evidence_coverage"])
+        required_terms_case_rate.append(item["required_terms_pass"])
+        structured_subquestion_rate.append(item["structured_subquestions"])
+        subquestion_count_accuracy.append(item["subquestion_count_hit"])
+        automated_grounded_pass.append(item["automated_grounded_pass"])
+        if item["error"] is not None:
+            error_count += 1
+        if item["router"] and item["router"]["used_fallback"]:
+            router_fallback_count += 1
+        chat_calls += item["usage"]["chat_calls"]
+        chat_input_tokens += item["usage"]["chat_input_tokens"]
+        chat_output_tokens += item["usage"]["chat_output_tokens"]
+        embedding_calls += item["usage"]["embedding_calls"]
+        embedding_input_tokens += item["usage"]["embedding_input_tokens"]
+        for failure_type in item["failure_types"]:
+            failure_values.append(failure_type)
+
     return {
         "case_count": count,
-        "outcome_accuracy": mean(item["outcome_hit"] for item in rows),
-        "citation_validity": mean(item["citation_validity"] for item in rows),
-        "citation_precision": mean(item["citation_precision"] for item in rows),
-        "evidence_recall": mean(item["evidence_recall"] for item in rows),
-        "complete_evidence_coverage": mean(item["complete_evidence_coverage"] for item in rows),
-        "required_terms_case_rate": mean(item["required_terms_pass"] for item in rows),
-        "structured_subquestion_rate": mean(item["structured_subquestions"] for item in rows),
-        "subquestion_count_accuracy": mean(item["subquestion_count_hit"] for item in rows),
-        "automated_grounded_pass": mean(item["automated_grounded_pass"] for item in rows),
-        "error_count": sum(item["error"] is not None for item in rows),
-        "router_fallback_count": sum(
-            bool(item["router"] and item["router"]["used_fallback"]) for item in rows
-        ),
+        "outcome_accuracy": mean(outcome_hits),
+        "citation_validity": mean(citation_validity),
+        "citation_precision": mean(citation_precision),
+        "evidence_recall": mean(evidence_recall),
+        "complete_evidence_coverage": mean(complete_evidence_coverage),
+        "required_terms_case_rate": mean(required_terms_case_rate),
+        "structured_subquestion_rate": mean(structured_subquestion_rate),
+        "subquestion_count_accuracy": mean(subquestion_count_accuracy),
+        "automated_grounded_pass": mean(automated_grounded_pass),
+        "error_count": error_count,
+        "router_fallback_count": router_fallback_count,
         "route_distribution": dict(routes),
-        "chat_calls": sum(item["usage"]["chat_calls"] for item in rows),
-        "chat_input_tokens": sum(item["usage"]["chat_input_tokens"] for item in rows),
-        "chat_output_tokens": sum(item["usage"]["chat_output_tokens"] for item in rows),
-        "embedding_calls": sum(item["usage"]["embedding_calls"] for item in rows),
-        "embedding_input_tokens": sum(item["usage"]["embedding_input_tokens"] for item in rows),
+        "chat_calls": chat_calls,
+        "chat_input_tokens": chat_input_tokens,
+        "chat_output_tokens": chat_output_tokens,
+        "embedding_calls": embedding_calls,
+        "embedding_input_tokens": embedding_input_tokens,
         "latency_ms": {
             "mean": mean(latencies),
             "p50": median(latencies),
             "p95": _percentile(latencies, 0.95),
         },
-        "failure_types": dict(Counter(value for item in rows for value in item["failure_types"])),
+        "failure_types": dict(Counter(failure_values)),
     }
 
 
 def summarize(rows: list[dict[str, Any]], repositories: list[str]) -> dict[str, Any]:
-    by_repo = {
-        repo: _aggregate([row for row in rows if row["repository_id"] == repo])
-        for repo in repositories
-    }
-    nonempty_repo = [value for value in by_repo.values() if value.get("case_count")]
+    by_repo: dict[str, dict[str, Any]] = {}
+    for repo in repositories:
+        repo_rows = []
+        for row in rows:
+            if row["repository_id"] == repo:
+                repo_rows.append(row)
+        by_repo[repo] = _aggregate(repo_rows)
+
+    nonempty_repo = []
+    for value in by_repo.values():
+        if value.get("case_count"):
+            nonempty_repo.append(value)
     macro_keys = (
         "outcome_accuracy",
         "citation_validity",
@@ -333,22 +444,42 @@ def summarize(rows: list[dict[str, Any]], repositories: list[str]) -> dict[str, 
     )
     grouped: dict[str, dict[str, Any]] = {}
     for field in ("language", "category"):
-        for value in sorted({row[field] for row in rows}):
-            grouped[f"{field}:{value}"] = _aggregate([row for row in rows if row[field] == value])
+        values = set()
+        for row in rows:
+            values.add(row[field])
+        for value in sorted(values):
+            grouped_rows = []
+            for row in rows:
+                if row[field] == value:
+                    grouped_rows.append(row)
+            grouped[f"{field}:{value}"] = _aggregate(grouped_rows)
+
+    repository_equal_macro: dict[str, float] = {}
+    for key in macro_keys:
+        values = []
+        for item in nonempty_repo:
+            values.append(item[key])
+        repository_equal_macro[key] = mean(values) if values else 0.0
+
+    successful_rows = []
+    for row in rows:
+        if not row["error"]:
+            successful_rows.append(row)
+
+    successful_calls_by_repository: dict[str, dict[str, Any]] = {}
+    for repo in repositories:
+        repo_successful_rows = []
+        for row in rows:
+            if row["repository_id"] == repo and not row["error"]:
+                repo_successful_rows.append(row)
+        successful_calls_by_repository[repo] = _aggregate(repo_successful_rows)
+
     return {
         "micro": _aggregate(rows),
-        "successful_calls_only": _aggregate([row for row in rows if not row["error"]]),
-        "repository_equal_macro": {
-            key: mean(item[key] for item in nonempty_repo) if nonempty_repo else 0.0
-            for key in macro_keys
-        },
+        "successful_calls_only": _aggregate(successful_rows),
+        "repository_equal_macro": repository_equal_macro,
         "by_repository": by_repo,
-        "successful_calls_by_repository": {
-            repo: _aggregate(
-                [row for row in rows if row["repository_id"] == repo and not row["error"]]
-            )
-            for repo in repositories
-        },
+        "successful_calls_by_repository": successful_calls_by_repository,
         "slices": grouped,
     }
 
@@ -370,31 +501,40 @@ def main() -> int:
     args = parser.parse_args()
 
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-    repositories = {item["id"]: item for item in document["repositories"]}
+    repositories = {}
+    for item in document["repositories"]:
+        repositories[item["id"]] = item
     selected_repositories = args.repository or list(repositories)
-    cases = [
-        item
-        for item in document["cases"]
-        if item["repository_id"] in selected_repositories
-        and (not args.case_ids or item["id"] in args.case_ids)
-    ]
+    cases = []
+    for item in document["cases"]:
+        repository_selected = item["repository_id"] in selected_repositories
+        case_selected = not args.case_ids or item["id"] in args.case_ids
+        if repository_selected and case_selected:
+            cases.append(item)
     if args.max_cases is not None:
         cases = cases[: args.max_cases]
+    repository_ids = []
+    embedding_cases = 0
+    for item in cases:
+        repository_ids.append(item["repository_id"])
+        if item["expected"]["outcome"] != "insufficient_evidence":
+            embedding_cases += 1
     budget = {
         "run_id": args.run_id,
         "case_count": len(cases),
-        "repositories": dict(Counter(item["repository_id"] for item in cases)),
+        "repositories": dict(Counter(repository_ids)),
         "chat_call_floor": len(cases) * 2,
-        "embedding_index_builds": sum(
-            item["expected"]["outcome"] != "insufficient_evidence" for item in cases
-        ),
+        "embedding_index_builds": embedding_cases,
         "resume_policy": "existing case IDs in results.jsonl are skipped",
     }
     print(json.dumps(budget, ensure_ascii=False))
     if not args.confirm_run:
         return 0
     required = ("CODEINSIGHT_API_KEY", "CODEINSIGHT_MODEL", "CODEINSIGHT_EMBEDDING_MODEL")
-    missing = [name for name in required if not os.environ.get(name)]
+    missing = []
+    for name in required:
+        if not os.environ.get(name):
+            missing.append(name)
     if missing:
         parser.error("missing environment configuration: " + ", ".join(missing))
 
@@ -435,7 +575,10 @@ def main() -> int:
             flush=True,
         )
 
-    selected_rows = [latest_rows[case["id"]] for case in cases if case["id"] in latest_rows]
+    selected_rows = []
+    for case in cases:
+        if case["id"] in latest_rows:
+            selected_rows.append(latest_rows[case["id"]])
     payload = {
         "schema_version": 1,
         "run_id": args.run_id,

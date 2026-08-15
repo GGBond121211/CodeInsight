@@ -28,7 +28,9 @@ OUTPUT_PATH = BACKEND_ROOT.parent / "outputs" / "evals" / "agent-answer-baseline
 def load_agent_cases() -> list[dict]:
     source_document = json.loads(SOURCE_CASES_PATH.read_text(encoding="utf-8"))
     answer_document = json.loads(ANSWER_CASES_PATH.read_text(encoding="utf-8"))
-    source_by_id = {case["id"]: case for case in source_document["cases"]}
+    source_by_id = {}
+    for case in source_document["cases"]:
+        source_by_id[case["id"]] = case
     resolved = []
     for selected in answer_document["cases"]:
         case = dict(source_by_id[selected["id"]])
@@ -47,9 +49,9 @@ def build_agent_evaluation_payload(
     model: str,
     base_url_host: str | None,
 ) -> dict:
-    repository_results: dict[str, RepositoryAnswer | None] = {
-        case_id: result.result if result else None for case_id, result in results.items()
-    }
+    repository_results: dict[str, RepositoryAnswer | None] = {}
+    for case_id, result in results.items():
+        repository_results[case_id] = result.result if result else None
     metrics = evaluate_answer_results(cases, repository_results, fixture_root)
     case_payloads = []
     total_input_tokens = 0
@@ -63,6 +65,14 @@ def build_agent_evaluation_payload(
             total_input_tokens += agent_result.input_tokens
             total_output_tokens += agent_result.output_tokens
             total_revisions += agent_result.revisions
+        citations = []
+        events = []
+        if result:
+            for citation in result.citations:
+                citations.append(asdict(citation))
+        if agent_result:
+            for event in agent_result.events:
+                events.append(asdict(event))
         case_payloads.append(
             {
                 "case_id": case_id,
@@ -70,9 +80,9 @@ def build_agent_evaluation_payload(
                 "expected_outcome": case["expected"]["outcome"],
                 "outcome": result.outcome if result else None,
                 "answer": result.answer if result else None,
-                "citations": [asdict(citation) for citation in result.citations] if result else [],
+                "citations": citations,
                 "revisions": agent_result.revisions if agent_result else 0,
-                "events": [asdict(event) for event in agent_result.events] if agent_result else [],
+                "events": events,
                 "input_tokens": agent_result.input_tokens if agent_result else None,
                 "output_tokens": agent_result.output_tokens if agent_result else None,
                 "elapsed_milliseconds": elapsed_milliseconds[case_id],
@@ -143,10 +153,18 @@ def main() -> int:
         "metrics": payload["metrics"],
         "usage": payload["usage"],
         "total_revisions": payload["total_revisions"],
-        "failed_case_ids": [item["case_id"] for item in payload["cases"] if item["failure_types"]],
+        "failed_case_ids": failed_case_ids(payload["cases"]),
     }
     print(json.dumps(summary, indent=2))
     return 0
+
+
+def failed_case_ids(case_payloads: list[dict]) -> list[str]:
+    failed = []
+    for item in case_payloads:
+        if item["failure_types"]:
+            failed.append(item["case_id"])
+    return failed
 
 
 if __name__ == "__main__":

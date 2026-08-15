@@ -56,9 +56,12 @@ class StructuredCaseAnswer:
     raw_content: str
 
     def to_model_dict(self) -> dict[str, Any]:
+        subquestion_outputs = []
+        for item in self.subquestions:
+            subquestion_outputs.append(item.to_dict())
         return {
             "case_id": self.case_id,
-            "subquestion_outputs": [item.to_dict() for item in self.subquestions],
+            "subquestion_outputs": subquestion_outputs,
         }
 
 
@@ -87,7 +90,10 @@ class StructuredCaseReview:
     raw_content: str
 
     def to_model_dict(self) -> dict[str, Any]:
-        return {"subquestion_reviews": [item.to_dict() for item in self.reviews]}
+        subquestion_reviews = []
+        for item in self.reviews:
+            subquestion_reviews.append(item.to_dict())
+        return {"subquestion_reviews": subquestion_reviews}
 
 
 def _decode_json_object(content: str) -> dict[str, Any]:
@@ -133,8 +139,16 @@ def parse_structured_answer(
     outputs = payload["subquestion_outputs"]
     if not isinstance(outputs, list) or not outputs:
         raise ModelResponseError("subquestion_outputs must be a non-empty list")
-    actual_ids = [item.get("subquestion_id") for item in outputs if isinstance(item, dict)]
-    if len(actual_ids) != len(outputs) or not all(isinstance(item, str) for item in actual_ids):
+    actual_ids = []
+    for item in outputs:
+        if isinstance(item, dict):
+            actual_ids.append(item.get("subquestion_id"))
+    all_ids_are_strings = True
+    for item in actual_ids:
+        if not isinstance(item, str):
+            all_ids_are_strings = False
+            break
+    if len(actual_ids) != len(outputs) or not all_ids_are_strings:
         raise ModelResponseError("every structured answer item needs a subquestion_id")
     _validate_exact_ids(actual_ids, expected_subquestion_ids, "structured answer")
 
@@ -150,12 +164,21 @@ def parse_structured_answer(
             raise ModelResponseError("structured answer has an unsupported outcome")
         if not isinstance(answer, str) or not answer.strip():
             raise ModelResponseError("structured answer text must be non-empty")
-        if not isinstance(citations, list) or not all(
-            isinstance(value, str) for value in citations
-        ):
+        citations_are_strings = True
+        if isinstance(citations, list):
+            for value in citations:
+                if not isinstance(value, str):
+                    citations_are_strings = False
+                    break
+        else:
+            citations_are_strings = False
+        if not citations_are_strings:
             raise ModelResponseError("structured answer citations must be evidence IDs")
         citations = list(dict.fromkeys(citations))
-        unknown = [value for value in citations if value not in allowed_evidence[subquestion_id]]
+        unknown = []
+        for value in citations:
+            if value not in allowed_evidence[subquestion_id]:
+                unknown.append(value)
         if unknown:
             raise ModelResponseError(
                 f"{subquestion_id} used evidence owned by another group: {unknown[0]}"
@@ -197,8 +220,16 @@ def parse_structured_review(
     reviews = payload["subquestion_reviews"]
     if not isinstance(reviews, list) or not reviews:
         raise ModelResponseError("subquestion_reviews must be a non-empty list")
-    actual_ids = [item.get("subquestion_id") for item in reviews if isinstance(item, dict)]
-    if len(actual_ids) != len(reviews) or not all(isinstance(item, str) for item in actual_ids):
+    actual_ids = []
+    for item in reviews:
+        if isinstance(item, dict):
+            actual_ids.append(item.get("subquestion_id"))
+    all_ids_are_strings = True
+    for item in actual_ids:
+        if not isinstance(item, str):
+            all_ids_are_strings = False
+            break
+    if len(actual_ids) != len(reviews) or not all_ids_are_strings:
         raise ModelResponseError("every structured review item needs a subquestion_id")
     _validate_exact_ids(actual_ids, expected_subquestion_ids, "structured review")
 
@@ -214,12 +245,21 @@ def parse_structured_review(
         feedback = item["feedback"]
         if verdict not in {"pass", "revise"}:
             raise ModelResponseError("structured review verdict must be pass or revise")
-        if not isinstance(citations, list) or not all(
-            isinstance(value, str) for value in citations
-        ):
+        citations_are_strings = True
+        if isinstance(citations, list):
+            for value in citations:
+                if not isinstance(value, str):
+                    citations_are_strings = False
+                    break
+        else:
+            citations_are_strings = False
+        if not citations_are_strings:
             raise ModelResponseError("supported_citations must be evidence IDs")
         citations = list(dict.fromkeys(citations))
-        unknown = [value for value in citations if value not in allowed_evidence[subquestion_id]]
+        unknown = []
+        for value in citations:
+            if value not in allowed_evidence[subquestion_id]:
+                unknown.append(value)
         if unknown:
             raise ModelResponseError(
                 f"{subquestion_id} review used evidence owned by another group: {unknown[0]}"
@@ -248,13 +288,18 @@ def changed_subquestion_ids(
     after: StructuredCaseAnswer,
     review: StructuredCaseReview,
 ) -> tuple[str, ...]:
-    allowed = {item.subquestion_id for item in review.reviews if item.verdict == "revise"}
-    before_by_id = {item.subquestion_id: item for item in before.subquestions}
-    return tuple(
-        item.subquestion_id
-        for item in after.subquestions
-        if item != before_by_id[item.subquestion_id] and item.subquestion_id not in allowed
-    )
+    allowed = set()
+    for item in review.reviews:
+        if item.verdict == "revise":
+            allowed.add(item.subquestion_id)
+    before_by_id = {}
+    for item in before.subquestions:
+        before_by_id[item.subquestion_id] = item
+    changed_ids = []
+    for item in after.subquestions:
+        if item != before_by_id[item.subquestion_id] and item.subquestion_id not in allowed:
+            changed_ids.append(item.subquestion_id)
+    return tuple(changed_ids)
 
 
 def load_manifest() -> dict[str, Any]:
@@ -264,7 +309,11 @@ def load_manifest() -> dict[str, Any]:
 def selected_cases(split: str) -> list[dict[str, Any]]:
     if split not in {"diagnostic", "confirmation"}:
         raise ValueError("split must be diagnostic or confirmation")
-    return [case for case in load_manifest()["cases"] if case["split"] == split]
+    selected = []
+    for case in load_manifest()["cases"]:
+        if case["split"] == split:
+            selected.append(case)
+    return selected
 
 
 def sha256_file(path: Path) -> str:
@@ -322,21 +371,22 @@ def git_state() -> dict[str, Any]:
 
 
 def environment_fingerprint() -> dict[str, Any]:
+    configured_variable_names = []
+    variable_names = (
+        "CODEINSIGHT_API_KEY",
+        "CODEINSIGHT_BASE_URL",
+        "CODEINSIGHT_MODEL",
+        "CODEINSIGHT_EMBEDDING_API_KEY",
+        "CODEINSIGHT_EMBEDDING_BASE_URL",
+        "CODEINSIGHT_EMBEDDING_MODEL",
+    )
+    for key in variable_names:
+        if os.environ.get(key):
+            configured_variable_names.append(key)
     return {
         "chat_model": os.environ.get("CODEINSIGHT_MODEL"),
         "embedding_model": os.environ.get("CODEINSIGHT_EMBEDDING_MODEL"),
-        "configured_variable_names": sorted(
-            key
-            for key in (
-                "CODEINSIGHT_API_KEY",
-                "CODEINSIGHT_BASE_URL",
-                "CODEINSIGHT_MODEL",
-                "CODEINSIGHT_EMBEDDING_API_KEY",
-                "CODEINSIGHT_EMBEDDING_BASE_URL",
-                "CODEINSIGHT_EMBEDDING_MODEL",
-            )
-            if os.environ.get(key)
-        ),
+        "configured_variable_names": sorted(configured_variable_names),
     }
 
 
@@ -358,19 +408,23 @@ def case_cluster_bootstrap(
     if not paired_case_values:
         return {"mean": None, "ci95": [None, None], "case_count": 0}
     case_ids = sorted(paired_case_values)
-    case_means = {
-        case_id: sum(values) / len(values)
-        for case_id, values in paired_case_values.items()
-        if values
-    }
+    case_means = {}
+    for case_id, values in paired_case_values.items():
+        if values:
+            case_means[case_id] = sum(values) / len(values)
     if len(case_means) != len(case_ids):
         raise ValueError("every bootstrap case must contain at least one paired value")
     observed = sum(case_means.values()) / len(case_means)
     generator = random.Random(seed)
     samples = []
     for _ in range(iterations):
-        selected = [generator.choice(case_ids) for _ in case_ids]
-        samples.append(sum(case_means[case_id] for case_id in selected) / len(selected))
+        selected = []
+        for _ in case_ids:
+            selected.append(generator.choice(case_ids))
+        selected_total = 0.0
+        for case_id in selected:
+            selected_total += case_means[case_id]
+        samples.append(selected_total / len(selected))
     samples.sort()
     low = samples[max(0, math.ceil(0.025 * iterations) - 1)]
     high = samples[max(0, math.ceil(0.975 * iterations) - 1)]
@@ -380,14 +434,21 @@ def case_cluster_bootstrap(
 def exact_mcnemar(left: Sequence[bool], right: Sequence[bool]) -> dict[str, Any]:
     if len(left) != len(right):
         raise ValueError("paired binary samples must have equal lengths")
-    wins = sum((not before) and after for before, after in zip(left, right, strict=True))
-    losses = sum(before and (not after) for before, after in zip(left, right, strict=True))
+    wins = 0
+    losses = 0
+    for before, after in zip(left, right, strict=True):
+        if not before and after:
+            wins += 1
+        if before and not after:
+            losses += 1
     ties = len(left) - wins - losses
     discordant = wins + losses
     if discordant == 0:
         p_value = 1.0
     else:
-        tail = sum(math.comb(discordant, k) for k in range(0, min(wins, losses) + 1))
+        tail = 0
+        for k in range(0, min(wins, losses) + 1):
+            tail += math.comb(discordant, k)
         p_value = min(1.0, 2.0 * tail / (2**discordant))
     return {"wins": wins, "losses": losses, "ties": ties, "p_value": p_value}
 

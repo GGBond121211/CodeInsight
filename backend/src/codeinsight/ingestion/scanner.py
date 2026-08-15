@@ -21,9 +21,11 @@ def scan_repository(root: str | Path) -> ScanResult:
     files: list[SourceFile] = []
     skipped: list[SkippedFile] = []
     for directory, directory_names, file_names in os.walk(root_path):
-        directory_names[:] = sorted(
-            name for name in directory_names if not is_ignored_directory(name)
-        )
+        allowed_directory_names: list[str] = []
+        for name in directory_names:
+            if not is_ignored_directory(name):
+                allowed_directory_names.append(name)
+        directory_names[:] = sorted(allowed_directory_names)
         for name in sorted(file_names):
             path = Path(directory) / name
             relative = path.relative_to(root_path).as_posix()
@@ -37,6 +39,9 @@ def scan_repository(root: str | Path) -> ScanResult:
                 skipped.append(SkippedFile(relative, REASON_READ_ERROR))
                 continue
             files.append(SourceFile(relative, text))
-    files.sort(key=lambda item: item.relative_path)
-    skipped.sort(key=lambda item: item.relative_path)
+    def file_path(item: SourceFile | SkippedFile) -> str:
+        return item.relative_path
+
+    files.sort(key=file_path)
+    skipped.sort(key=file_path)
     return ScanResult(files=tuple(files), skipped=tuple(skipped))

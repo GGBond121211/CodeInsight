@@ -58,9 +58,13 @@ class QueryPlan:
             raise ValueError("QueryPlan 最多支持 8 个 subquestion")
         if len(set(self.retrieval_modes)) != len(self.retrieval_modes):
             raise ValueError("QueryPlan 的 retrieval_mode 不能重复")
-        if any(mode not in SUPPORTED_RETRIEVAL_MODES for mode in self.retrieval_modes):
-            raise ValueError("QueryPlan 包含不受支持的 retrieval_mode")
-        subquestion_modes = tuple(item.retrieval_mode for item in self.subquestions)
+        for mode in self.retrieval_modes:
+            if mode not in SUPPORTED_RETRIEVAL_MODES:
+                raise ValueError("QueryPlan 包含不受支持的 retrieval_mode")
+        subquestion_mode_list: list[str] = []
+        for item in self.subquestions:
+            subquestion_mode_list.append(item.retrieval_mode)
+        subquestion_modes = tuple(subquestion_mode_list)
         if set(subquestion_modes) != set(self.retrieval_modes):
             raise ValueError("retrieval_modes 必须与 subquestion 的 retrieval_mode 匹配")
         if self.execution_route != "insufficient" and not self.subquestions:
@@ -72,16 +76,21 @@ class QueryPlan:
             "original_question": self.original_question,
             "language": self.language,
             "normalized_question": self.normalized_question,
-            "subquestions": [
-                {
-                    "question": item.question,
-                    "intent": item.intent,
-                    "retrieval_mode": item.retrieval_mode,
-                }
-                for item in self.subquestions
-            ],
+            "subquestions": self._subquestion_dicts(),
             "retrieval_modes": list(self.retrieval_modes),
             "execution_route": self.execution_route,
             "confidence": self.confidence,
             "fallback_reason": self.fallback_reason,
         }
+
+    def _subquestion_dicts(self) -> list[dict[str, str]]:
+        subquestions: list[dict[str, str]] = []
+        for item in self.subquestions:
+            subquestions.append(
+                {
+                    "question": item.question,
+                    "intent": item.intent,
+                    "retrieval_mode": item.retrieval_mode,
+                }
+            )
+        return subquestions

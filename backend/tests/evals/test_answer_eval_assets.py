@@ -16,8 +16,12 @@ def _documents() -> tuple[dict, dict]:
 def test_answer_case_schema_and_ids_are_frozen() -> None:
     answer_document, source_document = _documents()
     cases = answer_document["cases"]
-    ids = [case["id"] for case in cases]
-    source_ids = {case["id"] for case in source_document["cases"]}
+    ids = []
+    for case in cases:
+        ids.append(case["id"])
+    source_ids = set()
+    for case in source_document["cases"]:
+        source_ids.add(case["id"])
 
     assert answer_document["schema_version"] == 1
     assert answer_document["source_cases"] == "tests/evals/cases.json"
@@ -28,13 +32,16 @@ def test_answer_case_schema_and_ids_are_frozen() -> None:
 
 def test_answer_cases_cover_outcomes_terms_and_business_categories() -> None:
     answer_document, source_document = _documents()
-    selected = {case["id"]: case for case in answer_document["cases"]}
-    source = {case["id"]: case for case in source_document["cases"]}
-    insufficient_ids = {
-        case_id
-        for case_id, case in source.items()
-        if case["expected"]["outcome"] == "insufficient_evidence"
-    }
+    selected = {}
+    for case in answer_document["cases"]:
+        selected[case["id"]] = case
+    source = {}
+    for case in source_document["cases"]:
+        source[case["id"]] = case
+    insufficient_ids = set()
+    for case_id, case in source.items():
+        if case["expected"]["outcome"] == "insufficient_evidence":
+            insufficient_ids.add(case_id)
 
     assert insufficient_ids == {
         "insufficient-payment",
@@ -48,7 +55,9 @@ def test_answer_cases_cover_outcomes_terms_and_business_categories() -> None:
         else:
             assert case["required_terms"]
 
-    categories = {source[case_id]["category"] for case_id in selected}
+    categories = set()
+    for case_id in selected:
+        categories.add(source[case_id]["category"])
     assert {
         "symbol_lookup",
         "cross_file_call",

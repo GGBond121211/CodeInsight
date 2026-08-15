@@ -47,8 +47,11 @@ class OpenAIEmbeddingModel:
 
     def embed(self, texts: Sequence[str]) -> EmbeddingBatch:
         """为非空文本批次生成向量，并保留服务商用量信息。"""
-        if not texts or any(not text.strip() for text in texts):
+        if not texts:
             raise ValueError("Embedding 输入必须包含非空文本")
+        for text in texts:
+            if not text.strip():
+                raise ValueError("Embedding 输入必须包含非空文本")
         vectors: list[tuple[float, ...]] = []
         input_tokens = 0
         usage_available = True
@@ -63,11 +66,19 @@ class OpenAIEmbeddingModel:
                 code = getattr(error, "code", None) or type(error).__name__
                 raise ModelCallError(f"Embedding 请求失败（{code}）") from error
 
-            data = sorted(response.data or (), key=lambda item: item.index)
+            response_data = response.data or ()
+
+            def data_index(item: object) -> int:
+                return item.index
+
+            data = sorted(response_data, key=data_index)
             if len(data) != len(batch):
                 raise ModelResponseError("Embedding 返回数量与输入数量不一致")
             for item in data:
-                vector = tuple(float(value) for value in item.embedding)
+                vector_values: list[float] = []
+                for value in item.embedding:
+                    vector_values.append(float(value))
+                vector = tuple(vector_values)
                 if not vector:
                     raise ModelResponseError("Embedding 返回结果包含空向量")
                 vectors.append(vector)
@@ -77,10 +88,14 @@ class OpenAIEmbeddingModel:
             else:
                 input_tokens += usage.total_tokens
         dimensions = len(vectors[0])
-        if any(len(vector) != dimensions for vector in vectors):
-            raise ModelResponseError("Embedding 返回向量的维度不一致")
+        for vector in vectors:
+            if len(vector) != dimensions:
+                raise ModelResponseError("Embedding 返回向量的维度不一致")
+        reported_input_tokens: int | None = input_tokens
+        if not usage_available:
+            reported_input_tokens = None
         return EmbeddingBatch(
             model=self.model,
             vectors=tuple(vectors),
-            input_tokens=input_tokens if usage_available else None,
+            input_tokens=reported_input_tokens,
         )

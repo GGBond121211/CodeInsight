@@ -13,7 +13,10 @@ FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
 
 
 def _fake_embed(texts):
-    return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+    vectors = []
+    for _ in texts:
+        vectors.append((1.0, 0.0))
+    return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
 def _generated_answer(
@@ -56,30 +59,31 @@ def test_answer_defaults_to_hybrid_and_maps_retrieved_evidence() -> None:
 
 
 def test_answer_preserves_parser_deduplication_order() -> None:
+    def generate(system: str, user: str) -> ModelAnswer:
+        return _generated_answer(system, user, evidence_ids=("E2", "E1"))
+
     result = answer_repository(
         FIXTURE_ROOT,
         "Where is checkout defined?",
-        generate=lambda system, user: _generated_answer(
-            system,
-            user,
-            evidence_ids=("E2", "E1"),
-        ),
+        generate=generate,
         semantic_embed=_fake_embed,
     )
 
-    assert [citation.evidence_id for citation in result.citations] == ["E2", "E1"]
+    citation_ids = []
+    for citation in result.citations:
+        citation_ids.append(citation.evidence_id)
+    assert citation_ids == ["E2", "E1"]
 
 
 def test_answer_rejects_unknown_evidence_id() -> None:
+    def generate(system: str, user: str) -> ModelAnswer:
+        return _generated_answer(system, user, evidence_ids=("E99",))
+
     with pytest.raises(ModelResponseError, match="未知的 evidence ID：E99"):
         answer_repository(
             FIXTURE_ROOT,
             "Where is checkout defined?",
-            generate=lambda system, user: _generated_answer(
-                system,
-                user,
-                evidence_ids=("E99",),
-            ),
+            generate=generate,
             semantic_embed=_fake_embed,
         )
 
@@ -92,9 +96,12 @@ def test_no_results_are_insufficient_without_calling_model(monkeypatch) -> None:
         called = True
         return _generated_answer(system_prompt, user_prompt)
 
+    def empty_search(*args, **kwargs):
+        return ()
+
     monkeypatch.setattr(
         "codeinsight.application.answer_repository.search_repository",
-        lambda *args, **kwargs: (),
+        empty_search,
     )
 
     result = answer_repository(

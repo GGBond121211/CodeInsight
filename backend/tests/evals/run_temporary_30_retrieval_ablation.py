@@ -59,19 +59,21 @@ def _covers(result, expected: dict) -> bool:
 
 
 def _candidate_payload(results, source_ranks: dict) -> list[dict]:
-    return [
-        {
-            "path": result.chunk.relative_path,
-            "start_line": result.chunk.start_line,
-            "end_line": result.chunk.end_line,
-            "rank": result.rank,
-            "score": result.score,
-            "retrieval_reason": result.retrieval_reason,
-            "found_by": sorted(source_ranks.get(_key(result), {})),
-            "source_ranks": source_ranks.get(_key(result), {}),
-        }
-        for result in results
-    ]
+    payload = []
+    for result in results:
+        payload.append(
+            {
+                "path": result.chunk.relative_path,
+                "start_line": result.chunk.start_line,
+                "end_line": result.chunk.end_line,
+                "rank": result.rank,
+                "score": result.score,
+                "retrieval_reason": result.retrieval_reason,
+                "found_by": sorted(source_ranks.get(_key(result), {})),
+                "source_ranks": source_ranks.get(_key(result), {}),
+            }
+        )
+    return payload
 
 
 def _source_rank_map(sources) -> dict:
@@ -95,27 +97,67 @@ def _metrics(expected: list[dict], raw_union, fused, final) -> dict:
             "fusion_retention": None,
             "conditional_rerank_success": None,
         }
-    raw_hits = [any(_covers(item, evidence) for item in raw_union) for evidence in expected]
-    fused_hits = [any(_covers(item, evidence) for item in fused) for evidence in expected]
-    final_hits = [any(_covers(item, evidence) for item in final) for evidence in expected]
-    first_rank = next(
-        (
-            result.rank
-            for result in final
-            if any(_covers(result, evidence) for evidence in expected)
-        ),
-        None,
-    )
+    raw_hits = []
+    fused_hits = []
+    final_hits = []
+    for evidence in expected:
+        raw_hit = False
+        for item in raw_union:
+            if _covers(item, evidence):
+                raw_hit = True
+                break
+        raw_hits.append(raw_hit)
+
+        fused_hit = False
+        for item in fused:
+            if _covers(item, evidence):
+                fused_hit = True
+                break
+        fused_hits.append(fused_hit)
+
+        final_hit = False
+        for item in final:
+            if _covers(item, evidence):
+                final_hit = True
+                break
+        final_hits.append(final_hit)
+
+    first_rank = None
+    for result in final:
+        result_covers_evidence = False
+        for evidence in expected:
+            if _covers(result, evidence):
+                result_covers_evidence = True
+                break
+        if result_covers_evidence:
+            first_rank = result.rank
+            break
+
+    raw_hit_count = 0
+    fused_hit_count = 0
+    final_hit_count = 0
+    final_complete = True
+    for raw_hit, fused_hit, final_hit in zip(raw_hits, fused_hits, final_hits, strict=True):
+        if raw_hit:
+            raw_hit_count += 1
+        if fused_hit:
+            fused_hit_count += 1
+        if final_hit:
+            final_hit_count += 1
+        else:
+            final_complete = False
+    any_raw_hit = raw_hit_count > 0
+    any_fused_hit = fused_hit_count > 0
     return {
         "expected_evidence_count": len(expected),
-        "raw_source_candidate_recall": sum(raw_hits) / len(expected),
-        "fused_candidate_recall_at_20": sum(fused_hits) / len(expected),
-        "evidence_recall_at_5": sum(final_hits) / len(expected),
-        "complete_evidence_coverage_at_5": all(final_hits),
+        "raw_source_candidate_recall": raw_hit_count / len(expected),
+        "fused_candidate_recall_at_20": fused_hit_count / len(expected),
+        "evidence_recall_at_5": final_hit_count / len(expected),
+        "complete_evidence_coverage_at_5": final_complete,
         "mrr": 1 / first_rank if first_rank else 0.0,
         "top1": first_rank == 1,
-        "fusion_retention": (any(fused_hits) if any(raw_hits) else None),
-        "conditional_rerank_success": (any(final_hits) if any(fused_hits) else None),
+        "fusion_retention": any_fused_hit if any_raw_hit else None,
+        "conditional_rerank_success": any(final_hits) if any_fused_hit else None,
     }
 
 
@@ -137,15 +179,14 @@ def evaluate_subquestion(
     embed,
 ) -> dict:
     question = subquestion["question"]
-    sources = {
-        mode: search_repository(
+    sources = {}
+    for mode in SPARSE_MODES:
+        sources[mode] = search_repository(
             FIXTURE_ROOT,
             question,
             limit=SOURCE_LIMIT,
             retrieval_mode=mode,
         )
-        for mode in SPARSE_MODES
-    }
     sources["semantic"] = search_chunks_semantic(
         question, semantic_index, embed, limit=SOURCE_LIMIT
     )
@@ -159,10 +200,19 @@ def evaluate_subquestion(
     }
     results = {}
     for group, source_names in groups.items():
-        group_sources = tuple((name, sources[name]) for name in source_names)
+        group_source_list = []
+        for name in source_names:
+            group_source_list.append((name, sources[name]))
+        group_sources = tuple(group_source_list)
         source_ranks = _source_rank_map(group_sources)
-        candidates_by_key = {_key(item): item for _, values in group_sources for item in values}
-        raw_union = tuple(candidates_by_key[key] for key in sorted(source_ranks))
+        candidates_by_key = {}
+        for _, values in group_sources:
+            for item in values:
+                candidates_by_key[_key(item)] = item
+        raw_union_list = []
+        for key in sorted(source_ranks):
+            raw_union_list.append(candidates_by_key[key])
+        raw_union = tuple(raw_union_list)
         if group in {"A0", "A3"}:
             fused = tuple(group_sources[0][1][:SOURCE_LIMIT])
             final = tuple(group_sources[0][1][:FINAL_LIMIT])
@@ -182,14 +232,14 @@ def evaluate_subquestion(
             "path_line_valid": _path_line_valid(final),
             **_metrics(subquestion["expected_evidence"], raw_union, fused, final),
         }
+    raw_sources = {}
+    for name, values in sources.items():
+        raw_sources[name] = _candidate_payload(values, _source_rank_map(((name, values),)))
     return {
         "subquestion_id": subquestion["id"],
         "question": question,
         "expected_outcome": subquestion["expected_outcome"],
-        "raw_sources": {
-            name: _candidate_payload(values, _source_rank_map(((name, values),)))
-            for name, values in sources.items()
-        },
+        "raw_sources": raw_sources,
         "groups": results,
     }
 
@@ -197,28 +247,42 @@ def evaluate_subquestion(
 def summarize(rows: list[dict]) -> dict:
     summary = {}
     for group in RETRIEVAL_GROUPS:
-        items = [row["groups"][group] for row in rows]
-        evidence_items = [item for item in items if item["expected_evidence_count"]]
+        items = []
+        for row in rows:
+            items.append(row["groups"][group])
+        evidence_items = []
+        for item in items:
+            if item["expected_evidence_count"]:
+                evidence_items.append(item)
+        raw_source_candidate_recall = []
+        fused_candidate_recall_at_20 = []
+        evidence_recall_at_5 = []
+        complete_evidence_coverage_at_5 = []
+        mrr = []
+        top1 = []
+        path_line_validity = []
+        for item in evidence_items:
+            raw_source_candidate_recall.append(item["raw_source_candidate_recall"])
+            fused_candidate_recall_at_20.append(item["fused_candidate_recall_at_20"])
+            evidence_recall_at_5.append(item["evidence_recall_at_5"])
+            complete_evidence_coverage_at_5.append(item["complete_evidence_coverage_at_5"])
+            mrr.append(item["mrr"])
+            top1.append(item["top1"])
+        for item in items:
+            path_line_validity.append(item["path_line_valid"])
         summary[group] = {
             "name": items[0]["name"] if items else group,
             "subquestion_count": len(items),
-            "raw_source_candidate_recall": sum(
-                item["raw_source_candidate_recall"] for item in evidence_items
-            )
+            "raw_source_candidate_recall": sum(raw_source_candidate_recall)
             / len(evidence_items),
-            "fused_candidate_recall_at_20": sum(
-                item["fused_candidate_recall_at_20"] for item in evidence_items
-            )
+            "fused_candidate_recall_at_20": sum(fused_candidate_recall_at_20)
             / len(evidence_items),
-            "evidence_recall_at_5": sum(item["evidence_recall_at_5"] for item in evidence_items)
+            "evidence_recall_at_5": sum(evidence_recall_at_5) / len(evidence_items),
+            "complete_evidence_coverage_at_5": sum(complete_evidence_coverage_at_5)
             / len(evidence_items),
-            "complete_evidence_coverage_at_5": sum(
-                item["complete_evidence_coverage_at_5"] for item in evidence_items
-            )
-            / len(evidence_items),
-            "mrr": sum(item["mrr"] for item in evidence_items) / len(evidence_items),
-            "top1": sum(item["top1"] for item in evidence_items) / len(evidence_items),
-            "path_line_validity": sum(item["path_line_valid"] for item in items) / len(items),
+            "mrr": sum(mrr) / len(evidence_items),
+            "top1": sum(top1) / len(evidence_items),
+            "path_line_validity": sum(path_line_validity) / len(items),
         }
     return summary
 
@@ -251,11 +315,14 @@ def build_retrieval_payload(split: str, embed) -> dict:
                         "error": f"{type(error).__name__}: {error}",
                     }
                 )
+    subquestion_count = 0
+    for case in cases:
+        subquestion_count += len(case["subquestions"])
     return {
         "schema_version": 1,
         "split": split,
         "case_count": len(cases),
-        "subquestion_count": sum(len(case["subquestions"]) for case in cases),
+        "subquestion_count": subquestion_count,
         "manifest_sha256": sha256_file(MANIFEST_PATH),
         "semantic_index_id": semantic_index.metadata.index_id,
         "embedding_model": semantic_index.metadata.model,
@@ -273,12 +340,15 @@ def main() -> int:
     parser.add_argument("--confirm-run", action="store_true")
     args = parser.parse_args()
     cases = selected_cases(args.split)
+    subquestion_count = 0
+    for case in cases:
+        subquestion_count += len(case["subquestions"])
     budget = {
         "split": args.split,
         "case_count": len(cases),
-        "subquestion_count": sum(len(case["subquestions"]) for case in cases),
+        "subquestion_count": subquestion_count,
         "embedding_index_batches": 1,
-        "embedding_query_calls": sum(len(case["subquestions"]) for case in cases),
+        "embedding_query_calls": subquestion_count,
         "environment": environment_fingerprint(),
     }
     print(json.dumps(budget, ensure_ascii=False))

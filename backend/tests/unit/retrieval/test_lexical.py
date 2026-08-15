@@ -38,8 +38,13 @@ def test_ties_sort_by_path_then_line_and_ranks_are_continuous() -> None:
         _chunk("a.py", 5, "def same(): pass"),
     )
     results = search_chunks("same", chunks)
-    assert [item.chunk for item in results] == [chunks[2], chunks[1], chunks[0]]
-    assert [item.rank for item in results] == [1, 2, 3]
+    result_chunks = []
+    result_ranks = []
+    for item in results:
+        result_chunks.append(item.chunk)
+        result_ranks.append(item.rank)
+    assert result_chunks == [chunks[2], chunks[1], chunks[0]]
+    assert result_ranks == [1, 2, 3]
 
 
 def test_limit_zero_scores_and_empty_query() -> None:

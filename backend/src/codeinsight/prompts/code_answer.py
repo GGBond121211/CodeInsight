@@ -25,13 +25,26 @@ SYSTEM_PROMPT = """你负责回答关于源码仓库的问题。
 """
 
 
+def _evidence_identifiers(
+    results: Sequence[RankedChunk],
+    evidence_ids: Sequence[str] | None,
+) -> tuple[str, ...]:
+    if evidence_ids:
+        return tuple(evidence_ids)
+
+    generated_identifiers: list[str] = []
+    for index in range(1, len(results) + 1):
+        generated_identifiers.append(f"E{index}")
+    return tuple(generated_identifiers)
+
+
 def build_answer_prompt(
     question: str,
     results: Sequence[RankedChunk],
     evidence_ids: Sequence[str] | None = None,
 ) -> tuple[str, str]:
     """根据排序后的仓库证据构造稳定的 system/user Prompt。"""
-    identifiers = tuple(evidence_ids or (f"E{index}" for index in range(1, len(results) + 1)))
+    identifiers = _evidence_identifiers(results, evidence_ids)
     if len(identifiers) != len(results):
         raise ValueError("evidence ID 数量必须与结果数量一致")
     evidence = _evidence_blocks(results, identifiers)
@@ -43,7 +56,7 @@ def _evidence_blocks(
     results: Sequence[RankedChunk],
     evidence_ids: Sequence[str] | None = None,
 ) -> str:
-    identifiers = tuple(evidence_ids or (f"E{index}" for index in range(1, len(results) + 1)))
+    identifiers = _evidence_identifiers(results, evidence_ids)
     if len(identifiers) != len(results):
         raise ValueError("evidence ID 数量必须与结果数量一致")
     blocks = []

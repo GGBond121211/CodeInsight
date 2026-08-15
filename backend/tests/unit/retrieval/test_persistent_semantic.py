@@ -15,10 +15,15 @@ class _CountingEmbedder:
     def embed(self, texts):
         values = tuple(texts)
         self.calls.append(values)
-        vectors = tuple(
-            (float(len(text)), float(sum(ord(char) for char in text) % 101)) for text in values
-        )
-        return EmbeddingBatch(self.model, vectors, len(values))
+        vectors: list[tuple[float, float]] = []
+        for text in values:
+            code_point_total = 0
+            for char in text:
+                code_point_total += ord(char)
+            vectors.append(
+                (float(len(text)), float(code_point_total % 101))
+            )
+        return EmbeddingBatch(self.model, tuple(vectors), len(values))
 
 
 def test_unchanged_repository_reuses_all_persisted_vectors(tmp_path) -> None:
@@ -39,9 +44,13 @@ def test_unchanged_repository_reuses_all_persisted_vectors(tmp_path) -> None:
 
     assert calls_after_first_build == 1
     assert len(embedder.calls) == calls_after_first_build
-    assert [entry.embedding for entry in first.entries] == [
-        entry.embedding for entry in second.entries
-    ]
+    first_vectors = []
+    second_vectors = []
+    for entry in first.entries:
+        first_vectors.append(entry.embedding)
+    for entry in second.entries:
+        second_vectors.append(entry.embedding)
+    assert first_vectors == second_vectors
     assert first.metadata.index_id == second.metadata.index_id
 
 
@@ -70,8 +79,11 @@ def test_only_changed_file_is_reembedded(tmp_path) -> None:
 def test_model_and_chunk_configuration_use_separate_cache_identity(tmp_path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
+    module_lines = []
+    for index in range(6):
+        module_lines.append(f"line_{index} = {index}")
     (repository / "module.py").write_text(
-        "\n".join(f"line_{index} = {index}" for index in range(6)), encoding="utf-8"
+        "\n".join(module_lines), encoding="utf-8"
     )
     cache = tmp_path / "cache"
     first = _CountingEmbedder()
@@ -102,9 +114,10 @@ def test_model_and_chunk_configuration_use_separate_cache_identity(tmp_path) -> 
     assert len(manifests) == 3
     assert second.calls
     assert third.calls
-    chunk_sizes = {
-        json.loads(path.read_text(encoding="utf-8"))["chunk_max_lines"] for path in manifests
-    }
+    chunk_sizes = set()
+    for path in manifests:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        chunk_sizes.add(payload["chunk_max_lines"])
     assert chunk_sizes == {
         2,
         3,
@@ -129,4 +142,7 @@ def test_deleted_file_is_removed_from_persisted_index(tmp_path) -> None:
     )
 
     assert embedder.calls == []
-    assert [entry.chunk.relative_path for entry in index.entries] == ["keep.py"]
+    indexed_paths = []
+    for entry in index.entries:
+        indexed_paths.append(entry.chunk.relative_path)
+    assert indexed_paths == ["keep.py"]

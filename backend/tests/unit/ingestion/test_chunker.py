@@ -34,7 +34,10 @@ def test_max_lines_one_creates_one_chunk_per_line() -> None:
 
 
 def test_multiple_chunks_with_partial_last_chunk() -> None:
-    source = SourceFile("a.py", "\n".join(f"line{i}" for i in range(1, 11)) + "\n")
+    lines: list[str] = []
+    for index in range(1, 11):
+        lines.append(f"line{index}")
+    source = SourceFile("a.py", "\n".join(lines) + "\n")
     chunks = chunk_source_file(source, max_lines=4)
     assert chunks == (
         SourceChunk("a.py", 1, 4, "line1\nline2\nline3\nline4"),
@@ -86,7 +89,10 @@ def test_chunk_scan_result_preserves_file_order() -> None:
     )
     scan_result = ScanResult(files=files, skipped=())
     chunks = chunk_scan_result(scan_result, max_lines=2)
-    assert [(c.relative_path, c.start_line, c.end_line) for c in chunks] == [
+    chunk_ranges = []
+    for chunk in chunks:
+        chunk_ranges.append((chunk.relative_path, chunk.start_line, chunk.end_line))
+    assert chunk_ranges == [
         ("z.py", 1, 2),
         ("z.py", 3, 3),
         ("a.py", 1, 2),

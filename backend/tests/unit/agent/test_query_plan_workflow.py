@@ -26,6 +26,13 @@ class _CompletionSequence:
         return ModelCompletion(content, "fake-agent", 10, 4)
 
 
+def _fake_embedding(texts):
+    vectors: list[tuple[float, float]] = []
+    for _ in texts:
+        vectors.append((1.0, 0.0))
+    return EmbeddingBatch("fake", tuple(vectors), len(texts))
+
+
 def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() -> None:
     plan = QueryPlan(
         original_question="checkout 怎么校验，价格怎么算？",
@@ -65,9 +72,7 @@ def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() ->
         retrieval_mode="auto",
         search=search,
         query_plan=plan,
-        semantic_embed=lambda texts: EmbeddingBatch(
-            "fake", tuple((1.0, 0.0) for _ in texts), len(texts)
-        ),
+        semantic_embed=_fake_embedding,
     )
 
     assert calls == [
@@ -77,7 +82,10 @@ def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() ->
     assert result.result.retrieval_mode == "auto"
     assert result.result.outcome == "partially_answered"
     assert result.result.citations[0].evidence_id == "E1"
-    assert [item.outcome for item in result.subquestions] == [
+    outcomes = []
+    for item in result.subquestions:
+        outcomes.append(item.outcome)
+    assert outcomes == [
         "answered",
         "insufficient_evidence",
     ]
@@ -131,16 +139,24 @@ def test_query_plan_critic_revises_only_failed_subquestion() -> None:
         retrieval_mode="auto",
         search=search,
         query_plan=plan,
-        semantic_embed=lambda texts: EmbeddingBatch(
-            "fake", tuple((1.0, 0.0) for _ in texts), len(texts)
-        ),
+        semantic_embed=_fake_embedding,
     )
 
     assert result.revisions == 1
-    assert [item.answer for item in result.subquestions] == [
+    answers = []
+    for item in result.subquestions:
+        answers.append(item.answer)
+    assert answers == [
         "Validation answer.",
         "Precise price answer.",
     ]
-    assert sum("How is input validated?" in prompt for prompt in complete.prompts) == 2
-    assert sum("How is price computed?" in prompt for prompt in complete.prompts) == 4
+    validation_prompt_count = 0
+    pricing_prompt_count = 0
+    for prompt in complete.prompts:
+        if "How is input validated?" in prompt:
+            validation_prompt_count += 1
+        if "How is price computed?" in prompt:
+            pricing_prompt_count += 1
+    assert validation_prompt_count == 2
+    assert pricing_prompt_count == 4
     assert complete.calls == 6

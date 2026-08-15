@@ -571,9 +571,12 @@ REQUESTS = [
 
 def fingerprint(root: Path) -> str:
     digest = hashlib.sha256()
-    for path in sorted(
-        p for p in root.rglob("*") if p.is_file() and p.suffix in {".py", ".md", ".toml"}
-    ):
+    matching_paths = []
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix in {".py", ".md", ".toml"}:
+            matching_paths.append(path)
+    matching_paths.sort()
+    for path in matching_paths:
         rel = path.relative_to(root).as_posix().encode()
         digest.update(rel)
         digest.update(b"\0")
@@ -586,12 +589,23 @@ def expand(repository_id: str, specs: list[dict[str, Any]], limit: int) -> list[
     result: list[dict[str, Any]] = []
     for spec in specs:
         for index, (language, question) in enumerate(spec["questions"], start=1):
-            if language == "zh-en" and not any("\u4e00" <= char <= "\u9fff" for char in question):
+            contains_chinese = False
+            for char in question:
+                if "\u4e00" <= char <= "\u9fff":
+                    contains_chinese = True
+                    break
+            if language == "zh-en" and not contains_chinese:
                 question = "我怀疑这里理解错了，请按源码核对：" + question
             suffix = "a" if index == 1 else "b"
-            requirements = [
-                {**item, "segments": chunk_compatible_segments(item)} for item in spec["evidence"]
-            ]
+            requirements = []
+            for item in spec["evidence"]:
+                requirement = dict(item)
+                requirement["segments"] = chunk_compatible_segments(item)
+                requirements.append(requirement)
+            evidence_segments = []
+            for requirement in requirements:
+                for segment in requirement["segments"]:
+                    evidence_segments.append(segment)
             result.append(
                 {
                     "id": f"m200-{repository_id}-{spec['slug']}-{suffix}",
@@ -606,11 +620,7 @@ def expand(repository_id: str, specs: list[dict[str, Any]], limit: int) -> list[
                     "input": {"question": question},
                     "expected": {
                         "outcome": "answered",
-                        "evidence": [
-                            segment
-                            for requirement in requirements
-                            for segment in requirement["segments"]
-                        ],
+                        "evidence": evidence_segments,
                         "evidence_requirements": requirements,
                         "required_terms": spec["required_terms"],
                     },
@@ -645,11 +655,21 @@ def main() -> None:
         )
 
     cases = old_cases + new_cases
-    counts = Counter(case["repository_id"] for case in cases)
+    repository_ids = []
+    for case in cases:
+        repository_ids.append(case["repository_id"])
+    counts = Counter(repository_ids)
     if counts != Counter({"sample_repo": 100, "httpx": 30, "click": 35, "requests": 35}):
         raise AssertionError(counts)
-    if len({case["id"] for case in cases}) != 200:
+    case_ids = set()
+    for case in cases:
+        case_ids.add(case["id"])
+    if len(case_ids) != 200:
         raise AssertionError("Case IDs must be unique")
+
+    new_case_languages = []
+    for case in new_cases:
+        new_case_languages.append(case["language"])
 
     payload = {
         "schema_version": 1,
@@ -658,7 +678,7 @@ def main() -> None:
         "generation_contract": {
             "case_count": 200,
             "repository_counts": dict(counts),
-            "new_case_languages": dict(Counter(case["language"] for case in new_cases)),
+            "new_case_languages": dict(Counter(new_case_languages)),
             "old_cases_policy": "Task 11 v2 questions and expected evidence are preserved; only repository_id and source_set provenance fields are added.",
             "external_repository_policy": "Pinned public source snapshots are read only; no upstream mutation or execution of analyzed repository code.",
         },

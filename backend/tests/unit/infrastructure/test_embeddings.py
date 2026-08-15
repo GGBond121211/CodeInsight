@@ -24,11 +24,11 @@ class _SequencedEmbeddings:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
+        data = []
+        for index, _ in enumerate(kwargs["input"]):
+            data.append(SimpleNamespace(index=index, embedding=[float(index), 1.0]))
         return SimpleNamespace(
-            data=[
-                SimpleNamespace(index=index, embedding=[float(index), 1.0])
-                for index, _ in enumerate(kwargs["input"])
-            ],
+            data=data,
             usage=SimpleNamespace(total_tokens=len(kwargs["input"]) * 2),
         )
 
@@ -104,11 +104,17 @@ def test_embedding_adapter_batches_large_repository_inputs_in_order() -> None:
     model = OpenAIEmbeddingModel(  # type: ignore[arg-type]
         client=_fake_client(embeddings), model="test-embedding"
     )
-    texts = tuple(f"chunk-{index}" for index in range(35))
+    text_list = []
+    for index in range(35):
+        text_list.append(f"chunk-{index}")
+    texts = tuple(text_list)
 
     result = model.embed(texts)
 
-    assert [len(call["input"]) for call in embeddings.calls] == [16, 16, 3]
+    batch_sizes = []
+    for call in embeddings.calls:
+        batch_sizes.append(len(call["input"]))
+    assert batch_sizes == [16, 16, 3]
     assert len(result.vectors) == 35
     assert result.input_tokens == 70
     assert result.vectors[0] == (0.0, 1.0)

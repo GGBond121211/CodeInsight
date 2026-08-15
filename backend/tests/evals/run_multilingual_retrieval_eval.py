@@ -36,11 +36,9 @@ def evidence_items(case: dict) -> tuple[dict, ...]:
     expected = case.get("expected", {})
     candidates = list(expected.get("evidence", ()))
     if not candidates:
-        candidates.extend(
-            item
-            for subquestion in expected.get("subquestions", ())
-            for item in subquestion.get("evidence", ())
-        )
+        for subquestion in expected.get("subquestions", ()):
+            for item in subquestion.get("evidence", ()):
+                candidates.append(item)
     unique: list[dict] = []
     seen: set[tuple[str, int, int]] = set()
     for item in candidates:
@@ -98,22 +96,30 @@ def coverage_rank(results: Sequence[RankedChunk], evidence: tuple[dict, ...]) ->
 
 
 def evidence_recall(results: Sequence[RankedChunk], evidence: tuple[dict, ...]) -> bool:
-    return all(any(covers(result.chunk, item) for result in results) for item in evidence)
+    for item in evidence:
+        item_is_covered = False
+        for result in results:
+            if covers(result.chunk, item):
+                item_is_covered = True
+                break
+        if not item_is_covered:
+            return False
+    return True
 
 
 def evidence_lines(evidence: tuple[dict, ...]) -> set[tuple[str, int]]:
-    return {
-        (item["path"], line_number)
-        for item in evidence
-        for line_number in range(item["start_line"], item["end_line"] + 1)
-    }
+    lines: set[tuple[str, int]] = set()
+    for item in evidence:
+        for line_number in range(item["start_line"], item["end_line"] + 1):
+            lines.add((item["path"], line_number))
+    return lines
 
 
 def chunk_lines(chunk: SourceChunk) -> set[tuple[str, int]]:
-    return {
-        (chunk.relative_path, line_number)
-        for line_number in range(chunk.start_line, chunk.end_line + 1)
-    }
+    lines: set[tuple[str, int]] = set()
+    for line_number in range(chunk.start_line, chunk.end_line + 1):
+        lines.add((chunk.relative_path, line_number))
+    return lines
 
 
 def is_valid_chunk(chunk: SourceChunk) -> bool:
@@ -153,8 +159,12 @@ def classify_failure(
     if evidence_recall(top20, evidence):
         return "top_k_capacity", "evidence_is_present_by_rank_20"
 
-    expected_paths = {item["path"] for item in evidence}
-    returned_paths = {result.chunk.relative_path for result in top20}
+    expected_paths = set()
+    for item in evidence:
+        expected_paths.add(item["path"])
+    returned_paths = set()
+    for result in top20:
+        returned_paths.add(result.chunk.relative_path)
     has_expected_path = bool(expected_paths & returned_paths)
     category = case["category"]
     if category == "multi_intent":
@@ -266,8 +276,11 @@ def build_case_payload(
         retrieval_mode=retrieval_mode,
     )
     expected_lines = evidence_lines(evidence)
-    returned_lines = set().union(*(chunk_lines(item.chunk) for item in top5))
-    context_lines = sum(item.chunk.end_line - item.chunk.start_line + 1 for item in top5)
+    returned_lines: set[tuple[str, int]] = set()
+    context_lines = 0
+    for item in top5:
+        returned_lines.update(chunk_lines(item.chunk))
+        context_lines += item.chunk.end_line - item.chunk.start_line + 1
     covered_lines = expected_lines & returned_lines
     covering_rank = coverage_rank(top5, evidence)
     failure_class, failure_detail = classify_failure(
@@ -277,8 +290,23 @@ def build_case_payload(
         top20,
         evidence,
     )
-    reason_counts = dict(sorted(Counter(item.retrieval_reason for item in top5).items()))
-    valid_count = sum(is_valid_chunk(item.chunk) for item in top5)
+    retrieval_reasons = []
+    valid_count = 0
+    for item in top5:
+        retrieval_reasons.append(item.retrieval_reason)
+        if is_valid_chunk(item.chunk):
+            valid_count += 1
+    reason_counts = dict(sorted(Counter(retrieval_reasons).items()))
+    top1_hit = False
+    if top5:
+        top1_hit = True
+        for item in evidence:
+            if not covers(top5[0].chunk, item):
+                top1_hit = False
+                break
+    result_payloads = []
+    for item in top5:
+        result_payloads.append(result_payload(item))
     return {
         "case_id": case["id"],
         "source_set": case.get("source_set"),
@@ -290,7 +318,7 @@ def build_case_payload(
         if case.get("expected", {}).get("evidence")
         else "subquestions",
         "expected_evidence_count": len(evidence),
-        "top1_hit": bool(top5 and all(covers(top5[0].chunk, item) for item in evidence)),
+        "top1_hit": top1_hit,
         "coverage_rank_at_5": covering_rank,
         "recall_at_5": evidence_recall(top5, evidence),
         "valid_evidence_rate_at_5": valid_count / len(top5) if top5 else 0.0,
@@ -300,66 +328,68 @@ def build_case_payload(
         "retrieval_reason_counts": reason_counts,
         "failure_class": failure_class,
         "failure_detail": failure_detail,
-        "results": [result_payload(item) for item in top5],
+        "results": result_payloads,
     }
 
 
 def aggregate_case_payloads(case_payloads: Sequence[dict]) -> dict:
-    applicable = [item for item in case_payloads if item["applicable"]]
+    applicable = []
+    for item in case_payloads:
+        if item["applicable"]:
+            applicable.append(item)
     count = len(applicable)
-    returned_total = sum(len(item["results"]) for item in applicable)
+    returned_total = 0
+    for item in applicable:
+        returned_total += len(item["results"])
     reason_counts: Counter[str] = Counter()
     failure_counts: Counter[str] = Counter()
+    top1_hits = 0
+    reciprocal_ranks = []
+    recall_values = []
+    context_line_values = []
+    evidence_line_recall_values = []
+    evidence_density_values = []
+    valid_result_count = 0
     for item in applicable:
         reason_counts.update(item["retrieval_reason_counts"])
         if item["failure_class"]:
             failure_counts[item["failure_class"]] += 1
+        if item["top1_hit"]:
+            top1_hits += 1
+        if item["coverage_rank_at_5"]:
+            reciprocal_ranks.append(1.0 / item["coverage_rank_at_5"])
+        else:
+            reciprocal_ranks.append(0.0)
+        recall_values.append(item["recall_at_5"])
+        context_line_values.append(item["context_lines_at_5"])
+        evidence_line_recall_values.append(item["evidence_line_recall_at_5"])
+        evidence_density_values.append(item["evidence_density_at_5"])
+        for result in item["results"]:
+            chunk = SourceChunk(
+                result["relative_path"],
+                result["start_line"],
+                result["end_line"],
+                "",
+                result["symbol_path"],
+            )
+            if is_valid_chunk(chunk):
+                valid_result_count += 1
     return {
         "case_count": len(case_payloads),
         "applicable_case_count": count,
-        "top1": sum(item["top1_hit"] for item in applicable) / count if count else 0.0,
-        "mean_reciprocal_rank": sum(
-            1.0 / item["coverage_rank_at_5"] if item["coverage_rank_at_5"] else 0.0
-            for item in applicable
-        )
-        / count
-        if count
-        else 0.0,
-        "recall_at_5": sum(item["recall_at_5"] for item in applicable) / count if count else 0.0,
+        "top1": top1_hits / count if count else 0.0,
+        "mean_reciprocal_rank": sum(reciprocal_ranks) / count if count else 0.0,
+        "recall_at_5": sum(recall_values) / count if count else 0.0,
         "valid_evidence_rate": (
-            sum(
-                result_valid
-                for item in applicable
-                for result_valid in (
-                    is_valid_chunk(
-                        SourceChunk(
-                            result["relative_path"],
-                            result["start_line"],
-                            result["end_line"],
-                            "",
-                            result["symbol_path"],
-                        )
-                    )
-                    for result in item["results"]
-                )
-            )
-            / returned_total
+            valid_result_count / returned_total
             if returned_total
             else 0.0
         ),
-        "mean_context_lines_at_5": sum(item["context_lines_at_5"] for item in applicable) / count
+        "mean_context_lines_at_5": sum(context_line_values) / count if count else 0.0,
+        "mean_evidence_line_recall_at_5": sum(evidence_line_recall_values) / count
         if count
         else 0.0,
-        "mean_evidence_line_recall_at_5": sum(
-            item["evidence_line_recall_at_5"] for item in applicable
-        )
-        / count
-        if count
-        else 0.0,
-        "mean_evidence_density_at_5": sum(item["evidence_density_at_5"] for item in applicable)
-        / count
-        if count
-        else 0.0,
+        "mean_evidence_density_at_5": sum(evidence_density_values) / count if count else 0.0,
         "retrieval_reason_counts": dict(sorted(reason_counts.items())),
         "failure_counts": dict(sorted(failure_counts.items())),
     }
@@ -370,7 +400,10 @@ def grouped_metrics(case_payloads: Sequence[dict]) -> dict:
     for item in case_payloads:
         for group in item["groups"]:
             grouped[group].append(item)
-    return {group: aggregate_case_payloads(items) for group, items in sorted(grouped.items())}
+    metrics = {}
+    for group, items in sorted(grouped.items()):
+        metrics[group] = aggregate_case_payloads(items)
+    return metrics
 
 
 def build_mode_payload(
@@ -379,9 +412,9 @@ def build_mode_payload(
     *,
     search_fn: Callable[..., tuple[RankedChunk, ...]] = _search_fn_default,
 ) -> dict:
-    case_payloads = [
-        build_case_payload(case, retrieval_mode, search_fn=search_fn) for case in cases
-    ]
+    case_payloads = []
+    for case in cases:
+        case_payloads.append(build_case_payload(case, retrieval_mode, search_fn=search_fn))
     return {
         "retrieval_mode": retrieval_mode,
         "limit": LIMIT,
@@ -400,13 +433,19 @@ def build_comparison(
     retrieval_modes: Sequence[str] = RETRIEVAL_MODES,
 ) -> dict:
     cases = document["cases"]
-    modes = {mode: build_mode_payload(cases, mode, search_fn=search_fn) for mode in retrieval_modes}
+    modes = {}
+    for mode in retrieval_modes:
+        modes[mode] = build_mode_payload(cases, mode, search_fn=search_fn)
+    applicable_case_count = 0
+    for case in cases:
+        if evidence_items(case):
+            applicable_case_count += 1
     return {
         "schema_version": 1,
         "case_set": document["case_set"],
         "fixture": document["fixture"],
         "case_count": len(cases),
-        "applicable_case_count": sum(bool(evidence_items(case)) for case in cases),
+        "applicable_case_count": applicable_case_count,
         "retrieval_modes": list(retrieval_modes),
         "evaluation_contract": {
             "top_k": LIMIT,

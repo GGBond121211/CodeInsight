@@ -12,7 +12,10 @@ FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
 
 
 def _fake_embed(texts):
-    return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+    vectors = []
+    for _ in texts:
+        vectors.append((1.0, 0.0))
+    return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
 @pytest.mark.parametrize("retrieval_mode", ["lexical", "bm25"])
@@ -24,7 +27,10 @@ def test_internal_sparse_retrieval_resolves_within_fixture(retrieval_mode: str) 
         retrieval_mode=retrieval_mode,
     )
 
-    assert "src/shop/service.py" in [item.chunk.relative_path for item in results]
+    result_paths = []
+    for item in results:
+        result_paths.append(item.chunk.relative_path)
+    assert "src/shop/service.py" in result_paths
 
 
 def test_internal_hybrid_combines_bm25_and_semantic_candidates() -> None:
@@ -38,7 +44,8 @@ def test_internal_hybrid_combines_bm25_and_semantic_candidates() -> None:
 
     assert results
     expected_reasons = {"direct_match", "semantic_match", "hybrid_match"}
-    assert all(item.retrieval_reason in expected_reasons for item in results)
+    for item in results:
+        assert item.retrieval_reason in expected_reasons
 
 
 @pytest.mark.parametrize("removed_mode", ["ast-bm25", "graph-bm25"])

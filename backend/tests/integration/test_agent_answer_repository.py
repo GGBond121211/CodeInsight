@@ -9,7 +9,10 @@ FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
 
 
 def _fake_embed(texts):
-    return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+    vectors = []
+    for _ in texts:
+        vectors.append((1.0, 0.0))
+    return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
 class CompletionSequence:
@@ -40,7 +43,6 @@ def test_agent_answer_maps_reviewed_evidence_from_real_retrieval() -> None:
     assert result.result.retrieval_mode == "hybrid"
     assert result.result.prompt_version == "citation-agent-v3"
     assert result.result.citations
-    assert all(
-        citation.relative_path.startswith("src/shop/") for citation in result.result.citations
-    )
+    for citation in result.result.citations:
+        assert citation.relative_path.startswith("src/shop/")
     assert result.revisions == 0

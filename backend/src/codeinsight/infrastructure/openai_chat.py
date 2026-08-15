@@ -68,17 +68,30 @@ def parse_model_answer(
         raise ModelResponseError("模型返回了不支持的 outcome")
     if not isinstance(answer, str) or not answer.strip():
         raise ModelResponseError("模型返回的 answer 不能为空")
-    if not isinstance(citations, list) or not all(isinstance(item, str) for item in citations):
+    citations_are_strings = True
+    if isinstance(citations, list):
+        for item in citations:
+            if not isinstance(item, str):
+                citations_are_strings = False
+                break
+    else:
+        citations_are_strings = False
+    if not citations_are_strings:
         raise ModelResponseError("模型返回的 citations 必须是 evidence ID 列表")
     if outcome == ANSWERED and not citations:
         raise ModelResponseError("outcome 为 answered 时必须引用证据")
     if outcome == INSUFFICIENT_EVIDENCE and citations:
         raise ModelResponseError("outcome 为 insufficient_evidence 时不能引用证据")
 
+    unique_citations: list[str] = []
+    for citation in citations:
+        if citation not in unique_citations:
+            unique_citations.append(citation)
+
     return ModelAnswer(
         outcome=outcome,
         answer=answer.strip(),
-        evidence_ids=tuple(dict.fromkeys(citations)),
+        evidence_ids=tuple(unique_citations),
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,

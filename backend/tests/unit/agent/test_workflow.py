@@ -22,6 +22,10 @@ def _search(*args, **kwargs) -> tuple[RankedChunk, ...]:
     )
 
 
+def _empty_search(*args, **kwargs) -> tuple[RankedChunk, ...]:
+    return ()
+
+
 def test_no_evidence_stops_without_model_call() -> None:
     complete = CompletionSequence()
 
@@ -29,13 +33,16 @@ def test_no_evidence_stops_without_model_call() -> None:
         "repo",
         "unknown",
         complete=complete,
-        search=lambda *args, **kwargs: (),
+        search=_empty_search,
         retrieval_mode="bm25",
     )
 
     assert result.result.outcome == "insufficient_evidence"
     assert complete.calls == 0
-    assert [event.step for event in result.events] == ["retrieve", "finalize"]
+    event_steps = []
+    for event in result.events:
+        event_steps.append(event.step)
+    assert event_steps == ["retrieve", "finalize"]
 
 
 def test_pass_review_prunes_unnecessary_citation_without_revision() -> None:
@@ -48,7 +55,10 @@ def test_pass_review_prunes_unnecessary_citation_without_revision() -> None:
         "repo", "Where?", complete=complete, search=_search, retrieval_mode="bm25"
     )
 
-    assert [citation.evidence_id for citation in result.result.citations] == ["E2"]
+    citation_ids = []
+    for citation in result.result.citations:
+        citation_ids.append(citation.evidence_id)
+    assert citation_ids == ["E2"]
     assert result.revisions == 0
     assert complete.calls == 2
     assert result.input_tokens == 20
@@ -68,7 +78,10 @@ def test_revise_route_runs_exactly_once_and_finishes() -> None:
 
     assert result.revisions == 1
     assert complete.calls == 4
-    assert [event.step for event in result.events] == [
+    event_steps = []
+    for event in result.events:
+        event_steps.append(event.step)
+    assert event_steps == [
         "retrieve",
         "draft",
         "review",
@@ -95,7 +108,10 @@ def test_insufficient_draft_skips_citation_review() -> None:
     assert result.result.outcome == "insufficient_evidence"
     assert result.result.citations == ()
     assert complete.calls == 1
-    assert [event.step for event in result.events] == ["retrieve", "draft", "finalize"]
+    event_steps = []
+    for event in result.events:
+        event_steps.append(event.step)
+    assert event_steps == ["retrieve", "draft", "finalize"]
 
 
 def test_reviser_stops_after_five_bounded_rounds() -> None:
@@ -123,4 +139,8 @@ def test_reviser_stops_after_five_bounded_rounds() -> None:
 
     assert result.revisions == 5
     assert complete.calls == 12
-    assert [event.step for event in result.events].count("revise") == 5
+    revise_count = 0
+    for event in result.events:
+        if event.step == "revise":
+            revise_count += 1
+    assert revise_count == 5

@@ -47,7 +47,10 @@ def test_structured_answer_requires_exact_ids_and_local_evidence() -> None:
         input_tokens=1,
         output_tokens=2,
     )
-    assert [item.subquestion_id for item in answer.subquestions] == ["Q1", "Q2"]
+    subquestion_ids = []
+    for item in answer.subquestions:
+        subquestion_ids.append(item.subquestion_id)
+    assert subquestion_ids == ["Q1", "Q2"]
     payload["subquestion_outputs"][0]["citations"] = ["Q2E1"]
     with pytest.raises(ModelResponseError, match="another group"):
         parse_structured_answer(

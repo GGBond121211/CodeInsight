@@ -28,7 +28,9 @@ def load_answer_cases() -> list[dict]:
     """Resolve the focused answer set against the frozen retrieval cases."""
     source_document = json.loads(SOURCE_CASES_PATH.read_text(encoding="utf-8"))
     answer_document = json.loads(ANSWER_CASES_PATH.read_text(encoding="utf-8"))
-    source_by_id = {case["id"]: case for case in source_document["cases"]}
+    source_by_id = {}
+    for case in source_document["cases"]:
+        source_by_id[case["id"]] = case
     resolved = []
     for selected in answer_document["cases"]:
         case = dict(source_by_id[selected["id"]])
@@ -59,6 +61,10 @@ def build_evaluation_payload(
         if result:
             input_tokens += result.input_tokens or 0
             output_tokens += result.output_tokens or 0
+        citations = []
+        if result:
+            for citation in result.citations:
+                citations.append(asdict(citation))
         case_payloads.append(
             {
                 "case_id": case_id,
@@ -66,7 +72,7 @@ def build_evaluation_payload(
                 "expected_outcome": case["expected"]["outcome"],
                 "outcome": result.outcome if result else None,
                 "answer": result.answer if result else None,
-                "citations": [asdict(citation) for citation in result.citations] if result else [],
+                "citations": citations,
                 "model": result.model if result else model,
                 "prompt_version": result.prompt_version if result else prompt_version,
                 "input_tokens": result.input_tokens if result else None,
@@ -143,10 +149,18 @@ def main() -> int:
         "case_count": payload["case_count"],
         "metrics": payload["metrics"],
         "usage": payload["usage"],
-        "failed_case_ids": [item["case_id"] for item in payload["cases"] if item["failure_types"]],
+        "failed_case_ids": failed_case_ids(payload["cases"]),
     }
     print(json.dumps(summary, indent=2))
     return 0
+
+
+def failed_case_ids(case_payloads: list[dict]) -> list[str]:
+    failed = []
+    for item in case_payloads:
+        if item["failure_types"]:
+            failed.append(item["case_id"])
+    return failed
 
 
 if __name__ == "__main__":

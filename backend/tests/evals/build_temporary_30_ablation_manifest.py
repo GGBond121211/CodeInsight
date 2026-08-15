@@ -146,10 +146,17 @@ def build_manifest() -> dict:
         "fixture": "tests/fixtures/sample_repo",
         "seed": 20260812,
         "case_count": len(cases),
-        "subquestion_count": sum(len(case["subquestions"]) for case in cases),
+        "subquestion_count": sum_subquestion_count(cases),
         "confirmation_ids": sorted(CONFIRMATION_IDS),
         "cases": cases,
     }
+
+
+def sum_subquestion_count(cases: list[dict]) -> int:
+    count = 0
+    for case in cases:
+        count += len(case["subquestions"])
+    return count
 
 
 def main() -> int:

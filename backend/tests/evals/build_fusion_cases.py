@@ -46,8 +46,11 @@ def build_fusion_document() -> dict:
     current_cases = _tag_cases(current["cases"], "task11_v2_100")
     cases = legacy_cases + current_cases
 
-    ids = [case["id"] for case in cases]
-    questions = [case["input"]["question"] for case in cases]
+    ids = []
+    questions = []
+    for case in cases:
+        ids.append(case["id"])
+        questions.append(case["input"]["question"])
     if len(cases) != 131:
         raise ValueError(f"expected 131 cases, got {len(cases)}")
     if len(ids) != len(set(ids)):
