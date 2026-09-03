@@ -1,0 +1,255 @@
+# 检索实验矩阵
+#
+# 核心纪律（来自 DECISIONS.md DEC-0033）：
+#   1. 每次只改一个主要变量。同时改两个就无法归因。
+#   2. 确定性实验只跑 1 Trial，且重跑必须逐位相同——不同就说明有未声明的
+#      随机源，必须先找出来再继续。
+#   3. 判据是 case-clustered bootstrap 95% CI，结论分四档：
+#      PROVEN / DIRECTIONAL / NO_EFFECT / REGRESSION。
+#   4. 硬门槛先于质量分。任一门槛不为 0，该候选直接淘汰，不看质量指标。
+
+schema_version: 1
+created_at: "2026-09-02"
+
+# ---------------------------------------------------------------------------
+# 实验分层 —— 决定 Trial 数与成本
+# ---------------------------------------------------------------------------
+experiment_tiers:
+  deterministic:
+    description: "向量固定后完全确定，同输入同输出"
+    trials: 1
+    verification: "重跑必须逐位相同"
+    applies_to:
+      - chunk 行数与 overlap
+      - BM25 k1 / b
+      - RRF K 与来源权重
+      - semantic min_score
+      - Top-K 与候选上限
+      - HNSW 参数
+      - Embedding 对照（固定 chunk 与索引后）
+    cost: "仅 Embedding 调用，无 Chat 调用"
+
+  single_model_call:
+    description: "单次模型调用，有采样随机性"
+    trials: "3-5"
+    applies_to:
+      - Router 置信度门槛
+      - 回答生成的 Prompt 变体
+      - Reviewer
+    judgement: "case-clustered bootstrap 95% CI"
+
+  autonomous_tool_loop:
+    description: "多步、误差累积，方差最大"
+    trials: "5-10"
+    applies_to:
+      - Agent 最大步数
+      - patch repair 次数
+      - 端到端 change task
+    judgement: "同上，并额外报告 wins/losses/ties 与 STUCK 率"
+
+# ---------------------------------------------------------------------------
+# 数据集分层（增补 R-12）
+# ---------------------------------------------------------------------------
+datasets:
+  L0_master200:
+    path: "backend/tests/evals/master_200_cases.json"
+    size: 200
+    role: "只读回归，防退化"
+    cost: "零（已有结果可比对）"
+    adopted: true
+
+  L1_change_tasks:
+    path: "backend/tests/evals/change_eval_manifest.json"
+    size: 34
+    role: "自建 change task，覆盖边界与攻击"
+    statistical_power: "CI 半宽约 ±0.13，只能检出 13 个百分点以上的差异"
+    adopted: true
+
+  L2_swebench_localization:
+    source: "SWE-bench/SWE-bench_Verified（MIT）"
+    planned_size: "50-100"
+    fields_used: [problem_statement, patch, repo, base_commit]
+    docker_required: false
+    role: "外部可信基准，评故障定位与证据召回"
+    adopted: true
+    status: pending_selection
+
+  L3_swebench_execution:
+    planned_size: "20-30"
+    docker_required: true
+    role: "Patch Apply Rate、Targeted Test Pass"
+    adopted: false
+    gate: "Step 6 Sandbox 与 Step 9 Compose 验收通过，且预算获批"
+
+  L4_swebench_resolve:
+    role: "resolve rate（次要指标，诚实报告）"
+    adopted: false
+    gate: "同 L3"
+
+# ---------------------------------------------------------------------------
+# 实验队列 —— 按执行顺序排列
+# ---------------------------------------------------------------------------
+queue:
+
+  - id: EXP-001
+    name: "chunk 行数 × overlap 九格对照"
+    amendment: "R-14①"
+    tier: deterministic
+    trials: 1
+    schedule: "Step 1 完成后立即执行，Step 4 开始前必须完成"
+    schedule_reason: >-
+      不依赖任何 2.0 组件；成本极低；且 chunk 是后续所有实验的基线，
+      不先定下来，Step 4 的索引改造就建立在一个没有依据的参数上。
+    variables:
+      chunk_max_lines: [40, 80, 120]
+      chunk_overlap_ratio: [0.0, 0.10, 0.20]
+    fixed:
+      - "retriever = BM25 + semantic"
+      - "rrf_k = 60"
+      - "source_weights = {bm25: 1.0, semantic: 0.8}"
+      - "semantic_min_score = 0.20"
+      - "top_k = 5"
+      - "embedding model = qwen3.7-text-embedding"
+    datasets: [L0_master200]
+    metrics:
+      primary: [evidence_recall, complete_evidence_coverage]
+      secondary: [citation_validity, citation_precision, avg_topk_context_lines]
+      cost: [index_build_seconds, index_size_mb, embedding_tokens]
+    hard_gates: [citation_validity == 1.0]
+    answers_interview_question: "重叠窗口设了多少？为什么？"
+    status: pending
+
+  - id: EXP-002
+    name: "融合参数单变量扫描"
+    amendment: "R-14②"
+    tier: deterministic
+    trials: 1
+    schedule: "Step 8"
+    depends_on: [EXP-001]
+    depends_reason: "chunk 定下来才能固定其他变量"
+    variables_one_at_a_time:
+      rrf_k: [20, 60, 100]
+      source_weight_semantic: [0.5, 0.8, 1.0]
+      semantic_min_score: [0.0, 0.20, 0.35]
+    datasets: [L0_master200, L2_swebench_localization]
+    metrics:
+      primary: [evidence_recall, complete_evidence_coverage]
+      secondary: [citation_precision]
+    status: pending
+
+  - id: EXP-003
+    name: "Rerank 三方对照"
+    amendment: "R-14③"
+    tier: deterministic
+    trials: 1
+    schedule: "Step 8"
+    depends_on: [EXP-001, EXP-002]
+    variables:
+      reranker_strategy:
+        - none                          # 仅 RRF 融合后直接取 Top-K
+        - deterministic_code_aware      # 当前实现
+        - model_reranker                # Cross-Encoder 或 LLM reranker
+    metrics:
+      primary: [evidence_recall, complete_evidence_coverage]
+      cost: [added_latency_ms, added_tokens, added_cost]
+    required_conclusion_form: >-
+      「收益 X 个百分点，代价 Y 毫秒 / Z token」——只报收益不报代价不算完成。
+    answers_interview_question: "Rerank 模型加不加？加了延迟增加多少，收益提升多少？"
+    note: >-
+      原计划只安排调 Top-N 5/10，那是调参不是选型，回答不了「加不加」。
+    status: pending
+
+  - id: EXP-004
+    name: "候选池容量"
+    tier: deterministic
+    trials: 1
+    schedule: "Step 8"
+    variables:
+      hybrid_candidate_limit: [20, 50, 100]
+      final_top_k: [5, 10, 20]
+    note: >-
+      外部资料建议粗召回 30-100 条再 Rerank，当前 20 偏低。
+      但候选越多 token 与重排成本越高，必须同时看代价。
+    status: pending
+
+  - id: EXP-005
+    name: "Embedding 模型对照"
+    tier: deterministic
+    trials: 1
+    schedule: "Step 8"
+    depends_on: [EXP-001]
+    depends_reason: "必须固定 chunk 与索引配置，只换模型"
+    query_categories:
+      - 中文自然语言问题
+      - 英文 identifier 精确匹配
+      - 路径与文件名
+      - 错误信息片段
+      - 中英混合 query
+    metrics:
+      primary: [recall_at_k, mrr, citation_validity]
+      cost: [dimensions, index_size_mb, build_seconds, p95_latency_ms]
+    answers_interview_question: "为什么选这个 Embedding 模型？中文效果怎么样？"
+    status: pending
+
+  - id: EXP-006
+    name: "向量后端对照 local_json vs Qdrant HNSW"
+    tier: deterministic
+    trials: 1
+    schedule: "Step 4 / Step 8"
+    variables:
+      backend: [local_json_exact, qdrant_hnsw]
+      hnsw_m: [8, 16, 32]
+      hnsw_ef_construction: [64, 128, 256]
+      hnsw_ef_search: [32, 64, 128]
+    hard_gates:
+      - "evidence ID 与行号在切换和回滚后完全不变"
+    metrics:
+      primary: [recall_at_k, mrr, citation_validity]
+      cost: [p95_latency_ms, memory_mb, index_build_seconds]
+    status: pending
+
+  - id: EXP-007
+    name: "规模基准 ×1 vs ×10"
+    amendment: "R-14④"
+    tier: deterministic
+    trials: 1
+    schedule: "Step 8"
+    scale_construction: "多仓库拼接，或 work/ 中已固定的三个真实仓库组合"
+    metrics:
+      - index_build_seconds
+      - peak_memory_mb
+      - index_size_mb
+      - query_p95_latency_ms
+      - recall_decay
+      - backend_crossover_point
+    required_conclusion_form: >-
+      「当前方案的规模天花板在哪，到什么规模必须切换后端」
+    answers_interview_question: "数据量扩大十倍以后你方案还能不能打？"
+    status: pending
+
+  - id: EXP-008
+    name: "Query Rewrite 开关"
+    tier: single_model_call
+    trials: "3-5"
+    schedule: "Step 8"
+    variables:
+      query_rewrite: [off, on]
+    hard_rule: >-
+      改写时必须保留原始 query，原始与改写一起召回后融合。
+      只用改写后的 query 会在改写模型理解错意图时导致整轮召回全偏。
+    metrics:
+      primary: [evidence_recall]
+      cost: [added_model_calls, added_latency_ms, added_tokens]
+    status: pending
+    note: "对应 1.0 待办中的 Evidence Retrieval Repair Loop"
+
+# ---------------------------------------------------------------------------
+# 禁止事项
+# ---------------------------------------------------------------------------
+prohibitions:
+  - "禁止在 holdout 上调参。holdout 只在最终验证时使用一次。"
+  - "禁止一次改多个变量后声称某单一变量有效。"
+  - "禁止用少量 Trial 的点估计冒充结论；预算不足时标 pending 并说明缺口。"
+  - "禁止修改问题或期望证据来迎合排名（1.0 DEC-0012 已确立此纪律）。"
+  - "禁止重跑多次后挑选好看的一次作为结果。"
+  - "禁止把 Fake Provider 的输出用于任何质量结论。"

@@ -1,0 +1,31 @@
+{
+  "experimentId": "EXP-DEMO-BAD",
+  "question": "同时调 chunk 和 min_score 会更好吗？",
+  "hypothesis": "会",
+  "datasetVersion": "master-200-v2",
+  "split": "regression",
+  "candidateProfiles": [
+    "a",
+    "b"
+  ],
+  "changedVariables": {
+    "chunk_max_lines": [
+      40,
+      80
+    ],
+    "semantic_min_score": [
+      0.0,
+      0.2
+    ]
+  },
+  "fixedVariables": {},
+  "metrics": [
+    "evidence_recall"
+  ],
+  "hardGates": [
+    "invalid_evidence"
+  ],
+  "tier": "deterministic",
+  "trials": 1,
+  "resultPath": "experiments/results/EXP-DEMO-BAD/"
+}

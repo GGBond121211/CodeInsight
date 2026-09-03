@@ -1,0 +1,319 @@
+# CodeInsight 1.0 冻结基线
+#
+# 这是 2.0 全部对照实验的锚点。任何声称「相比 1.0 提升了 X」的说法，
+# 都必须能回到这份文件里的数字。
+#
+# 修改规则：本文件冻结后只允许追加勘误，不允许静默修改已有数值。
+# 发现错误时新增 corrections 条目并说明发现方式，保留原值。
+
+schema_version: 1
+frozen_at: "2026-09-02"
+frozen_by: "Step 1"
+status: frozen
+
+# ---------------------------------------------------------------------------
+# 代码版本
+# ---------------------------------------------------------------------------
+code:
+  commit: "10218ae55f75b8df94682e9ebe23b7182641ac5b"
+  describe: "v1.0.0-2-g10218ae"
+  branch: "codex/readable-code-refactor"
+  # 只读归档副本，翻车时的回滚点，2026-09-02 19:44 后零改动
+  archive_path: "C:/Users/Alex/Desktop/workspace/Project-0008-CodeInsight"
+  working_tree_note: >-
+    冻结时工作区含未跟踪目录 docs/knowledge/ 与 learning_visualizer/，
+    以及 gitignore 的 docs/*.md。这些不影响运行时行为。
+
+# ---------------------------------------------------------------------------
+# 环境
+# ---------------------------------------------------------------------------
+environment:
+  python: "3.12.13"
+  python_implementation: "CPython"
+  python_constraint: ">=3.12,<3.14"
+  package_manager: "uv 0.11.32"
+  os: "Windows 11 (win32)"
+  lockfile: "backend/uv.lock"
+  runtime_dependencies:
+    - "fastapi>=0.116,<1"
+    - "langgraph>=1,<2"
+    - "openai>=2,<3"
+    - "uvicorn[standard]>=0.35,<1"
+
+# ---------------------------------------------------------------------------
+# 运行时参数快照
+#
+# 逐个从源码读出，不是凭记忆填写。括号内是文件与行号。
+# 「依据」一栏诚实标注：多数参数在 1.0 没有做过对照实验。
+# ---------------------------------------------------------------------------
+runtime_parameters:
+  chunking:
+    max_lines:
+      value: 80
+      source: "backend/src/codeinsight/ingestion/chunker.py:6"
+      evidence: none          # 1.0 未做对照，R-14① 将补
+    overlap:
+      value: 0
+      source: "chunker.py 无重叠实现"
+      evidence: none          # 同上
+    chunking_version:
+      value: "fixed-lines-v1"
+      source: "retrieval/persistent_semantic.py:20"
+    line_numbering: "1-based，起止行号随 chunk 保存"
+
+  bm25:
+    k1:
+      value: 1.2
+      source: "retrieval/bm25.py:87"
+      evidence: "沿用标准默认值，DEC-0007 已标为暂定"
+    b:
+      value: 0.75
+      source: "retrieval/bm25.py:87"
+      evidence: "同上"
+
+  fusion:
+    rrf_k:
+      value: 60
+      source: "retrieval/hybrid.py:11"
+      evidence: "沿用文献常用值，未做敏感性分析"
+    source_weights:
+      bm25: 1.0
+      semantic: 0.8
+      source: "retrieval/hybrid.py:12-15"
+      evidence: none          # R-14② 将补
+    code_relevance_weights:
+      symbol_overlap: 0.12
+      path_overlap: 0.08
+      body_overlap: 0.05
+      agreement_bonus: 0.12
+      base_score_scale: 100.0
+      source: "retrieval/hybrid.py:45,79"
+      evidence: none
+
+  semantic:
+    min_score:
+      value: 0.20
+      source: "retrieval/semantic.py:120"
+      evidence: none          # R-14② 将补
+    embedding_batch_size:
+      value: 16
+      source: "infrastructure/embeddings.py:13"
+      evidence: "为绕过服务端单次输入上限而设，非调优结果"
+
+  retrieval_limits:
+    hybrid_candidate_limit:
+      value: 20
+      source: "application/search_repository.py:20"
+      evidence: none
+    default_top_k:
+      value: 5
+      source: "多处默认 limit=5"
+      evidence: none
+
+  router:
+    min_confidence:
+      value: 0.70
+      source: "application/query_router.py:20"
+      evidence: "DEC-0018 设定的初始门槛，未做敏感性分析"
+    max_subquestions:
+      value: 8
+      source: "application/auto_answer_repository.py:32"
+
+  agent:
+    max_revisions:
+      value: 5
+      source: "agent/workflow.py:49"
+      evidence: "DEC-0024 由 1 提升为 5；DEC-0026 后续证明 Critic 净收益为 0"
+
+  model_io:
+    chat_timeout_seconds: 60
+    embedding_timeout_seconds: 30
+    max_retries: 0
+    source: "infrastructure/openai_chat.py:131, embeddings.py:43"
+    evidence: "刻意不重试，避免掩盖真实失败率"
+
+# ---------------------------------------------------------------------------
+# Prompt 版本
+# ---------------------------------------------------------------------------
+prompt_versions:
+  code_answer: "code-answer-v2"
+  query_router: "query-router-v4"
+  citation_agent: "citation-agent-v3"
+  storage: "Python 多行字符串，无版本表、无灰度、无回放（2.0 Step 3 将改造）"
+
+# ---------------------------------------------------------------------------
+# 公开入口
+# ---------------------------------------------------------------------------
+public_surface:
+  http:
+    - "GET  /api/v1/health"
+    - "POST /api/v1/auto/answer"
+  cli:
+    - "codeinsight auto-answer --repo PATH QUESTION [--limit N] [--force-route linear|agent]"
+  ui: "React Smart Answer (Vite dev server, 127.0.0.1:5173)"
+  disabled_but_reused_internally:
+    - "search"
+    - "answer"
+    - "agent-answer"
+  note: "上述三者的 HTTP 路由与 CLI 分发已注释停用，但底层实现仍被 Auto Answer 复用"
+
+# ---------------------------------------------------------------------------
+# 评测基线
+#
+# 全部为项目离线评测，不是生产指标。禁止表述为 SLA 或人工确认的语义正确率。
+# ---------------------------------------------------------------------------
+evaluation_baseline:
+  master_200:
+    dataset: "backend/tests/evals/master_200_cases.json"
+    size: 200
+    composition: "Task 11 v2 原 100 案 + HTTPX 30 + Click 35 + Requests 35"
+    run_id: "20260813T-master200-final-v2"
+    result_path: "outputs/evals/master-200/20260813T-master200-final-v2/summary-evidence-v2.json"
+    model: "deepseek-v4-flash"
+    micro_average:
+      outcome_accuracy: 0.9150
+      citation_validity: 1.0000
+      citation_precision: 0.6679
+      evidence_recall: 0.8619
+      complete_evidence_coverage: 0.7650
+      required_terms_pass: 0.9200
+      subquestion_count_accuracy: 0.9050
+      automated_grounded_pass: 0.3450
+    repo_macro_average:
+      outcome_accuracy: 0.9214
+      citation_precision: 0.3883
+      evidence_recall: 0.5370
+      complete_evidence_coverage: 0.4774
+      automated_grounded_pass: 0.1607
+    caveat: >-
+      宏平均显著低于微平均，说明在三个真实外部仓库上的泛化明显弱于自建 fixture。
+      对外陈述时必须同时给出两个口径。
+
+  retrieval_funnel:
+    scope: "三个真实仓库共 100 案"
+    result_path: "outputs/evals/master-200/20260813T-master200-final-v2/real-repositories-retrieval-funnel-v2.json"
+    stages:
+      raw_candidates: 0.9892
+      rrf_top20: 0.9517
+      reranker_top5: 0.8642
+      final_citations: 0.8117
+    reading: >-
+      漏斗显示瓶颈在最后两段——重排丢掉约 9 个百分点，最终引用又丢约 5 个。
+      这是 2.0 检索改造最该优先攻的位置。
+
+  persistent_index:
+    scope: "Click 8.4.1"
+    chunks: 156
+    cold_start_embedding_tokens: 101866
+    cold_start_seconds: 8.18
+    warm_start_embedding_tokens: 0
+    warm_start_seconds: 0.30
+    index_size_mb: 3.99
+    note: "每次用户查询本身仍需一次 query embedding"
+
+  negative_results:
+    # 这两条是面试资产，必须保留，不得因为「不好看」而省略
+    agent_vs_linear:
+      dataset: "Fusion-131"
+      linear_outcome: 0.7786
+      router_linear_outcome: 0.7405
+      router_agent_outcome: 0.7099
+      conclusion: "Agent 未优于线性 RAG，且 token 与延迟显著更高"
+      decision_record: "DEC-0023"
+    critic_reviser:
+      dataset: "Temporary-30"
+      automated_net_rescue: 0
+      unchanged_pass_ratio: "95/98"
+      conclusion: "Critic 净收益为 0，token 与延迟接近翻倍，仅保留实验状态"
+      decision_record: "DEC-0026"
+
+# ---------------------------------------------------------------------------
+# 测试基线
+# ---------------------------------------------------------------------------
+test_baseline:
+  backend:
+    command: "uv run pytest --basetemp=.pytest-release-basetemp"
+    passed: 207
+    verified_at: "2026-09-02"
+    network: none              # 全部使用确定性 fake chat / fake embedding adapter
+  frontend:
+    lint: pass
+    tests: 4
+    build: pass
+  lint:
+    command: "uv run ruff check src tests"
+    result: pass
+  stale_docs_note: >-
+    docs/STATUS.md 中的 198 与 253 两处测试数字为历史遗留，实际为 207。
+
+# ---------------------------------------------------------------------------
+# Fixture 清单
+# ---------------------------------------------------------------------------
+fixtures:
+  sample_repo:
+    path: "backend/tests/fixtures/sample_repo"
+    python_files: 16
+    total_python_lines: 192
+    has_tests: false           # 重要：不能用于「失败测试修复」类任务
+    tracked_in_git: true
+    role: "小型确定性 fixture，用于单文件与跨文件定位任务"
+
+  external:
+    # 外部源码只读、不提交，只登记来源与指纹
+    storage: "work/benchmarks/（已 gitignore）"
+    execution_policy: "1.0 从不执行；2.0 起只在 Sandbox 内的隔离 workspace 执行"
+    repos:
+      - name: httpx
+        tag: "0.28.1"
+        commit: "26d48e0634e6ee9cdc0533996db289ce4b430177"
+        source_python_files: 23
+        test_python_files: 37
+      - name: click
+        tag: "8.4.1"
+        commit: "6eeb50e948ea136db145280f6f5dd52eca3fa7e5"
+        source_python_files: 31
+        test_python_files: 31
+      - name: requests
+        tag: "v2.34.2"
+        commit: "6e83187b8feb273ed4c6cdab5efd8d54901dfab3"
+        source_python_files: 20
+        test_python_files: 15
+
+# ---------------------------------------------------------------------------
+# 已知限制
+#
+# 这些是 2.0 要解决的问题，也是面试中主动讲「风险点」的素材。
+# ---------------------------------------------------------------------------
+known_limitations:
+  - id: L1
+    text: "单轮请求，无 Session / Goal / Run 持久化，第二个问题从零开始"
+    addressed_by: "Step 2"
+  - id: L2
+    text: "只读问答，不能修改代码"
+    addressed_by: "Step 5 / Step 6"
+  - id: L3
+    text: "无工具调用、无 MCP，LangGraph 只用于答案的 Critic-Reviser"
+    addressed_by: "Step 5"
+  - id: L4
+    text: "Prompt 是 Python 多行字符串，无版本表、无灰度、无回放"
+    addressed_by: "Step 3"
+  - id: L5
+    text: "无 Context Budget，超长上下文行为未定义"
+    addressed_by: "Step 3"
+  - id: L6
+    text: "无模型 Fallback、无限流、无成本记账，只有事后 usage 记录"
+    addressed_by: "Step 7"
+  - id: L7
+    text: "语义索引为本地 JSON + 精确 cosine，未验证规模天花板"
+    addressed_by: "Step 4 / R-14④"
+  - id: L8
+    text: "Automated Grounded Pass 仅 0.3450，且人工确认口径尚未完成"
+    addressed_by: "Step 8"
+  - id: L9
+    text: "chunk、融合权重、min_score 等核心参数无实验依据"
+    addressed_by: "R-14① / R-14②"
+  - id: L10
+    text: "无 Trace、无 Metrics 后端、无看板、无告警"
+    addressed_by: "Step 7 / R-9"
+
+corrections: []

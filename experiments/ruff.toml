@@ -1,0 +1,10 @@
+# experiments/ 位于 backend/ 之外，取不到 backend/pyproject.toml 里的 [tool.ruff] 配置。
+# 这份文件让 `ruff check experiments/` 使用与后端**完全相同**的规则集。
+#
+# 事实来源是 backend/pyproject.toml。两边如果出现分歧，以 backend 为准并同步这里。
+
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP"]

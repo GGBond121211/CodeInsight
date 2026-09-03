@@ -21,13 +21,21 @@ Thumbs.db
 
 # Local agent instructions and planning notes
 AGENTS.md
+CLAUDE.md
 .hermes/
 
 # Private local project history
 docs/*.md
+# 外部阅读笔记，含求职语境，与 docs/*.md 同属私有
+docs/knowledge/
 
 # Project-local temporary and generated files
 work/*
 !work/.gitignore
 outputs/*
 !outputs/.gitignore
+
+# 实验原始产物（配置、runner 和 decision_records 仍进 Git）
+experiments/results/*
+!experiments/results/.gitkeep
+!experiments/results/README.md

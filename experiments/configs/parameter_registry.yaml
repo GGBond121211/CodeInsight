@@ -1,0 +1,335 @@
+# 参数登记表
+#
+# 为什么需要这份文件：
+#   Sandbox 的「默认无网络」和 chunk 的「80 行」在代码里都只是一个配置项，
+#   但性质完全不同。没有这张表，某次为了「提升成功率」的实验可能顺手把沙箱
+#   网络打开，7 条硬门槛就静默失效了。
+#
+#   这份文件的唯一职责，是把「可以调的」和「碰都不能碰的」分开。
+#
+# 四种分类：
+#   tunable        可调。允许进入实验矩阵，但必须遵守 safety_ceiling。
+#   fixed          本轮固定。不是安全约束，只是本阶段不动，改动需新决策记录。
+#   hard_gate      安全门禁。任何实验都不得修改。改动必须先改 BOUNDARIES.md。
+#   not_applicable 不适用于本项目范围。
+
+schema_version: 1
+created_at: "2026-09-02"
+authority: "docs/BOUNDARIES.md 顶部『2.0 生效边界』"
+
+# ===========================================================================
+# hard_gate —— 安全门禁，实验不得触碰
+# ===========================================================================
+hard_gate:
+
+  - name: evidence_id_mapping
+    value: "application-side"
+    unit: mode
+    meaning: "模型只能返回 E 编号，真实路径与行号由应用代码映射"
+    why_hard: >-
+      这是 1.0 到 2.0 唯一不变的地基。让模型直接输出路径，
+      整个项目的「可核验」卖点就没了。
+    violation_metric: "无效 evidence 数必须为 0"
+
+  - name: original_repo_write
+    value: "forbidden"
+    unit: mode
+    meaning: "原始仓库默认只读，写只发生在隔离 workspace"
+    why_hard: "用户的真实代码不能被 Agent 意外改动"
+    violation_metric: "原仓库默认模式修改数必须为 0"
+
+  - name: sandbox_network
+    value: "none"
+    unit: mode
+    meaning: "Sandbox 默认无网络出口"
+    why_hard: "有网络的沙箱等于没有沙箱，注入成功后可外传数据"
+    violation_metric: "Sandbox escape 数必须为 0"
+
+  - name: sandbox_user
+    value: "non-root"
+    unit: mode
+    meaning: "容器内不以 root 运行"
+    why_hard: "root 容器逃逸的后果远大于普通用户"
+
+  - name: command_execution_policy
+    value: "allowlist_only"
+    unit: mode
+    meaning: "只允许 validation profile 白名单内的命令，模型不能拼接任意 Shell"
+    why_hard: >-
+      黑名单永远拦不完。白名单是唯一可断言的方式。
+    violation_metric: "未允许命令数必须为 0"
+
+  - name: apply_requires_approval
+    value: true
+    unit: bool
+    meaning: "应用补丁必须有一次性、过期、范围绑定的 approval token"
+    why_hard: "无审批的自动写入，用户对 Agent 的行为失去最后一道控制"
+    violation_metric: "approval bypass 数必须为 0"
+
+  - name: path_containment
+    value: "enforced"
+    unit: mode
+    meaning: "写入路径必须在 workspace 根目录内，含 symlink 解析后再校验"
+    why_hard: "路径逃逸可写到 ~/.ssh、系统目录"
+    violation_metric: "越界写入数必须为 0"
+
+  - name: repo_content_trust_level
+    value: "untrusted"
+    unit: mode
+    meaning: >-
+      被分析仓库的全部内容（源码、注释、docstring、README、配置、文件名、
+      路径）均为不可信数据，只进 Prompt 的 Evidence 分区并带不可信标记
+    why_hard: >-
+      008 的核心场景就是分析陌生仓库，攻击面即业务面。增补 R-2。
+    violation_metric: "仓库注入导致的越界行为数必须为 0"
+
+# ===========================================================================
+# tunable —— 可调参数，进入实验矩阵
+# ===========================================================================
+tunable:
+
+  # --- 切块 ---
+  - name: chunk_max_lines
+    current: 80
+    unit: lines
+    candidates: [40, 80, 120]
+    safety_ceiling: 400
+    ceiling_reason: "过大会稀释证据密度并撑爆 Context Budget"
+    scope: "ingestion/chunker.py"
+    experiment: "R-14① 九格对照"
+    evidence: none
+    priority: high
+    note: "1.0 无依据。会成为后续所有实验的基线，须最先确定。"
+
+  - name: chunk_overlap_ratio
+    current: 0.0
+    unit: ratio
+    candidates: [0.0, 0.10, 0.20]
+    safety_ceiling: 0.50
+    ceiling_reason: "重叠越大索引体积与重复召回越多，收益递减"
+    scope: "ingestion/chunker.py"
+    experiment: "R-14① 九格对照"
+    evidence: none
+    priority: high
+
+  # --- BM25 ---
+  - name: bm25_k1
+    current: 1.2
+    unit: dimensionless
+    candidates: [0.9, 1.2, 1.6]
+    safety_ceiling: 3.0
+    scope: "retrieval/bm25.py"
+    evidence: "标准默认，DEC-0007 标为暂定"
+    priority: low
+
+  - name: bm25_b
+    current: 0.75
+    unit: dimensionless
+    candidates: [0.5, 0.75, 1.0]
+    safety_ceiling: 1.0
+    ceiling_reason: "b 的定义域为 [0,1]"
+    scope: "retrieval/bm25.py"
+    evidence: "同上"
+    priority: low
+
+  # --- 融合 ---
+  - name: rrf_k
+    current: 60
+    unit: rank_offset
+    candidates: [20, 60, 100]
+    safety_ceiling: 1000
+    scope: "retrieval/hybrid.py"
+    experiment: "R-14②"
+    evidence: "沿用文献常用值，未做敏感性分析"
+    priority: medium
+
+  - name: source_weight_semantic
+    current: 0.8
+    unit: weight
+    candidates: [0.5, 0.8, 1.0]
+    safety_ceiling: 2.0
+    scope: "retrieval/hybrid.py（BM25 固定为 1.0 作参照）"
+    experiment: "R-14②"
+    evidence: none
+    priority: medium
+
+  - name: semantic_min_score
+    current: 0.20
+    unit: cosine_similarity
+    candidates: [0.0, 0.20, 0.35]
+    safety_ceiling: 0.60
+    ceiling_reason: "阈值过高会把正确证据挡在候选之外，漏召回无法由后续重排挽回"
+    scope: "retrieval/semantic.py:120"
+    experiment: "R-14②"
+    evidence: none
+    priority: medium
+
+  # --- 候选与 Top-K ---
+  - name: hybrid_candidate_limit
+    current: 20
+    unit: count
+    candidates: [20, 50, 100]
+    safety_ceiling: 200
+    ceiling_reason: "候选越多重排成本越高，且噪声可能盖过信号"
+    scope: "application/search_repository.py:20"
+    evidence: none
+    priority: medium
+    note: "外部资料建议粗召回 30-100 条再 Rerank，当前 20 偏低。"
+
+  - name: final_top_k
+    current: 5
+    unit: count
+    candidates: [5, 10, 20]
+    safety_ceiling: 50
+    ceiling_reason: "直接决定进 Prompt 的证据量与 token 成本"
+    evidence: none
+    priority: medium
+
+  # --- 重排 ---
+  - name: reranker_strategy
+    current: "deterministic_code_aware"
+    unit: enum
+    candidates: ["none", "deterministic_code_aware", "model_reranker"]
+    scope: "retrieval/hybrid.py 的 _code_relevance"
+    experiment: "R-14③ 三方对照"
+    evidence: none
+    priority: high
+    note: >-
+      当前方案延迟接近 0，这是优势，但没有 none 和 model 两个对照就无法证明。
+      必须同时记录 Recall 增益与延迟 / token 代价。
+
+  # --- Router ---
+  - name: router_min_confidence
+    current: 0.70
+    unit: probability
+    candidates: [0.5, 0.7, 0.85]
+    safety_ceiling: 0.95
+    ceiling_reason: "过高会让绝大多数请求走回退路径，Router 形同虚设"
+    scope: "application/query_router.py:20"
+    evidence: "DEC-0018 设定的初始门槛，未做敏感性分析"
+    priority: medium
+
+  - name: max_subquestions
+    current: 8
+    unit: count
+    candidates: [4, 8]
+    safety_ceiling: 8
+    ceiling_reason: "子问题数直接乘以检索与模型调用次数，是成本上限"
+    scope: "application/auto_answer_repository.py:32"
+    priority: low
+
+  # --- Agent ---
+  - name: max_revisions
+    current: 5
+    unit: count
+    candidates: [0, 1, 2, 5]
+    safety_ceiling: 5
+    ceiling_reason: "循环次数是防死循环的硬上限，不得调高"
+    scope: "agent/workflow.py:49"
+    evidence: "DEC-0024 由 1 提到 5；DEC-0026 证明净收益为 0"
+    priority: low
+    note: "已有负结果。若 2.0 保留 Critic，应优先验证 0 是否更优。"
+
+  # --- 2.0 新增（尚未实现，先登记） ---
+  - name: hnsw_m
+    current: null
+    unit: count
+    candidates: [8, 16, 32]
+    scope: "Step 4 Qdrant"
+    status: not_implemented
+    priority: medium
+
+  - name: hnsw_ef_construction
+    current: null
+    unit: count
+    candidates: [64, 128, 256]
+    scope: "Step 4 Qdrant"
+    status: not_implemented
+    priority: medium
+
+  - name: hnsw_ef_search
+    current: null
+    unit: count
+    candidates: [32, 64, 128]
+    scope: "Step 4 Qdrant"
+    status: not_implemented
+    priority: medium
+
+  - name: agent_max_steps
+    current: null
+    unit: count
+    candidates: [3, 5, 8]
+    safety_ceiling: 20
+    ceiling_reason: "Tool Loop 步数上限是防失控的关键约束"
+    scope: "Step 5"
+    status: not_implemented
+    priority: high
+
+  - name: patch_repair_attempts
+    current: null
+    unit: count
+    candidates: [0, 1, 2]
+    safety_ceiling: 2
+    ceiling_reason: "超过上限必须转 REVIEW_REQUIRED 或回滚，不得无限修"
+    scope: "Step 6"
+    status: not_implemented
+    priority: high
+
+  - name: semantic_cache_threshold
+    current: null
+    unit: cosine_similarity
+    candidates: [0.90, 0.95, 0.98]
+    safety_ceiling: 1.0
+    scope: "Step 7"
+    status: not_implemented
+    priority: medium
+    note: "阈值调低会跨问题串答案，须与 R-8 的缓存键规则一起验证。"
+
+# ===========================================================================
+# fixed —— 本轮固定，改动需新决策记录
+# ===========================================================================
+fixed:
+
+  - name: line_numbering
+    value: "1-based, inclusive"
+    reason: "改动会使全部历史评测的行号期望失效"
+
+  - name: chunking_version
+    value: "fixed-lines-v1"
+    reason: "索引身份的一部分；R-14① 若改变切块策略需升版并重建索引"
+
+  - name: cache_schema_version
+    value: 1
+    reason: "manifest 格式版本，改动需处理旧缓存兼容"
+
+  - name: model_max_retries
+    value: 0
+    reason: >-
+      刻意不重试。重试会掩盖真实失败率，使评测里的错误统计失真。
+      2.0 的重试逻辑归 Gateway 管，且必须按错误类型区分（DEC-0035）。
+
+  - name: python_version
+    value: ">=3.12,<3.14"
+
+  - name: embedding_batch_size
+    value: 16
+    reason: "为绕过服务端单次输入上限而设，非调优结果；供应商变更时才重估"
+
+# ===========================================================================
+# not_applicable —— 不在本项目范围
+# ===========================================================================
+not_applicable:
+
+  - name: quantization / vllm / inference_serving
+    reason: "008 调用 OpenAI 兼容 API，不自部署模型"
+    interview_note: "被问到时说明边界与若要做的思路，不硬答"
+
+  - name: lora_rank / lora_alpha / sft_hyperparameters
+    reason: "2.0 明确不做真实训练，Step 8 只做 schema、dry-run 与资源估算"
+    interview_note: "同上"
+
+  - name: multi_agent_communication_params
+    reason: "2.0 明确不做 Multi-Agent swarm；原 Phase II 的单/多 Agent 对照须重新立项（DEC-0032）"
+
+  - name: graphrag_params
+    reason: "只有代码证据失败样本证明 RepositoryMap/RAG 不够时才讨论"

@@ -1,0 +1,145 @@
+# 候选模型登记
+#
+# 规则：
+#   1. 未实际跑过的候选一律 status: pending，禁止把「计划测」写成「测过」。
+#   2. 报告里必须写真实 provider / model 名称。Fake Provider 只用于证明故障
+#      契约（超时、429、非法输出的处理），不得用于任何质量结论。
+#   3. 没有原生 tool calling 的模型不能进入自主 Tool Loop 的 route profile。
+
+schema_version: 1
+created_at: "2026-09-02"
+
+# ---------------------------------------------------------------------------
+# 基线模型 —— 1.0 全部评测使用的组合
+# ---------------------------------------------------------------------------
+baseline:
+  chat:
+    model: "deepseek-v4-flash"
+    role: "1.0 的 Router、回答生成、Critic-Reviser 全部使用"
+    status: measured
+    evidence: "Master-200、Fusion-131、Temporary-30 均基于此模型"
+    known_characteristics:
+      - "flash 级模型，成本低、速度快"
+      - "1.0 未验证其原生 tool calling 能力（当时不需要）"
+    caveat: >-
+      代码不硬编码供应商。基线数字与此模型强绑定，换模型后
+      Master-200 的 0.9150 不能直接沿用。
+
+  embedding:
+    model: "qwen3.7-text-embedding"
+    role: "语义检索"
+    status: measured
+    evidence: "DEC-0021 的 v1 31 案评测；Master-200 沿用"
+    known_characteristics:
+      - "多语言，中文表现是 008 选它的原因"
+    caveat: "未与其他 Embedding 模型做过对照（DEC-0034 列为 ❌ 未测）"
+
+# ---------------------------------------------------------------------------
+# 按场景划分的 route profile（2.0 Step 7）
+#
+# 不使用全局 fallback 链——不同场景对模型的要求不同。
+# ---------------------------------------------------------------------------
+route_profiles:
+  - route: explain
+    description: "解释代码、回答只读问题"
+    requires_tool_calling: false
+    requires_structured_output: true
+    status: not_implemented
+
+  - route: change-plan
+    description: "生成 ChangePlan"
+    requires_tool_calling: true
+    requires_structured_output: true
+    status: not_implemented
+    note: "必须支持原生 tool_calls，不接受把工具调用伪装成文本 JSON"
+
+  - route: patch
+    description: "生成补丁"
+    requires_tool_calling: true
+    requires_structured_output: true
+    status: not_implemented
+
+  - route: patch-review
+    description: "补丁审查 / 引用审查"
+    requires_tool_calling: false
+    requires_structured_output: true
+    status: not_implemented
+
+# ---------------------------------------------------------------------------
+# 候选模型 —— 全部 pending，Step 8 才实际对照
+# ---------------------------------------------------------------------------
+candidates:
+  chat:
+    - id: baseline-flash
+      model: "deepseek-v4-flash"
+      status: measured
+      note: "作为 A/B 的 baseline 组"
+
+    - id: candidate-reasoning
+      model: null
+      status: pending
+      selection_criteria:
+        - "必须支持原生 tool_calls"
+        - "必须支持 Structured Outputs 或稳定的 JSON Schema 约束"
+        - "上下文长度 >= 当前 Context Budget 需求"
+      note: >-
+        具体型号待 Step 8 前根据预算与可用配额确定，现在不写死。
+        写死一个没跑过的型号等于虚构事实。
+
+  embedding:
+    - id: baseline-qwen
+      model: "qwen3.7-text-embedding"
+      status: measured
+
+    - id: candidate-embedding-b
+      model: null
+      status: pending
+      selection_criteria:
+        - "多语言，中文代码注释与中英混合查询表现"
+        - "维度与索引体积可接受"
+        - "支持批量调用"
+      evaluation_dimensions:
+        - "中文自然语言问题"
+        - "英文 identifier 精确匹配"
+        - "路径与文件名"
+        - "错误信息片段"
+        - "中英混合 query"
+      note: >-
+        Embedding 对照必须固定 chunk 与索引配置，只换模型。
+        且要等 R-14① 的 chunk 参数定下来之后再做，否则两个变量同时变。
+
+# ---------------------------------------------------------------------------
+# Fake Provider —— 只用于故障契约，不产生质量结论
+# ---------------------------------------------------------------------------
+fake_provider:
+  purpose: "注入 429 / 5xx / 超时 / 非法 tool 输出 / 非法 schema，验证 Gateway 行为"
+  status: not_implemented
+  hard_rule: >-
+    Fake Provider 的任何输出都不得进入质量指标。它只回答
+    「系统在故障下的行为是否正确」，不回答「答案好不好」。
+
+# ---------------------------------------------------------------------------
+# 成本记账要求（增补 R-7）
+# ---------------------------------------------------------------------------
+cost_accounting:
+  required_fields:
+    - requestId
+    - attemptId
+    - tenantId
+    - userId
+    - scene
+    - promptVersion
+    - provider
+    - modelTier
+    - actualModel
+    - inputTokens
+    - outputTokens
+    - cachedTokens
+    - priceVersion
+    - latencyMs
+    - ttftMs
+    - fallbackReason
+    - errorClass
+  note: >-
+    priceVersion 不可省略。只存最终 cost，价格调整后就无法解释历史数据，
+    也无法重新计费。
