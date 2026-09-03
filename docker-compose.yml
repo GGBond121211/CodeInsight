@@ -1,0 +1,62 @@
+# CodeInsight 2.0 本地开发依赖。
+#
+# 当前只有 MySQL。Step 9 会往这里加 Qdrant、Redis、可观测性后端与应用自身。
+# 提前用 Compose 而不是先手工装、以后再补，理由是：**开发环境与部署环境从
+# 第一天就是同一份配置**。「在我机器上能跑」这个问题从一开始就不存在。
+#
+# 用法（在仓库根目录）：
+#   docker compose up -d mysql        启动
+#   docker compose ps                 看状态与健康检查
+#   docker compose logs -f mysql      看日志
+#   docker compose down               停止（保留数据）
+#   docker compose down -v            停止并删除数据卷
+#
+# ⚠️ 下面的账号密码是**本地开发专用**，刻意明文写死：
+#   - 端口只绑 127.0.0.1，容器外的机器连不上
+#   - 这个库里只有测试数据，没有任何真实内容
+#   - 明文写死换来的是「clone 下来就能跑」，不必再猜密码（这正是本机原生
+#     MySQL 密码遗忘之后促成 Docker 方案的原因）
+# 真实部署时必须改用 secrets 或环境注入，不能沿用这里的值。
+
+services:
+  mysql:
+    image: mysql:8.0.43
+    # 固定小版本而不是 mysql:8.0 或 mysql:latest：
+    # 浮动 tag 会让「上周还能跑」变成没法复现的故障。Step 9 的供应链要求
+    # （增补 R-10）是镜像用不可变引用，这里先按同一纪律执行。
+    container_name: codeinsight-mysql
+    restart: unless-stopped
+    ports:
+      # 3307 而不是 3306：本机已有一个原生 MySQL 8.0.46 占着 3306。
+      # 绑到 127.0.0.1 而不是 0.0.0.0——不给局域网暴露一个明文密码的数据库。
+      - "127.0.0.1:3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: codeinsight-dev-root
+      MYSQL_USER: codeinsight
+      MYSQL_PASSWORD: codeinsight-dev
+      # MYSQL_DATABASE 只能建一个库，而我们需要两个（应用库 + 测试库），
+      # 所以两个库都由 init 脚本建，这里不设它，避免两处各建一半。
+    command:
+      # MySQL 8 的默认字符集已是 utf8mb4，但显式声明让它不依赖镜像默认值——
+      # 换镜像版本时不会静默变回 latin1。
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # 本机开发库，关掉 binlog 省一半磁盘写入。生产绝不能这么配。
+      - --skip-log-bin
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 只在数据目录为空（首次启动）时执行。改了脚本要 down -v 重建才生效。
+      - ./deploy/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # 有健康检查，`docker compose up --wait` 才能等到真正可连接再返回。
+      # 没有它，容器"已启动"和 MySQL"能接受连接"之间有十几秒的空档，
+      # CI 里就会随机出现连接失败。
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pcodeinsight-dev-root"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  mysql-data:
+    name: codeinsight-mysql-data
