@@ -11,6 +11,15 @@ dependencies = [
     "fastapi>=0.116,<1",
     "langgraph>=1,<2",
     "openai>=2,<3",
+    # Session / Goal / Run 三层状态的 MySQL 持久化（2.0 Step 2）。
+    # 用 ORM 而不是手写 SQL 的关键理由是 version_id_col：
+    # 它把 stateVersion 的乐观锁做成一等公民，自动生成
+    # `UPDATE ... WHERE state_version = ?` 并在 rowcount 为 0 时抛
+    # StaleDataError。手写 SQL 也能做，但每张表都要重复一遍且容易漏。
+    "sqlalchemy>=2.0,<3",
+    # 纯 Python MySQL 驱动。选它而不是 mysqlclient：后者需要本机
+    # MySQL C 开发库与编译器，在 Windows 上装不上；CI 里也要多一层系统依赖。
+    "pymysql>=1.1,<2",
     "uvicorn[standard]>=0.35,<1",
 ]
 
