@@ -131,7 +131,8 @@ docker compose -f ops/docker-compose.yml ps
 
 - `CI`：Pull Request 和 `main`/`master` push 触发 Ruff、后端测试、Compose 配置检查、Docker 构建和供应链扫描入口。
 - `CD`：`main`/`master` push、`v*` tag 或手动触发时，重新执行发布范围验证，构建版本镜像，并渲染 Kubernetes manifest 作为 Actions artifact。
-- 当前 CD 是可复现的发布打包与部署前验证，不会自动推送 GHCR，也不会在没有集群和环境审批的情况下部署到云端。
+- `v*` tag 还会把固定 Dockerfile 构建的版本镜像推送到 GHCR，生成版本 tag 和 commit SHA 两类镜像标签。
+- 当前 CD 不会在没有集群和环境审批的情况下部署到云端。
 
 工作流文件位于 `.github/workflows/ci.yml` 和 `.github/workflows/cd.yml`。
 
