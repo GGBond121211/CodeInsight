@@ -37,10 +37,10 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip pip-audit
       - run: pip-audit -r backend/requirements-audit.txt
-        continue-on-error: true
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          exit-code: "1"
