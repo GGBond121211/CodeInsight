@@ -4,6 +4,8 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from tests.evals.build_master_200_cases import PROJECT_ROOT, fingerprint
 
 EVAL_ROOT = Path(__file__).resolve().parent
@@ -60,6 +62,17 @@ def test_repository_fingerprints_and_every_evidence_span() -> None:
     for item in master["repositories"]:
         repositories[item["id"]] = item
     assert set(repositories) == {"sample_repo", "httpx", "click", "requests"}
+
+    missing = [
+        metadata["id"]
+        for metadata in repositories.values()
+        if not (PROJECT_ROOT / metadata["local_root"]).is_dir()
+    ]
+    if missing:
+        pytest.skip(
+            "external benchmark worktrees are not checked into the public repository: "
+            + ", ".join(sorted(missing))
+        )
 
     line_counts: dict[Path, int] = {}
     for metadata in repositories.values():

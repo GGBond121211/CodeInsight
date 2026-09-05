@@ -6,6 +6,7 @@ from pathlib import Path
 from codeinsight.cli.main import main
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -74,6 +75,19 @@ def test_auto_answer_cli_routes_and_prints_public_metadata(monkeypatch, capsys) 
     monkeypatch.setattr(
         "codeinsight.cli.main.OpenAIEmbeddingModel.from_environment",
         fake_embedding_factory,
+    )
+
+    class FakeReranker:
+        @staticmethod
+        def rerank(_query, documents, *, top_n):
+            return tuple(
+                RerankResult(index=index, relevance_score=float(len(documents) - index))
+                for index in range(top_n)
+            )
+
+    monkeypatch.setattr(
+        "codeinsight.cli.main.OpenAITextReranker.from_environment",
+        lambda: FakeReranker(),
     )
 
     exit_code = main(
