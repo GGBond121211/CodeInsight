@@ -13,7 +13,7 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 
 ## 2.0 当前发布边界
 
-当前是 `release-candidate / partial-pass`，不是已经推送到 GitHub 的正式 Release。Step 8 已完成低成本最小发布 profile，Step 9 已完成本地 Docker Compose 交付切片，Step 10 已完成低成本最终门禁和发布文档收口。完整 Embedding/Provider A/B、真实大并发、SWE-bench resolve、Kubernetes rollout/undo、Trivy/SBOM 和 GitHub 发布仍是 pending。
+当前是 `release-candidate / partial-pass`，不是已经创建 tag 的正式 Release。Step 8 已完成低成本最小发布 profile，Step 9 已完成本地 Docker Compose 交付切片，Step 10 已完成低成本最终门禁和发布文档收口。完整 Embedding/Provider A/B、真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验统一延期到 `2.1+`；Trivy/SBOM 的 CI 门禁已经通过，正式版本 tag/Release 仍待后续发布决定。
 
 详细验收矩阵见 [`docs/RELEASE_2_0_ACCEPTANCE.md`](docs/RELEASE_2_0_ACCEPTANCE.md)，当前事实入口见 [`docs/STATUS.md`](docs/STATUS.md)。
 
