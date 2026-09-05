@@ -1,0 +1,151 @@
+name: codeinsight-step9
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: codeinsight-api:2.0.0-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18000:8000"
+    env_file:
+      - .env.example
+    environment:
+      CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
+      CODEINSIGHT_MYSQL_HOST: mysql
+      CODEINSIGHT_REDIS_URL: redis://redis:6379/0
+      CODEINSIGHT_CELERY_BROKER_URL: redis://redis:6379/1
+      CODEINSIGHT_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    command: ["python", "-m", "uvicorn", "codeinsight.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  gateway-a:
+    image: codeinsight-api:2.0.0-local
+    restart: unless-stopped
+    environment:
+      CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
+    command: ["python", "-m", "uvicorn", "codeinsight.infrastructure.gateway_server:app", "--host", "0.0.0.0", "--port", "8010"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  gateway-b:
+    image: codeinsight-api:2.0.0-local
+    restart: unless-stopped
+    environment:
+      CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
+    command: ["python", "-m", "uvicorn", "codeinsight.infrastructure.gateway_server:app", "--host", "0.0.0.0", "--port", "8010"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  gateway-proxy:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18010:8080"
+    volumes:
+      - ./gateway-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      gateway-a:
+        condition: service_healthy
+      gateway-b:
+        condition: service_healthy
+
+  worker:
+    image: codeinsight-api:2.0.0-local
+    restart: unless-stopped
+    env_file:
+      - .env.example
+    environment:
+      CODEINSIGHT_CELERY_BROKER_URL: redis://redis:6379/1
+      CODEINSIGHT_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    command: ["python", "-m", "celery", "-A", "codeinsight.agent.worker_tasks.celery_app", "worker", "--pool=solo", "--loglevel=INFO"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.0.43@sha256:3e646bcda0d9448ffa3d2024eef04e1bca95528ec19b9e8b76749da9d97d4a10
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: codeinsight-dev-root
+      MYSQL_USER: codeinsight
+      MYSQL_PASSWORD: codeinsight-dev
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ../deploy/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pcodeinsight-dev-root"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  prometheus:
+    image: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:19090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:12.1.0@sha256:6ac590e7cabc2fbe8d7b8fc1ce9c9f0582177b334e0df9c927ebd9670469440f
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:13000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.123.0@sha256:e39311df1f3d941923c00da79ac7ba6269124a870ee87e3c3ad24d60f8aee4d2
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel/otel-collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      # Project-0009 uses the standard host ports; keep 008 isolated locally.
+      - "127.0.0.1:14317:4317"
+      - "127.0.0.1:14318:4318"
+
+volumes:
+  mysql-data:
+  qdrant-data:

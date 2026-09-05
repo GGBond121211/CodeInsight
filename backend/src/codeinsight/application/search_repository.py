@@ -5,6 +5,7 @@ from pathlib import Path
 
 from codeinsight.domain.retrieval import RankedChunk
 from codeinsight.domain.semantic import EmbeddingBatch, SemanticIndex
+from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.ingestion.chunker import chunk_scan_result
 from codeinsight.ingestion.scanner import scan_repository
 from codeinsight.retrieval.bm25 import search_chunks_bm25
@@ -15,9 +16,11 @@ from codeinsight.retrieval.persistent_semantic import (
     embedding_model_id,
 )
 from codeinsight.retrieval.semantic import build_semantic_index, search_chunks_semantic
+from codeinsight.retrieval.vector_store import VectorStore
 
 SemanticEmbed = Callable[[Sequence[str]], EmbeddingBatch]
-HYBRID_CANDIDATE_LIMIT = 20
+# E04 已由用户固定为 100：先扩大粗召回，再交给模型精排。
+HYBRID_CANDIDATE_LIMIT = 100
 
 
 def candidate_retrieval_modes(primary_mode: str) -> tuple[str, ...]:
@@ -63,6 +66,8 @@ def retrieve_subquestion_evidence(
     chunk_max_lines: int = 80,
     semantic_embed: SemanticEmbed | None = None,
     semantic_index: SemanticIndex | None = None,
+    semantic_store: VectorStore | None = None,
+    reranker: Reranker | None = None,
     search=None,
 ) -> tuple[RankedChunk, ...]:
     """独立检索并重排一个子问题的证据。
@@ -73,7 +78,7 @@ def retrieve_subquestion_evidence(
     if limit <= 0:
         raise ValueError("limit 必须是正整数")
     search_fn = search or search_repository
-    candidate_limit = max(limit, min(HYBRID_CANDIDATE_LIMIT, limit * 4))
+    candidate_limit = max(limit, HYBRID_CANDIDATE_LIMIT)
     modes = candidate_retrieval_modes(primary_mode)
     sources: list[tuple[str, tuple[RankedChunk, ...]]] = []
     for mode in modes:
@@ -96,10 +101,22 @@ def retrieve_subquestion_evidence(
                     semantic_index,
                     semantic_embed,
                     limit=candidate_limit,
+                    vector_store=semantic_store,
+                    query_filter=(
+                        {"visibility": "active"} if semantic_store is not None else None
+                    ),
                 ),
             )
         )
-    return rerank_ranked_chunks(question, sources, limit=limit)
+    if reranker is None:
+        raise ValueError("hybrid 检索必须配置模型 Rerank；不会回退到本地代码排序")
+    return rerank_ranked_chunks(
+        question,
+        sources,
+        reranker=reranker,
+        limit=limit,
+        candidate_limit=HYBRID_CANDIDATE_LIMIT,
+    )
 
 
 def _search_scanned_repository(
@@ -111,18 +128,24 @@ def _search_scanned_repository(
     retrieval_mode: str,
     semantic_embed: SemanticEmbed | None,
     semantic_index: SemanticIndex | None,
+    semantic_store: VectorStore | None,
+    reranker: Reranker | None,
 ) -> tuple[RankedChunk, ...]:
     fixed_chunks = chunk_scan_result(scan_result, max_lines=chunk_max_lines)
     if retrieval_mode == "hybrid":
         if semantic_embed is None:
             raise ValueError("hybrid 检索需要 Embedding 模型")
         index = semantic_index or build_semantic_index(fixed_chunks, semantic_embed)
-        candidate_limit = max(limit, min(HYBRID_CANDIDATE_LIMIT, limit * 4))
+        candidate_limit = max(limit, HYBRID_CANDIDATE_LIMIT)
         semantic_results = search_chunks_semantic(
             question,
             index,
             semantic_embed,
             limit=candidate_limit,
+            vector_store=semantic_store,
+            query_filter=(
+                {"visibility": "active"} if semantic_store is not None else None
+            ),
         )
         bm25_results = _search_scanned_repository(
             scan_result,
@@ -132,14 +155,20 @@ def _search_scanned_repository(
             retrieval_mode="bm25",
             semantic_embed=None,
             semantic_index=None,
+            semantic_store=None,
+            reranker=None,
         )
+        if reranker is None:
+            raise ValueError("hybrid 检索必须配置模型 Rerank；不会回退到本地代码排序")
         return rerank_ranked_chunks(
             question,
             (
                 ("bm25", bm25_results),
                 ("semantic", semantic_results),
             ),
+            reranker=reranker,
             limit=limit,
+            candidate_limit=HYBRID_CANDIDATE_LIMIT,
         )
     if retrieval_mode == "lexical":
         return search_chunks_lexical(question, fixed_chunks, limit=limit)
@@ -157,6 +186,8 @@ def search_repository(
     retrieval_mode: str = "hybrid",
     semantic_embed: SemanticEmbed | None = None,
     semantic_index: SemanticIndex | None = None,
+    semantic_store: VectorStore | None = None,
+    reranker: Reranker | None = None,
 ) -> tuple[RankedChunk, ...]:
     """扫描 *root*、切分文件，并返回 *question* 的前 *limit* 个匹配结果。
 
@@ -172,4 +203,6 @@ def search_repository(
         retrieval_mode=retrieval_mode,
         semantic_embed=semantic_embed,
         semantic_index=semantic_index,
+        semantic_store=semantic_store,
+        reranker=reranker,
     )

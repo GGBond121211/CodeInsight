@@ -1,0 +1,51 @@
+name: cd
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install locked backend dependencies
+        run: uv sync --project backend --locked
+
+      - name: Run release checks
+        run: |
+          uv run --project backend ruff check backend/src backend/tests
+          uv run --project backend python -m pytest --basetemp=work/pytest-cd -q backend/tests
+
+      - name: Validate Compose contract
+        run: docker compose -f ops/docker-compose.yml config
+
+      - name: Build release image
+        run: docker build --file Dockerfile --tag codeinsight-api:${{ github.sha }} .
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.33.0"
+
+      - name: Render Kubernetes manifest
+        run: kubectl kustomize k8s/base > codeinsight-k8s-${{ github.sha }}.yaml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeinsight-k8s-${{ github.sha }}
+          path: codeinsight-k8s-${{ github.sha }}.yaml
+          if-no-files-found: error

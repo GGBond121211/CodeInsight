@@ -146,3 +146,20 @@ def test_deleted_file_is_removed_from_persisted_index(tmp_path) -> None:
     for entry in index.entries:
         indexed_paths.append(entry.chunk.relative_path)
     assert indexed_paths == ["keep.py"]
+
+
+def test_whitespace_only_file_is_not_sent_to_embedding(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "blank.py").write_text("\n\t\n", encoding="utf-8")
+    (repository / "keep.py").write_text("keep = True\n", encoding="utf-8")
+    cache = tmp_path / "cache"
+    embedder = _CountingEmbedder()
+
+    index = build_repository_semantic_index(
+        repository, semantic_embed=embedder.embed, cache_root=cache
+    )
+
+    assert len(embedder.calls) == 1
+    assert all(text.strip() for text in embedder.calls[0])
+    assert [entry.chunk.relative_path for entry in index.entries] == ["keep.py"]

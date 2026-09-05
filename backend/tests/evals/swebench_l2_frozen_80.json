@@ -1,0 +1,2350 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-04",
+  "created_by": "Step 8 data freeze",
+  "generator": "backend/tests/evals/freeze_swebench_l2_subset.py",
+  "layer": "L2",
+  "task_type": "code_modification_localization",
+  "source_manifest": "backend/tests/evals/swebench_l2_subset.json",
+  "source_candidate_count": 194,
+  "case_count": 80,
+  "selection_version": "codeinsight-l2-freeze-v1",
+  "selection_reason": "固定 80 条，位于计划允许的 50--100 范围内；80 条足以保留十个仓库、多种难度和 20 条最终 holdout，同时把 L2 成本控制在可回放范围。该配额是可复现的工作冻结，不宣称统计意义上的最优样本量。",
+  "selection_rule": "按预先登记的仓库配额选样；仓库内按 difficulty 分层；每层按 instance_id 的 SHA-256 稳定排序取前 N；最后按同一稳定顺序分配 dev/regression/golden/holdout，各 20 条。",
+  "target_repo_distribution": {
+    "astropy/astropy": 9,
+    "matplotlib/matplotlib": 14,
+    "mwaskom/seaborn": 1,
+    "pallets/flask": 1,
+    "psf/requests": 3,
+    "pydata/xarray": 9,
+    "pylint-dev/pylint": 4,
+    "pytest-dev/pytest": 8,
+    "scikit-learn/scikit-learn": 13,
+    "sphinx-doc/sphinx": 18
+  },
+  "selected_repo_distribution": {
+    "astropy/astropy": 9,
+    "matplotlib/matplotlib": 14,
+    "mwaskom/seaborn": 1,
+    "pallets/flask": 1,
+    "psf/requests": 3,
+    "pydata/xarray": 9,
+    "pylint-dev/pylint": 4,
+    "pytest-dev/pytest": 8,
+    "scikit-learn/scikit-learn": 13,
+    "sphinx-doc/sphinx": 18
+  },
+  "difficulty_distribution": {
+    "1-4 hours": 6,
+    "15 min - 1 hour": 41,
+    "<15 min fix": 32,
+    ">4 hours": 1
+  },
+  "split_distribution": {
+    "dev": 20,
+    "golden": 20,
+    "holdout": 20,
+    "regression": 20
+  },
+  "holdout_policy": "holdout 20 条只在最终一次验证使用；调参和开发期间只能使用 dev、regression、golden。holdout 不参与模型、检索或网关参数选择。",
+  "evaluation_scope": {
+    "docker_required": false,
+    "tests_executed": false,
+    "primary_metrics": [
+      "file_level_localization_accuracy",
+      "line_level_evidence_recall",
+      "citation_validity"
+    ],
+    "hard_gates": [
+      "out_of_scope_writes == 0",
+      "disallowed_commands == 0",
+      "original_repo_modifications == 0",
+      "invalid_evidence == 0",
+      "approval_bypass == 0",
+      "sandbox_escape == 0",
+      "repo_injection_violations == 0"
+    ],
+    "note": "L2 只评定位与证据，不计算需要 Docker/测试的 resolve rate。"
+  },
+  "cases": [
+    {
+      "instance_id": "astropy__astropy-13236",
+      "repo": "astropy/astropy",
+      "base_commit": "6ed769d58d89380ebaa1ef52b300691eefda8928",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "astropy/table/table.py",
+          "line_ranges": [
+            [
+              1239,
+              1251
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "astropy__astropy-13579",
+      "repo": "astropy/astropy",
+      "base_commit": "0df94ff7097961e92fd7812036a24b145bc13ca8",
+      "difficulty": "1-4 hours",
+      "gold_locations": [
+        {
+          "path": "astropy/wcs/wcsapi/wrappers/sliced_wcs.py",
+          "line_ranges": [
+            [
+              243,
+              248
+            ],
+            [
+              251,
+              257
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "astropy__astropy-13977",
+      "repo": "astropy/astropy",
+      "base_commit": "5250b2442501e6c671c6b380536f1edb352602d1",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "astropy/units/quantity.py",
+          "line_ranges": [
+            [
+              633,
+              685
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "astropy__astropy-14096",
+      "repo": "astropy/astropy",
+      "base_commit": "1a4462d72eb03f30dc83a879b1dd57aac8b2c18b",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "astropy/coordinates/sky_coordinate.py",
+          "line_ranges": [
+            [
+              894,
+              903
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "astropy__astropy-14182",
+      "repo": "astropy/astropy",
+      "base_commit": "a5917978be39d13cd90b517e1de4e7a539ffaa48",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "astropy/io/ascii/rst.py",
+          "line_ranges": [
+            [
+              27,
+              33
+            ],
+            [
+              39,
+              50
+            ],
+            [
+              57,
+              66
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 3,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "astropy__astropy-14309",
+      "repo": "astropy/astropy",
+      "base_commit": "cdb66059a2feb44ee49021874605ba90801f9986",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "astropy/io/fits/connect.py",
+          "line_ranges": [
+            [
+              65,
+              74
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "astropy__astropy-7336",
+      "repo": "astropy/astropy",
+      "base_commit": "732d89c2940156bdc0e200bb36dc38b5e424bcba",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "astropy/units/decorators.py",
+          "line_ranges": [
+            [
+              220,
+              226
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "astropy__astropy-7606",
+      "repo": "astropy/astropy",
+      "base_commit": "3cedd79e6c121910220f8e6df77c54a0b344ea94",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "astropy/units/core.py",
+          "line_ranges": [
+            [
+              728,
+              734
+            ],
+            [
+              1710,
+              1717
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "astropy__astropy-8872",
+      "repo": "astropy/astropy",
+      "base_commit": "b750a0e6ee76fb6b8a099a4d16ec51977be46bf6",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "astropy/units/quantity.py",
+          "line_ranges": [
+            [
+              215,
+              222
+            ],
+            [
+              296,
+              303
+            ],
+            [
+              377,
+              385
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 3,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-20488",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "b7ce415c15eb39b026a097a2865da73fbcf15c9c",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/image.py",
+          "line_ranges": [
+            [
+              532,
+              540
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-20676",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "6786f437df54ca7780a047203cbcfaa1db8dc542",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/widgets.py",
+          "line_ranges": [
+            [
+              2156,
+              2162
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-20859",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "64619e53e9d0ed417daba287ac0d3a06943a54d5",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/legend.py",
+          "line_ranges": [
+            [
+              360,
+              366
+            ],
+            [
+              434,
+              444
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-21568",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "f0632c0fc7339f68e992ed63ae4cfac76cd41aad",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/dates.py",
+          "line_ranges": [
+            [
+              595,
+              602
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-22871",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "a7b7260bf06c20d408215d95ce20a1a01c12e5b1",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/dates.py",
+          "line_ranges": [
+            [
+              796,
+              803
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24149",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "af39f1edffcd828f05cfdd04f2e59506bb4a27bc",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/axes/_axes.py",
+          "line_ranges": [
+            [
+              2182,
+              2192
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24570",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "8f0003ae902952372824c9917975fb372c026a42",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/offsetbox.py",
+          "line_ranges": [
+            [
+              166,
+              175
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24637",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "a9ba9d5d3fe9d5ac15fbdb06127f97d381148dd0",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/offsetbox.py",
+          "line_ranges": [
+            [
+              1446,
+              1451
+            ],
+            [
+              1453,
+              1458
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24870",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "6091437be9776139d3672cde28a19cbe6c09dcd5",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/contour.py",
+          "line_ranges": [
+            [
+              1117,
+              1131
+            ],
+            [
+              1447,
+              1458
+            ],
+            [
+              1462,
+              1481
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "lib/matplotlib/tri/_tricontour.py",
+          "line_ranges": [
+            [
+              53,
+              59
+            ],
+            [
+              74,
+              80
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 5,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25311",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "430fb1db88843300fb4baae3edc499bbfe073b0c",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/offsetbox.py",
+          "line_ranges": [
+            [
+              1505,
+              1511
+            ],
+            [
+              1514,
+              1519
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25479",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "7fdf772201e4c9bafbc16dfac23b5472d6a53fa2",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/cm.py",
+          "line_ranges": [
+            [
+              146,
+              151
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "lib/matplotlib/colors.py",
+          "line_ranges": [
+            [
+              774,
+              780
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 2,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25775",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "26224d96066b5c60882296c551f54ca7732c0af0",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/backends/backend_agg.py",
+          "line_ranges": [
+            [
+              206,
+              212
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "lib/matplotlib/backends/backend_cairo.py",
+          "line_ranges": [
+            [
+              25,
+              31
+            ],
+            [
+              204,
+              212
+            ],
+            [
+              312,
+              317
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "lib/matplotlib/text.py",
+          "line_ranges": [
+            [
+              115,
+              120
+            ],
+            [
+              135,
+              140
+            ],
+            [
+              149,
+              154
+            ],
+            [
+              167,
+              172
+            ],
+            [
+              187,
+              192
+            ],
+            [
+              309,
+              314
+            ],
+            [
+              322,
+              327
+            ],
+            [
+              737,
+              742
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 3,
+      "gold_range_count": 12,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25960",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "1d0d255b79e84dfc9f2123c5eb85a842d342f72b",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/figure.py",
+          "line_ranges": [
+            [
+              1564,
+              1571
+            ],
+            [
+              1580,
+              1592
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-26466",
+      "repo": "matplotlib/matplotlib",
+      "base_commit": "3dd06a46750d174f821df5377996f493f1af4ebb",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "lib/matplotlib/text.py",
+          "line_ranges": [
+            [
+              1389,
+              1395
+            ],
+            [
+              1407,
+              1419
+            ],
+            [
+              1443,
+              1453
+            ],
+            [
+              1456,
+              1462
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 4,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "mwaskom__seaborn-3187",
+      "repo": "mwaskom/seaborn",
+      "base_commit": "22cdfb0c93f8ec78492d87edb810f10cb7f57a31",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "seaborn/_core/scales.py",
+          "line_ranges": [
+            [
+              378,
+              383
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "seaborn/utils.py",
+          "line_ranges": [
+            [
+              699,
+              704
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 2,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "pallets__flask-5014",
+      "repo": "pallets/flask",
+      "base_commit": "7ee9ceb71e868944a46e1ff00b506772a53a4f1d",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "src/flask/blueprints.py",
+          "line_ranges": [
+            [
+              190,
+              195
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "psf__requests-1142",
+      "repo": "psf/requests",
+      "base_commit": "22623bd8c265b78b161542663ee980738441c307",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "requests/models.py",
+          "line_ranges": [
+            [
+              386,
+              398
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "psf__requests-1724",
+      "repo": "psf/requests",
+      "base_commit": "1ba83c47ce7b177efe90d5f51f7760680f72eda0",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "requests/sessions.py",
+          "line_ranges": [
+            [
+              12,
+              18
+            ],
+            [
+              309,
+              314
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "psf__requests-6028",
+      "repo": "psf/requests",
+      "base_commit": "0192aac24123735b3eaf9b08df46429bb770c283",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "requests/utils.py",
+          "line_ranges": [
+            [
+              974,
+              979
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "pydata__xarray-3095",
+      "repo": "pydata/xarray",
+      "base_commit": "1757dffac2fa493d7b9a074b84cf8c830a706688",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "xarray/core/indexing.py",
+          "line_ranges": [
+            [
+              3,
+              14
+            ],
+            [
+              1227,
+              1235
+            ],
+            [
+              1241,
+              1253
+            ],
+            [
+              1258,
+              1268
+            ],
+            [
+              1299,
+              1307
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "xarray/core/variable.py",
+          "line_ranges": [
+            [
+              1942,
+              1955
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 6,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "pydata__xarray-3305",
+      "repo": "pydata/xarray",
+      "base_commit": "69c7e01e5167a3137c285cb50d1978252bb8bcbf",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "xarray/core/dataset.py",
+          "line_ranges": [
+            [
+              4768,
+              4774
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "xarray/core/variable.py",
+          "line_ranges": [
+            [
+              1592,
+              1598
+            ],
+            [
+              1615,
+              1620
+            ],
+            [
+              1623,
+              1629
+            ],
+            [
+              1651,
+              1664
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 5,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "pydata__xarray-3677",
+      "repo": "pydata/xarray",
+      "base_commit": "ef6e6a7b86f8479b9a1fecf15ad5b88a2326b31e",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "xarray/core/dataset.py",
+          "line_ranges": [
+            [
+              3604,
+              3609
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "pydata__xarray-4356",
+      "repo": "pydata/xarray",
+      "base_commit": "e05fddea852d08fc0845f954b79deb9e9f9ff883",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "xarray/core/nanops.py",
+          "line_ranges": [
+            [
+              26,
+              38
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "pydata__xarray-4629",
+      "repo": "pydata/xarray",
+      "base_commit": "a41edc7bf5302f2ea327943c0c48c532b12009bc",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "xarray/core/merge.py",
+          "line_ranges": [
+            [
+              501,
+              507
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "pydata__xarray-4687",
+      "repo": "pydata/xarray",
+      "base_commit": "d3b6aa6d8b997df115a53c001d00222a0f92f63a",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "xarray/core/computation.py",
+          "line_ranges": [
+            [
+              1727,
+              1733
+            ],
+            [
+              1743,
+              1748
+            ],
+            [
+              1808,
+              1813
+            ],
+            [
+              1817,
+              1822
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 4,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "pydata__xarray-4695",
+      "repo": "pydata/xarray",
+      "base_commit": "51ef2a66c4e0896eab7d2b03e3dfb3963e338e3c",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "xarray/core/dataarray.py",
+          "line_ranges": [
+            [
+              196,
+              202
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "pydata__xarray-4966",
+      "repo": "pydata/xarray",
+      "base_commit": "37522e991a32ee3c0ad1a5ff8afe8e3eb1885550",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "xarray/coding/variables.py",
+          "line_ranges": [
+            [
+              316,
+              321
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "pydata__xarray-6992",
+      "repo": "pydata/xarray",
+      "base_commit": "45c0a114e2b7b27b83c9618bc05b36afac82183c",
+      "difficulty": ">4 hours",
+      "gold_locations": [
+        {
+          "path": "xarray/core/dataset.py",
+          "line_ranges": [
+            [
+              4026,
+              4035
+            ],
+            [
+              4044,
+              4059
+            ],
+            [
+              4065,
+              4074
+            ],
+            [
+              4083,
+              4090
+            ],
+            [
+              4099,
+              4105
+            ],
+            [
+              4139,
+              4173
+            ],
+            [
+              4177,
+              4185
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "xarray/core/indexes.py",
+          "line_ranges": [
+            [
+              717,
+              724
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 8,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4551",
+      "repo": "pylint-dev/pylint",
+      "base_commit": "99589b08de8c5a2c6cc61e13a37420a868c80599",
+      "difficulty": "1-4 hours",
+      "gold_locations": [
+        {
+          "path": "pylint/pyreverse/diagrams.py",
+          "line_ranges": [
+            [
+              122,
+              128
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "pylint/pyreverse/inspector.py",
+          "line_ranges": [
+            [
+              205,
+              227
+            ],
+            [
+              229,
+              240
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "pylint/pyreverse/utils.py",
+          "line_ranges": [
+            [
+              19,
+              24
+            ],
+            [
+              213,
+              215
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "pylint/pyreverse/writer.py",
+          "line_ranges": [
+            [
+              19,
+              25
+            ],
+            [
+              134,
+              144
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 4,
+      "gold_range_count": 7,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4604",
+      "repo": "pylint-dev/pylint",
+      "base_commit": "1e55ae64624d28c5fe8b63ad7979880ee2e6ef3f",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "pylint/checkers/variables.py",
+          "line_ranges": [
+            [
+              1826,
+              1831
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "pylint/constants.py",
+          "line_ranges": [
+            [
+              1,
+              6
+            ],
+            [
+              11,
+              16
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 3,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-6386",
+      "repo": "pylint-dev/pylint",
+      "base_commit": "754b487f4d892e3d4872b6fc7468a71db4e31c13",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "pylint/config/argument.py",
+          "line_ranges": [
+            [
+              457,
+              462
+            ],
+            [
+              467,
+              469
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "pylint/config/arguments_manager.py",
+          "line_ranges": [
+            [
+              218,
+              223
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "pylint/config/utils.py",
+          "line_ranges": [
+            [
+              71,
+              76
+            ],
+            [
+              207,
+              212
+            ],
+            [
+              218,
+              224
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "pylint/lint/base_options.py",
+          "line_ranges": [
+            [
+              544,
+              549
+            ],
+            [
+              554,
+              559
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 4,
+      "gold_range_count": 8,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7277",
+      "repo": "pylint-dev/pylint",
+      "base_commit": "684a1d6aa0a6791e20078bc524f97c8906332390",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "pylint/__init__.py",
+          "line_ranges": [
+            [
+              96,
+              104
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5840",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "73c5b7f4b11a81e971f7d1bb18072e06a87060f4",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/config/__init__.py",
+          "line_ranges": [
+            [
+              30,
+              36
+            ],
+            [
+              367,
+              373
+            ],
+            [
+              406,
+              418
+            ],
+            [
+              432,
+              443
+            ],
+            [
+              454,
+              460
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "src/_pytest/pathlib.py",
+          "line_ranges": [
+            [
+              11,
+              17
+            ],
+            [
+              335,
+              346
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 7,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-6197",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "e856638ba086fcf5bebf1bebea32d5cf78de87b4",
+      "difficulty": "1-4 hours",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/python.py",
+          "line_ranges": [
+            [
+              251,
+              271
+            ],
+            [
+              432,
+              445
+            ],
+            [
+              639,
+              645
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 3,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7205",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "5e7f1ab4bf58e473e5d7f878eb2b499d7deabd29",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/setuponly.py",
+          "line_ranges": [
+            [
+              1,
+              4
+            ],
+            [
+              66,
+              72
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7236",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "c98bc4cd3d687fe9b392d8eecd905627191d4f06",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/unittest.py",
+          "line_ranges": [
+            [
+              41,
+              47
+            ],
+            [
+              89,
+              95
+            ],
+            [
+              220,
+              226
+            ],
+            [
+              301,
+              303
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 4,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7432",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "e6e300e729dd33956e5448d8be9a0b1540b4e53a",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/skipping.py",
+          "line_ranges": [
+            [
+              291,
+              297
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7490",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "7f7a36478abe7dd1fa993b115d22606aa0e35e88",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/skipping.py",
+          "line_ranges": [
+            [
+              231,
+              247
+            ],
+            [
+              250,
+              261
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7521",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "41d211c24a6781843b174379d6d6538f5c17adb9",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/capture.py",
+          "line_ranges": [
+            [
+              388,
+              393
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7982",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "a7e38c5c61928033a2dc1915cbee8caa8544a4d0",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "src/_pytest/pathlib.py",
+          "line_ranges": [
+            [
+              558,
+              564
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10297",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "b90661d6a46aa3619d3eec94d5281f5888add501",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sklearn/linear_model/ridge.py",
+          "line_ranges": [
+            [
+              1212,
+              1229
+            ],
+            [
+              1301,
+              1314
+            ],
+            [
+              1333,
+              1342
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 3,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10908",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "67d06b18c68ee4452768f8a1e868565dd4354abf",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sklearn/feature_extraction/text.py",
+          "line_ranges": [
+            [
+              971,
+              976
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-13124",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "9f0b959a8c9195d1b6e203f08b698e052b426ca9",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sklearn/model_selection/_split.py",
+          "line_ranges": [
+            [
+              576,
+              583
+            ],
+            [
+              620,
+              626
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-13135",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "a061ada48efccf0845acae17009553e01764452b",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sklearn/preprocessing/_discretization.py",
+          "line_ranges": [
+            [
+              172,
+              177
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-13142",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "1c8668b0a021832386470ddf740d834e02c66f69",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sklearn/mixture/base.py",
+          "line_ranges": [
+            [
+              257,
+              267
+            ],
+            [
+              273,
+              278
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-13328",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "37b0e66c871e8fb032a9c7086b2a1d5419838154",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sklearn/linear_model/huber.py",
+          "line_ranges": [
+            [
+              251,
+              257
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-13496",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "3aefc834dce72e850bff48689bea3c7dff5f3fad",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sklearn/ensemble/iforest.py",
+          "line_ranges": [
+            [
+              120,
+              125
+            ],
+            [
+              173,
+              179
+            ],
+            [
+              185,
+              190
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 3,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-14087",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "a5743ed36fbd3fbc8e351bdab16561fbfca7dfa1",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sklearn/linear_model/logistic.py",
+          "line_ranges": [
+            [
+              2170,
+              2176
+            ],
+            [
+              2180,
+              2187
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25102",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "f9a1cf072da9d7375d6c2163f68a6038b13b310f",
+      "difficulty": "1-4 hours",
+      "gold_locations": [
+        {
+          "path": "sklearn/base.py",
+          "line_ranges": [
+            [
+              498,
+              503
+            ],
+            [
+              543,
+              548
+            ],
+            [
+              574,
+              586
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "sklearn/feature_selection/_base.py",
+          "line_ranges": [
+            [
+              14,
+              23
+            ],
+            [
+              78,
+              83
+            ],
+            [
+              85,
+              90
+            ],
+            [
+              98,
+              107
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 7,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25747",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "2c867b8f822eb7a684f0d5c4359e4426e1c9cfe0",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sklearn/utils/_set_output.py",
+          "line_ranges": [
+            [
+              34,
+              40
+            ],
+            [
+              55,
+              62
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25973",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "10dbc142bd17ccf7bd38eec2ac04b52ce0d1009e",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sklearn/feature_selection/_sequential.py",
+          "line_ranges": [
+            [
+              8,
+              19
+            ],
+            [
+              259,
+              264
+            ],
+            [
+              275,
+              281
+            ],
+            [
+              291,
+              297
+            ],
+            [
+              309,
+              315
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 5,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "586f4318ffcdfbd9a1093f35ad43e81983740b66",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sklearn/compose/_column_transformer.py",
+          "line_ranges": [
+            [
+              293,
+              298
+            ],
+            [
+              303,
+              308
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-9288",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "3eacf948e0f95ef957862568d87ce082f378e186",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sklearn/cluster/k_means_.py",
+          "line_ranges": [
+            [
+              360,
+              375
+            ],
+            [
+              378,
+              384
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10466",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "cab2d93076d0cca7c53fac885f927dde3e2a5fec",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sphinx/builders/gettext.py",
+          "line_ranges": [
+            [
+              57,
+              63
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10614",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "ac2b7599d212af7d04649959ce6926c63c3133fa",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sphinx/ext/inheritance_diagram.py",
+          "line_ranges": [
+            [
+              412,
+              424
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10673",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "f35d2a6cc726f97d0e859ca7a0e1729f7da8a6c8",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sphinx/directives/other.py",
+          "line_ranges": [
+            [
+              77,
+              86
+            ],
+            [
+              95,
+              100
+            ],
+            [
+              118,
+              124
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "sphinx/environment/adapters/toctree.py",
+          "line_ranges": [
+            [
+              1,
+              6
+            ],
+            [
+              54,
+              59
+            ],
+            [
+              139,
+              144
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "sphinx/environment/collectors/toctree.py",
+          "line_ranges": [
+            [
+              201,
+              206
+            ],
+            [
+              247,
+              252
+            ],
+            [
+              259,
+              264
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 3,
+      "gold_range_count": 9,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-11445",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "71db08c05197545944949d5aa76cd340e7143627",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sphinx/util/rst.py",
+          "line_ranges": [
+            [
+              10,
+              31
+            ],
+            [
+              80,
+              86
+            ],
+            [
+              91,
+              96
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 3,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7440",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "9bb204dcabe6ba0fc422bf4a45ad0c79c680d90b",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/domains/std.py",
+          "line_ranges": [
+            [
+              305,
+              311
+            ],
+            [
+              565,
+              571
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7462",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "b3e26a6c851133b82b50f4b68b53692076574d13",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/domains/python.py",
+          "line_ranges": [
+            [
+              105,
+              115
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "sphinx/pycode/ast.py",
+          "line_ranges": [
+            [
+              114,
+              120
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 2,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7748",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "9988d5ce267bf0df4791770b469431b1fb00dcdd",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sphinx/ext/autodoc/__init__.py",
+          "line_ranges": [
+            [
+              1036,
+              1074
+            ],
+            [
+              1076,
+              1084
+            ],
+            [
+              1088,
+              1094
+            ],
+            [
+              1170,
+              1175
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 4,
+      "evaluation_split": "golden"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8269",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "1e2ccd8f0eca0870cf6f8fce6934e2da8eba9b72",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/builders/linkcheck.py",
+          "line_ranges": [
+            [
+              166,
+              171
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8459",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "68aa4fb29e7dfe521749e1e14f750d7afabb3481",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/ext/autodoc/typehints.py",
+          "line_ranges": [
+            [
+              27,
+              33
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8475",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "3ea1ec84cc610f7a9f4f6b354e264565254923ff",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/builders/linkcheck.py",
+          "line_ranges": [
+            [
+              20,
+              26
+            ],
+            [
+              172,
+              178
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8548",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "dd1615c59dc6fff633e27dbb3861f2d27e1fb976",
+      "difficulty": "1-4 hours",
+      "gold_locations": [
+        {
+          "path": "sphinx/ext/autodoc/__init__.py",
+          "line_ranges": [
+            [
+              1584,
+              1590
+            ]
+          ],
+          "is_new_file": false
+        },
+        {
+          "path": "sphinx/ext/autodoc/importer.py",
+          "line_ranges": [
+            [
+              14,
+              20
+            ],
+            [
+              251,
+              258
+            ],
+            [
+              297,
+              319
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 2,
+      "gold_range_count": 4,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8638",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "4b452338f914d4f6b54704222d70ae8a746e3db5",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sphinx/domains/python.py",
+          "line_ranges": [
+            [
+              354,
+              360
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8721",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "82ef497a8c88f0f6e50d84520e7276bfbf65025d",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/ext/viewcode.py",
+          "line_ranges": [
+            [
+              182,
+              187
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9229",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "876fa81e0a038cda466925b85ccf6c5452e0f685",
+      "difficulty": "1-4 hours",
+      "gold_locations": [
+        {
+          "path": "sphinx/ext/autodoc/__init__.py",
+          "line_ranges": [
+            [
+              1676,
+              1682
+            ],
+            [
+              1721,
+              1729
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 2,
+      "evaluation_split": "holdout"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9230",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "567ff22716ac258b9edd2c1711d766b440ac0b11",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/util/docfields.py",
+          "line_ranges": [
+            [
+              298,
+              304
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9367",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "6918e69600810a4664e53653d6ff0290c3c4a788",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/pycode/ast.py",
+          "line_ranges": [
+            [
+              213,
+              222
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "dev"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9591",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "9ed054279aeffd5b1d0642e2d24a8800389de29f",
+      "difficulty": "<15 min fix",
+      "gold_locations": [
+        {
+          "path": "sphinx/domains/python.py",
+          "line_ranges": [
+            [
+              861,
+              867
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "regression"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9673",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "5fb51fb1467dc5eea7505402c3c5d9b378d3b441",
+      "difficulty": "15 min - 1 hour",
+      "gold_locations": [
+        {
+          "path": "sphinx/ext/autodoc/typehints.py",
+          "line_ranges": [
+            [
+              149,
+              162
+            ]
+          ],
+          "is_new_file": false
+        }
+      ],
+      "gold_file_count": 1,
+      "gold_range_count": 1,
+      "evaluation_split": "golden"
+    }
+  ]
+}

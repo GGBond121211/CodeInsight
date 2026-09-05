@@ -32,8 +32,10 @@ from codeinsight.infrastructure.db.schema import (
     ApprovalRow,
     AuditRecordRow,
     Base,
+    GatewayCostRow,
     GoalRow,
     IdempotencyRow,
+    MemoryRecordRow,
     RunEventRow,
     RunRow,
     SessionRow,
@@ -85,6 +87,7 @@ def test_no_other_table_claims_optimistic_locking() -> None:
         AuditRecordRow,
         ApprovalRow,
         IdempotencyRow,
+        MemoryRecordRow,
     ],
 )
 def test_every_table_is_innodb(model: type) -> None:
@@ -102,6 +105,7 @@ def test_every_table_is_innodb(model: type) -> None:
         AuditRecordRow,
         ApprovalRow,
         IdempotencyRow,
+        MemoryRecordRow,
     ],
 )
 def test_every_table_is_utf8mb4(model: type) -> None:
@@ -145,6 +149,12 @@ def test_audit_and_event_are_separate_tables() -> None:
     """分表而不是加 is_audit 列——避免清理旧事件时误删审计记录（增补 R-5）。"""
     assert AuditRecordRow.__tablename__ != RunEventRow.__tablename__
     assert "is_audit" not in RunEventRow.__table__.c
+
+
+def test_gateway_cost_has_price_version_and_attempt_primary_key() -> None:
+    assert GatewayCostRow.__table__.c.attempt_id.primary_key is True
+    assert GatewayCostRow.__table__.c.price_version.nullable is False
+    assert GatewayCostRow.__table__.c.total_stars.nullable is False
 
 
 def test_tenant_columns_exist_on_business_tables() -> None:

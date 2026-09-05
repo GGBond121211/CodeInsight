@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: gateway-a
+    metrics_path: /metrics
+    static_configs:
+      - targets: [gateway-a:8010]
+  - job_name: gateway-b
+    metrics_path: /metrics
+    static_configs:
+      - targets: [gateway-b:8010]

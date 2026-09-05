@@ -1,0 +1,80 @@
+{
+  "experimentId": "EXP-001",
+  "question": "代码块行数与 overlap 如何影响代码证据召回、引用和上下文成本？",
+  "hypothesis": "固定行数与 overlap 会改变跨边界证据的可覆盖性，但不存在脱离数据集的通用最优值；需要在固定 Master-200 查询集上比较质量与成本。",
+  "datasetVersion": "master_200",
+  "split": "regression",
+  "baselineProfile": {
+    "chunk_max_lines": 80,
+    "chunk_overlap_ratio": 0.0,
+    "note": "1.0 当前实现，仅作为未验证基线，不代表最优。"
+  },
+  "candidateProfiles": [
+    "lines-40-overlap-00",
+    "lines-40-overlap-10",
+    "lines-40-overlap-20",
+    "lines-80-overlap-00",
+    "lines-80-overlap-10",
+    "lines-80-overlap-20",
+    "lines-120-overlap-00",
+    "lines-120-overlap-10",
+    "lines-120-overlap-20"
+  ],
+  "changedVariables": {
+    "chunk_profile_factorial": [
+      {"chunk_max_lines": 40, "chunk_overlap_ratio": 0.0},
+      {"chunk_max_lines": 40, "chunk_overlap_ratio": 0.1},
+      {"chunk_max_lines": 40, "chunk_overlap_ratio": 0.2},
+      {"chunk_max_lines": 80, "chunk_overlap_ratio": 0.0},
+      {"chunk_max_lines": 80, "chunk_overlap_ratio": 0.1},
+      {"chunk_max_lines": 80, "chunk_overlap_ratio": 0.2},
+      {"chunk_max_lines": 120, "chunk_overlap_ratio": 0.0},
+      {"chunk_max_lines": 120, "chunk_overlap_ratio": 0.1},
+      {"chunk_max_lines": 120, "chunk_overlap_ratio": 0.2}
+    ]
+  },
+  "fixedVariables": {
+    "retriever": "BM25 + semantic",
+    "rrf_k": 60,
+    "source_weights": {"bm25": 1.0, "semantic": 0.8},
+    "semantic_min_score": 0.2,
+    "source_limit": 20,
+    "final_limit": 5,
+    "embedding_model": "qwen3.7-text-embedding",
+    "chat_calls": 0,
+    "queries": "archived Master-200 Router subquestions"
+  },
+  "metrics": [
+    "evidence_recall",
+    "complete_evidence_coverage",
+    "citation_validity",
+    "citation_precision",
+    "evidence_line_recall",
+    "avg_context_lines",
+    "duplicate_context_line_ratio",
+    "index_build_seconds",
+    "index_serialized_mb",
+    "embedding_tokens",
+    "query_p95_seconds"
+  ],
+  "hardGates": [
+    "out_of_scope_writes",
+    "disallowed_commands",
+    "original_repo_modifications",
+    "invalid_evidence",
+    "approval_bypass",
+    "sandbox_escape",
+    "repo_injection_violations"
+  ],
+  "tier": "deterministic",
+  "trials": 1,
+  "status": "closed_by_user_without_retest",
+  "finalDecision": {
+    "strategy": "structural_v1",
+    "basis": "user_selected_with_JavaGuide_structural_chunking_reference",
+    "evidenceStatus": "unverified",
+    "note": "按 module/class/function 边界优先；超长结构或解析失败回退 fixed lines。旧九格只保留历史记录。"
+  },
+  "resultPath": "experiments/results/EXP-001/",
+  "replayCommand": "$env:PYTHONPATH='backend/src'; uv run --project backend python backend/tests/evals/run_exp001_chunk_overlap.py --confirm-run"
+}

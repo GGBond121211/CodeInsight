@@ -9,6 +9,7 @@ from codeinsight.domain.query_plan import QueryPlan, SubQuestion
 from codeinsight.domain.retrieval import RankedChunk
 from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.domain.source import SourceChunk
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -57,12 +58,18 @@ def _fake_embed(texts):
     return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
+class _FakeReranker:
+    def rerank(self, _query, documents, *, top_n):
+        return tuple(RerankResult(index, 1.0) for index in range(min(top_n, len(documents))))
+
+
 def test_auto_answer_keeps_answerable_subquestion_when_another_is_unsupported() -> None:
     result = auto_answer_repository(
         FIXTURE_ROOT,
         router_result=_router_result(),
         generate=_fake_generate,
         semantic_embed=_fake_embed,
+        reranker=_FakeReranker(),
     )
 
     assert result.outcome == "partially_answered"
@@ -143,6 +150,7 @@ def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
         router_result=router_result,
         generate=generate_answer,
         semantic_embed=fake_embed,
+        reranker=_FakeReranker(),
     )
 
     # 一次批处理构建共享仓库索引，另一次查询 Embedding 为子问题生成；

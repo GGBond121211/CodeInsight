@@ -41,11 +41,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Float,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -84,6 +88,39 @@ class SessionRow(Base):
     repo_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
     active_goal_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MemoryRecordRow(Base):
+    """Working、Session 与 Semantic Memory 的独立事实表。"""
+
+    __tablename__ = "memory_records"
+    __table_args__ = (
+        Index(
+            "ix_memory_scope_owner",
+            "tenant_id",
+            "user_id",
+            "repo_id",
+            "layer",
+            "owner_id",
+            "status",
+        ),
+        TABLE_ARGS,
+    )
+
+    record_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    repo_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    layer: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    token_estimate: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_trusted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expires_at_epoch_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    consent: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
 class GoalRow(Base):
@@ -189,6 +226,36 @@ class AuditRecordRow(Base):
     subject: Mapped[str] = mapped_column(String(255), nullable=False)
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
+class GatewayCostRow(Base):
+    """每次模型 attempt 的版本化成本事实，不随后续价格调整重算覆盖。"""
+
+    __tablename__ = "gateway_cost_records"
+    __table_args__ = (
+        Index("ix_gateway_cost_request", "request_id"),
+        Index("ix_gateway_cost_tenant_scene", "tenant_id", "scene"),
+        TABLE_ARGS,
+    )
+
+    attempt_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    scene: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cached_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    total_stars: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    latency_milliseconds: Mapped[float] = mapped_column(Float, nullable=False)
+    ttft_milliseconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fallback_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class ApprovalRow(Base):

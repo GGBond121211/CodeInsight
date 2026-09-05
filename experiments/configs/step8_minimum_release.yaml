@@ -1,0 +1,113 @@
+schema_version: 1
+profile_id: step8-minimum-release-20260905
+status: completed_minimum_release_profile
+owner: user-approved-under-10m-tokens
+
+# 2.0 baseline 只证明当前链路可运行和安全门槛通过，不证明全局最优。
+release_target: v2.0.0-baseline
+release_boundary:
+  dataset_expansion: false
+  production_ha_claim: false
+  swebench_resolve_rate_claim: false
+  full_step10_required: false
+
+datasets:
+  master_200:
+    path: backend/tests/evals/master_200_cases.json
+    total_cases: 200
+    role: deterministic_regression_guard
+    real_model_cases: 30
+    holdout_tuning: forbidden
+  l1_change:
+    path: backend/tests/evals/change_eval_manifest.json
+    total_cases: 34
+    role: safety_and_contract_guard
+    real_tool_loop_cases: 5
+    real_tool_loop_cases_max: 10
+  l2_swebench:
+    path: backend/tests/evals/swebench_l2_frozen_80.json
+    total_cases: 80
+    pilot_split: dev
+    pilot_cases: 20
+    final_holdout_cases: 20
+    role: file_and_line_localization_only
+
+defaults:
+  chunking:
+    production_profile: fixed-80-00
+    structural_v1: retained_as_untested_candidate
+  bm25:
+    k1: 1.2
+    b: 0.75
+  fusion:
+    rrf_k: 60
+    semantic_weight: 0.8
+    semantic_min_score: 0.2
+  rerank:
+    enabled: true
+    model: qwen3.7-text-rerank
+    candidate_limit_after_fusion: 100
+    final_top_k: 10
+  embedding:
+    model: qwen3.7-text-embedding
+    dimension: 1024
+    full_model_ab: deferred_to_2.1
+  qdrant:
+    m: 16
+    ef_construct: 128
+    ef_search: 64
+    parameter_scan: deferred_to_2.1
+  context:
+    total_budget: 8000
+    output_reserved: 1000
+  query_rewrite:
+    enabled: false
+    reason: production_rewrite_loop_not_verified
+
+required_zero_token_checks:
+  - asset_manifest_tests
+  - reranker_contract_tests
+  - hybrid_and_candidate_mapping_tests
+  - seven_hard_gates
+  - gateway_fault_injection
+  - worker_lease_recovery
+  - fake_provider_concurrency_50_100_200
+  - local_exact_vs_qdrant_smoke
+
+required_real_pilot:
+  rerank:
+    cases: 30
+    candidate_documents_max: 100
+    trials: 1
+    metrics: [index_mapping, evidence_recall, citation_validity, latency, usage_total_tokens]
+  tool_loop:
+    cases_min: 5
+    cases_max: 10
+    trials: 1
+    metrics: [tool_success, patch_parse, approval_gate, sandbox_gate, rollback]
+  l2_localization:
+    cases: 20
+    split: dev
+    trials: 1
+    model_calls: 0
+    metrics: [file_level_localization_accuracy, line_level_evidence_recall, citation_validity]
+    result_path: experiments/results/STEP8-L2-LOCALIZATION/20260905T063405Z-l2-localization/
+
+deferred:
+  - embedding_four_model_ab
+  - full_provider_quality_ab
+  - rerank_quality_three_way_ab
+  - repository_map_parameter_scan
+  - scale_x1_x10
+  - real_concurrency_300_450
+  - full_swebench_resolve
+  - real_sft_lora
+
+budget:
+  user_token_ceiling: 10000000
+  hard_stop_before_tokens: 9000000
+  estimated_rerank_input_tokens: 5000000
+  estimated_tool_loop_tokens: 250000
+  estimated_retry_reserve: 1000000
+  estimated_total_tokens: 6250000
+  monitor_fields: [request_id, model, usage_total_tokens, latency_ms, case_id]

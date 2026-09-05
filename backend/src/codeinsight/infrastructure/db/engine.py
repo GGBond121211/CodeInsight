@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 ENV_HOST = "CODEINSIGHT_MYSQL_HOST"
@@ -133,6 +133,23 @@ def create_all_tables(engine: Engine) -> None:
     from codeinsight.infrastructure.db.schema import Base
 
     Base.metadata.create_all(engine)
+    _apply_additive_compatibility_migrations(engine)
+
+
+def _apply_additive_compatibility_migrations(engine: Engine) -> None:
+    """补充 create_all 无法处理的安全加列；不删除、不改写既有数据。"""
+    inspector = inspect(engine)
+    if "gateway_cost_records" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("gateway_cost_records")}
+    if "ttft_milliseconds" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE gateway_cost_records "
+                    "ADD COLUMN ttft_milliseconds FLOAT NULL AFTER latency_milliseconds"
+                )
+            )
 
 
 def drop_all_tables(engine: Engine) -> None:

@@ -1,11 +1,15 @@
 """OpenAI-compatible Chat 模型适配器。"""
 
+from __future__ import annotations
+
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from openai import OpenAI, OpenAIError
 
+from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
 from codeinsight.domain.answer import (
     ANSWERED,
     INSUFFICIENT_EVIDENCE,
@@ -18,6 +22,9 @@ from codeinsight.domain.errors import (
     ModelConfigurationError,
     ModelResponseError,
 )
+
+if TYPE_CHECKING:
+    from codeinsight.application.context_assembler import ContextAssembler
 
 EXPECTED_RESPONSE_KEYS = frozenset({"outcome", "answer", "citations"})
 CHAT_TIMEOUT_SECONDS = 60.0
@@ -107,16 +114,20 @@ class OpenAIChatModel:
         client: OpenAI,
         model: str,
         response_format: dict[str, str] | None = None,
+        context_assembler: ContextAssembler | None = None,
     ) -> None:
         self._client = client
         self.model = model
         self._response_format = response_format
+        self._context_assembler = context_assembler
 
     @classmethod
     def from_environment(
         cls,
         environ: Mapping[str, str] | None = None,
-    ) -> "OpenAIChatModel":
+        *,
+        context_assembler: ContextAssembler | None = None,
+    ) -> OpenAIChatModel:
         source = os.environ if environ is None else environ
         api_key = source.get("CODEINSIGHT_API_KEY")
         model = source.get("CODEINSIGHT_MODEL")
@@ -131,16 +142,32 @@ class OpenAIChatModel:
             timeout=CHAT_TIMEOUT_SECONDS,
             max_retries=0,
         )
-        return cls(client=client, model=model)
+        return cls(client=client, model=model, context_assembler=context_assembler)
 
     def complete(self, system_prompt: str, user_prompt: str) -> ModelCompletion:
         """调用已配置模型，并返回原始内容和用量信息。"""
         try:
+            request_user_prompt = user_prompt
+            estimated_input_tokens: int | None = None
+            if self._context_assembler is not None:
+                from codeinsight.application.context_assembler import ContextRequest
+
+                assembly = self._context_assembler.assemble(
+                    ContextRequest(
+                        system_safety=system_prompt,
+                        user_goal="",
+                        user_code_task=user_prompt,
+                        model_version=self.model,
+                        strategy_version="context-assembler-v1",
+                    )
+                )
+                request_user_prompt = assembly.user_text
+                estimated_input_tokens = assembly.fitted.estimate.input_tokens
             request = {
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "user", "content": request_user_prompt},
                 ],
                 "temperature": 0,
             }
@@ -161,6 +188,7 @@ class OpenAIChatModel:
             model=self.model,
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
+            estimated_input_tokens=estimated_input_tokens,
         )
 
     def generate(self, system_prompt: str, user_prompt: str) -> ModelAnswer:
@@ -171,4 +199,52 @@ class OpenAIChatModel:
             model=completion.model,
             input_tokens=completion.input_tokens,
             output_tokens=completion.output_tokens,
+        )
+
+    def complete_with_tools(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        tools: Sequence[Mapping[str, object]],
+    ) -> ToolModelResponse:
+        """调用 Chat Completions 的原生 ``tools`` 字段。
+
+        只读取 SDK 返回的 ``message.tool_calls``。如果模型把工具调用写成
+        普通文本 JSON，这里会把它当普通最终文本，不会猜测并执行。
+        """
+        request = {
+            "model": self.model,
+            "messages": list(messages),
+            "tools": list(tools),
+            "temperature": 0,
+        }
+        try:
+            response = self._client.chat.completions.create(**request)
+        except OpenAIError as error:
+            raise ModelCallError("模型请求失败") from error
+        message = response.choices[0].message
+        normalized_calls: list[ToolCall] = []
+        for item in getattr(message, "tool_calls", None) or ():
+            function = getattr(item, "function", None)
+            if function is None:
+                raise ModelResponseError("原生 tool_call 缺少 function")
+            try:
+                arguments = json.loads(getattr(function, "arguments", "{}"))
+            except json.JSONDecodeError as error:
+                raise ModelResponseError("原生 tool_call 的 arguments 不是有效 JSON") from error
+            if not isinstance(arguments, dict):
+                raise ModelResponseError("原生 tool_call 的 arguments 必须是 JSON object")
+            normalized_calls.append(
+                ToolCall(
+                    str(getattr(item, "id", "")),
+                    str(getattr(function, "name", "")),
+                    arguments,
+                )
+            )
+        usage = response.usage
+        return ToolModelResponse(
+            content=getattr(message, "content", None),
+            tool_calls=tuple(normalized_calls),
+            model=self.model,
+            input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
+            output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
         )

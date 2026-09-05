@@ -24,6 +24,7 @@ from codeinsight.domain.answer import (
 from codeinsight.domain.query_plan import QueryPlan, SubQuestion
 from codeinsight.domain.retrieval import RankedChunk, SubQuestionEvidence
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.prompts.code_answer import PROMPT_VERSION, build_answer_prompt
 from codeinsight.retrieval.persistent_semantic import embedding_model_id
 
@@ -59,6 +60,7 @@ def auto_answer_repository(
     limit: int = 5,
     chunk_max_lines: int = 80,
     semantic_embed: SemanticEmbed | None = None,
+    reranker: Reranker | None = None,
 ) -> AutoAnswer:
     """分别检索并回答每个公开子问题，同时记录本地证据覆盖情况。"""
     plan: QueryPlan = router_result.plan
@@ -116,6 +118,7 @@ def auto_answer_repository(
             semantic_embed=retrieval_embed,
             semantic_index=semantic_index,
             search=search_repository,
+            reranker=reranker,
         )
         selected: list[RankedChunk] = []
         identifiers: list[str] = []

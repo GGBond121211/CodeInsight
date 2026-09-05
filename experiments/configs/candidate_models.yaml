@@ -5,9 +5,14 @@
 #   2. 报告里必须写真实 provider / model 名称。Fake Provider 只用于证明故障
 #      契约（超时、429、非法输出的处理），不得用于任何质量结论。
 #   3. 没有原生 tool calling 的模型不能进入自主 Tool Loop 的 route profile。
+#   4. 当前候选共享同一个 API 接入，只能证明模型级降级；独立 Provider
+#      故障域在 G8-GW-08 完成前不得写成供应商容灾。
 
-schema_version: 1
+schema_version: 2
 created_at: "2026-09-02"
+updated_at: "2026-09-04"
+price_version: "frontier-stars-2026-09-04"
+price_unit: "stars_per_1m_tokens"
 
 # ---------------------------------------------------------------------------
 # 基线模型 —— 1.0 全部评测使用的组合
@@ -44,26 +49,34 @@ route_profiles:
     description: "解释代码、回答只读问题"
     requires_tool_calling: false
     requires_structured_output: true
-    status: not_implemented
+    status: implemented
+    primary: "deepseek-v4-flash"
+    fallback: ["gpt-5.4-mini", "gpt-5.4"]
 
   - route: change-plan
     description: "生成 ChangePlan"
     requires_tool_calling: true
     requires_structured_output: true
-    status: not_implemented
+    status: implemented
+    primary: "deepseek-v4-flash"
+    fallback: ["gpt-5.4-mini", "gpt-5.4"]
     note: "必须支持原生 tool_calls，不接受把工具调用伪装成文本 JSON"
 
   - route: patch
     description: "生成补丁"
     requires_tool_calling: true
     requires_structured_output: true
-    status: not_implemented
+    status: implemented
+    primary: "deepseek-v4-flash"
+    fallback: ["gpt-5.4-mini", "gpt-5.4"]
 
   - route: patch-review
     description: "补丁审查 / 引用审查"
     requires_tool_calling: false
     requires_structured_output: true
-    status: not_implemented
+    status: implemented
+    primary: "deepseek-v4-flash"
+    fallback: ["gpt-5.4-mini", "gpt-5.4"]
 
 # ---------------------------------------------------------------------------
 # 候选模型 —— 全部 pending，Step 8 才实际对照
@@ -91,32 +104,70 @@ candidates:
       model: "qwen3.7-text-embedding"
       status: measured
 
-    - id: candidate-embedding-b
-      model: null
+    - id: candidate-qwen37-flash
+      model: "qwen3.7-text-embedding-flash"
       status: pending
-      selection_criteria:
-        - "多语言，中文代码注释与中英混合查询表现"
-        - "维度与索引体积可接受"
-        - "支持批量调用"
-      evaluation_dimensions:
-        - "中文自然语言问题"
-        - "英文 identifier 精确匹配"
-        - "路径与文件名"
-        - "错误信息片段"
-        - "中英混合 query"
+      dimension: 1024
+      source: "https://help.aliyun.com/zh/model-studio/embedding-rerank-model/"
+
+    - id: candidate-text-v4
+      model: "text-embedding-v4"
+      status: pending
+      dimension: 1024
+      source: "https://help.aliyun.com/zh/model-studio/embedding-rerank-model/"
+
+    - id: candidate-text-v3
+      model: "text-embedding-v3"
+      status: pending
+      dimension: 1024
+      source: "https://help.aliyun.com/zh/model-studio/embedding-rerank-model/"
+
+    - id: embedding-scope
+      model: null
+      status: scope_rule
       note: >-
-        Embedding 对照必须固定 chunk 与索引配置，只换模型。
-        且要等 R-14① 的 chunk 参数定下来之后再做，否则两个变量同时变。
+        E06 对阿里云百炼官方当前列出的四个纯文本 Embedding 做对照，统一 1024 维；
+        多模态 Embedding 因 008 没有图像/视频检索而排除。真实调用前必须提交预算并再次确认。
+
+  rerank:
+    - id: aliyun-qwen37-text-rerank
+      model: "qwen3.7-text-rerank"
+      status: capability_smoke_passed_quality_unverified
+      role: "融合候选后的模型精排"
+      key_source: "CODEINSIGHT_RERANK_API_KEY or CODEINSIGHT_EMBEDDING_API_KEY"
+      base_url_source: "CODEINSIGHT_RERANK_BASE_URL or Embedding base URL converted to /compatible-api/v1"
+      endpoint_suffix: "/reranks"
+      max_documents: 500
+      max_document_tokens: 30000
+      source: "https://help.aliyun.com/zh/model-studio/embedding-rerank-model/"
+      smoke_evidence: "2026-09-04: real minimal request returned HTTP 200 and results[].index/relevance_score"
+      caveat: "接口能力已验证；尚未在项目评测集证明质量收益"
 
 # ---------------------------------------------------------------------------
 # Fake Provider —— 只用于故障契约，不产生质量结论
 # ---------------------------------------------------------------------------
 fake_provider:
   purpose: "注入 429 / 5xx / 超时 / 非法 tool 输出 / 非法 schema，验证 Gateway 行为"
-  status: not_implemented
+  status: implemented
   hard_rule: >-
     Fake Provider 的任何输出都不得进入质量指标。它只回答
     「系统在故障下的行为是否正确」，不回答「答案好不好」。
+
+# 用户于 2026-09-04 提供的 API 模型页截图。价格是截图中的星星数，
+# 不是人民币或美元；能力只登记截图明确标签或本项目真实 smoke 已证明的项。
+runtime_models:
+  - {model: "codex-auto-review", input: 1.75, output: 14, cached_input: 0.175, capabilities: [text]}
+  - {model: "deepseek-v4-flash", input: 12, output: 36, cached_input: 0.3996, capabilities: [text, tools, structured_output], tier: best}
+  - {model: "deepseek-v4-flash-vision-exp", input: 12, output: 36, cached_input: 0.3996, capabilities: [text, vision, reasoning, tools, structured_output]}
+  - {model: "deepseek-v4-pro", input: 36, output: 108, cached_input: 1.1988, capabilities: [text]}
+  - {model: "glm-5.2", input: 30, output: 105, cached_input: 7.5, capabilities: [text, reasoning, tools, structured_output]}
+  - {model: "glm-5.2-fast-preview", input: 60, output: 210, cached_input: 15, capabilities: [text, reasoning, tools, structured_output]}
+  - {model: "gpt-5.4", input: 2.5, output: 15, cached_input: 0.25, capabilities: [text, reasoning, tools, structured_output], fallback_eligible: true}
+  - {model: "gpt-5.4-mini", input: 0.75, output: 4.5, cached_input: 0.075, capabilities: [text, reasoning, tools, structured_output], fallback_eligible: true}
+  - {model: "gpt-5.5", input: 5, output: 30, cached_input: 0.5, capabilities: [text, reasoning, tools, structured_output]}
+  - {model: "gpt-5.6-luna", input: 1.5, output: 12, cached_input: 0.18, capabilities: [text]}
+  - {model: "gpt-5.6-sol", input: 5, output: 30, cached_input: 0.5, capabilities: [text]}
+  - {model: "gpt-5.6-terra", input: 2.5, output: 20, cached_input: 0.3, capabilities: [text]}
 
 # ---------------------------------------------------------------------------
 # 成本记账要求（增补 R-7）

@@ -34,6 +34,7 @@ from codeinsight.domain.query_plan import QueryPlan
 from codeinsight.domain.retrieval import RankedChunk, SubQuestionEvidence
 from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.infrastructure.openai_chat import parse_model_answer
+from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.prompts.citation_review import (
     AGENT_PROMPT_VERSION,
     build_review_prompt,
@@ -233,6 +234,7 @@ def _retrieve_query_plan(
     search: SearchRepository,
     semantic_embed: SemanticEmbed | None,
     semantic_index,
+    reranker: Reranker | None,
 ) -> tuple[
     tuple[RankedChunk, ...],
     tuple[tuple[str, tuple[RankedChunk, ...]], ...],
@@ -249,6 +251,7 @@ def _retrieve_query_plan(
             limit=state["limit"],
             semantic_embed=semantic_embed,
             semantic_index=semantic_index,
+            reranker=reranker,
             search=search,
         )
         groups.append((subquestion.question, retrieved))
@@ -295,6 +298,7 @@ def run_citation_agent(
     retrieval_mode: str = "hybrid",
     search: SearchRepository = search_repository,
     semantic_embed: SemanticEmbed | None = None,
+    reranker: Reranker | None = None,
     query_plan: QueryPlan | None = None,
 ) -> AgentRepositoryAnswer:
     """运行一次检索/起草/审查/修订工作流，最多修订五次。"""
@@ -324,6 +328,7 @@ def run_citation_agent(
                 search=search,
                 semantic_embed=retrieval_embed,
                 semantic_index=semantic_index,
+                reranker=reranker,
             )
         else:
             results = search(
@@ -333,6 +338,7 @@ def run_citation_agent(
                 retrieval_mode=state["retrieval_mode"],
                 semantic_embed=retrieval_embed,
                 semantic_index=semantic_index,
+                reranker=reranker,
             )
             groups = ()
             evidence_groups = ()

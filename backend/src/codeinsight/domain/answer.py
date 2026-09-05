@@ -24,6 +24,7 @@ class ModelCompletion:
     model: str
     input_tokens: int | None
     output_tokens: int | None
+    estimated_input_tokens: int | None = None
 
 
 @dataclass(frozen=True)

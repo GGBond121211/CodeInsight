@@ -10,6 +10,7 @@ from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.application.agent_answer_repository import agent_answer_repository
 from codeinsight.application.answer_repository import answer_repository
 from codeinsight.application.auto_answer_repository import auto_answer_repository
+from codeinsight.application.context_assembler import ContextAssembler
 from codeinsight.application.query_router import route_question
 from codeinsight.application.search_repository import search_repository
 from codeinsight.domain.errors import (
@@ -19,9 +20,14 @@ from codeinsight.domain.errors import (
 )
 from codeinsight.domain.source import SourceChunk
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
-from codeinsight.infrastructure.openai_chat import OpenAIChatModel
+from codeinsight.infrastructure.model_gateway import GatewayChatModel as OpenAIChatModel
+from codeinsight.infrastructure.reranker import OpenAITextReranker
 
 PROJECT_DESCRIPTION = "CodeInsight 理解源码仓库，并提供可核验的文件和行号证据。"
+
+
+def _configured_chat_model() -> OpenAIChatModel:
+    return OpenAIChatModel.from_environment(context_assembler=ContextAssembler())
 
 
 def _positive_int(value: str) -> int:
@@ -98,7 +104,7 @@ def _search(repo: str, question: str, limit: int, retrieval_mode: str) -> int:
 
 def _answer(repo: str, question: str, limit: int, retrieval_mode: str) -> int:
     try:
-        model = OpenAIChatModel.from_environment()
+        model = _configured_chat_model()
         embedding_model = (
             OpenAIEmbeddingModel.from_environment() if retrieval_mode == "hybrid" else None
         )
@@ -137,7 +143,7 @@ def _answer(repo: str, question: str, limit: int, retrieval_mode: str) -> int:
 
 def _agent_answer(repo: str, question: str, limit: int, retrieval_mode: str) -> int:
     try:
-        model = OpenAIChatModel.from_environment()
+        model = _configured_chat_model()
         embedding_model = (
             OpenAIEmbeddingModel.from_environment() if retrieval_mode == "hybrid" else None
         )
@@ -181,7 +187,7 @@ def _agent_answer(repo: str, question: str, limit: int, retrieval_mode: str) -> 
 
 def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) -> int:
     try:
-        model = OpenAIChatModel.from_environment()
+        model = _configured_chat_model()
         router_result = route_question(question, complete=model.complete)
         if force_route:
             plan = replace(
@@ -200,6 +206,11 @@ def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) 
             if router_result.plan.execution_route != "insufficient"
             else None
         )
+        reranker = (
+            OpenAITextReranker.from_environment()
+            if router_result.plan.execution_route != "insufficient"
+            else None
+        )
         if router_result.plan.execution_route == "agent":
             agent_result = run_citation_agent(
                 repo,
@@ -208,6 +219,7 @@ def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) 
                 limit=limit,
                 retrieval_mode="auto",
                 semantic_embed=embedding_model.embed if embedding_model else None,
+                reranker=reranker,
                 query_plan=router_result.plan,
             )
             result = agent_result.result
@@ -219,6 +231,7 @@ def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) 
                 generate=model.generate,
                 limit=limit,
                 semantic_embed=embedding_model.embed if embedding_model else None,
+                reranker=reranker,
             )
             result = auto_result
             events = auto_result.events

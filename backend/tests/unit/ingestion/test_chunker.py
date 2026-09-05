@@ -46,6 +46,26 @@ def test_multiple_chunks_with_partial_last_chunk() -> None:
     )
 
 
+def test_overlap_reuses_tail_lines_and_preserves_one_based_ranges() -> None:
+    source = SourceFile("a.py", "\n".join(f"line{index}" for index in range(1, 11)))
+    chunks = chunk_source_file(source, max_lines=4, overlap_ratio=0.5)
+    assert chunks == (
+        SourceChunk("a.py", 1, 4, "line1\nline2\nline3\nline4"),
+        SourceChunk("a.py", 3, 6, "line3\nline4\nline5\nline6"),
+        SourceChunk("a.py", 5, 8, "line5\nline6\nline7\nline8"),
+        SourceChunk("a.py", 7, 10, "line7\nline8\nline9\nline10"),
+        SourceChunk("a.py", 9, 10, "line9\nline10"),
+    )
+
+
+def test_zero_overlap_keeps_the_existing_ranges() -> None:
+    source = SourceFile("a.py", "\n".join(f"line{index}" for index in range(1, 11)))
+    assert chunk_source_file(source, max_lines=4, overlap_ratio=0.0) == chunk_source_file(
+        source,
+        max_lines=4,
+    )
+
+
 def test_internal_empty_lines_are_preserved_and_counted() -> None:
     source = SourceFile("a.py", "a\n\nb\n\nc\n")
     chunks = chunk_source_file(source, max_lines=2)
@@ -74,6 +94,12 @@ def test_non_positive_max_lines_raises(max_lines: int) -> None:
             ScanResult(files=(SourceFile("a.py", "x"),), skipped=()),
             max_lines=max_lines,
         )
+
+
+@pytest.mark.parametrize("overlap_ratio", [-0.1, 1.0, float("nan"), float("inf")])
+def test_invalid_overlap_ratio_raises(overlap_ratio: float) -> None:
+    with pytest.raises(ValueError):
+        chunk_source_file(SourceFile("a.py", "x"), overlap_ratio=overlap_ratio)
 
 
 def test_chunk_scan_result_validates_max_lines_without_files() -> None:

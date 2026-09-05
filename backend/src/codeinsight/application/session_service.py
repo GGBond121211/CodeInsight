@@ -1,0 +1,689 @@
+"""Session、Goal 与三层 Memory 的应用层闭环。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+import uuid
+from dataclasses import asdict, dataclass, replace
+
+from codeinsight.application.context_budget import estimate_tokens
+from codeinsight.domain.change import (
+    GOAL_ACTIVE,
+    CodeGoal,
+    ConversationSession,
+    ConversationTurn,
+    TenantScope,
+)
+from codeinsight.domain.memory import (
+    LAYER_SEMANTIC,
+    LAYER_SESSION,
+    LAYER_WORKING,
+    MemoryCacheKey,
+    MemoryRecord,
+    SemanticMemory,
+    SessionMemory,
+    WorkingMemory,
+)
+from codeinsight.domain.ports import CacheStore, MemoryStore, SessionStore
+from codeinsight.infrastructure.redis_cache import CacheUnavailableError, cache_aside
+
+SESSION_MEMORY_SOURCE = "session_service"
+
+
+@dataclass(frozen=True)
+class SessionContext:
+    """一次会话恢复的完整结果。"""
+
+    session: ConversationSession
+    memory: SessionMemory
+    active_goal: CodeGoal | None
+    cache_hit: bool = False
+    cache_fallback: bool = False
+
+
+class SessionService:
+    """以 Session/Memory Store 为事实层，以 Redis 为可失效热点缓存。"""
+
+    def __init__(
+        self,
+        session_store: SessionStore,
+        memory_store: MemoryStore,
+        cache: CacheStore | None = None,
+        *,
+        cache_ttl_seconds: int = 300,
+    ) -> None:
+        if cache_ttl_seconds <= 0:
+            raise ValueError("cache_ttl_seconds 必须为正")
+        self._session_store = session_store
+        self._memory_store = memory_store
+        self._cache = cache
+        self._cache_ttl_seconds = cache_ttl_seconds
+
+    def get_or_create_session(
+        self,
+        *,
+        session_id: str,
+        scope: TenantScope,
+        repo_id: str,
+        repo_fingerprint: str,
+        index_version: str,
+    ) -> SessionContext:
+        key = self._session_cache_key(
+            session_id=session_id,
+            scope=scope,
+            repo_id=repo_id,
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+        )
+
+        def load_from_stores() -> str:
+            session = self._session_store.get_session(session_id)
+            if session is None:
+                session = ConversationSession(
+                    session_id=session_id,
+                    scope=scope,
+                    repo_id=repo_id,
+                )
+                self._session_store.save_session(session)
+            self._assert_session_scope(session, scope=scope, repo_id=repo_id)
+
+            memory = self.load_session_memory(
+                session_id=session_id,
+                scope=scope,
+                repo_id=repo_id,
+            )
+            if memory is None:
+                memory = SessionMemory(
+                    session_id=session_id,
+                    recent_turns=session.recent_turns,
+                    active_goal_id=session.active_goal_id,
+                    summary=session.summary,
+                )
+                self._save_session_memory(memory, scope=scope, repo_id=repo_id)
+            session = replace(
+                session,
+                recent_turns=memory.recent_turns,
+                summary=memory.summary,
+                active_goal_id=memory.active_goal_id,
+            )
+            active_goal = self._load_active_goal(session)
+            return _context_to_json(
+                SessionContext(session=session, memory=memory, active_goal=active_goal)
+            )
+
+        cached = cache_aside(
+            self._cache,
+            key,
+            load_from_stores,
+            ttl_seconds=self._cache_ttl_seconds,
+        )
+        context = _context_from_json(cached.value)
+        self._assert_session_scope(context.session, scope=scope, repo_id=repo_id)
+        return replace(
+            context,
+            cache_hit=cached.hit,
+            cache_fallback=cached.used_fallback,
+        )
+
+    def append_turn(
+        self,
+        context: SessionContext,
+        *,
+        role: str,
+        content: str,
+        repo_fingerprint: str,
+        index_version: str,
+    ) -> SessionContext:
+        session = context.session.with_turn(role, content)
+        memory = replace(context.memory, recent_turns=session.recent_turns)
+        return self._persist_context(
+            replace(context, session=session, memory=memory, cache_hit=False),
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+        )
+
+    def update_session_memory(
+        self,
+        context: SessionContext,
+        *,
+        summary: str | None = None,
+        confirmed_conclusions: tuple[str, ...] | None = None,
+        rejected_approaches: tuple[str, ...] | None = None,
+        user_preferences: dict[str, str] | None = None,
+        repo_fingerprint: str,
+        index_version: str,
+    ) -> SessionContext:
+        memory = replace(
+            context.memory,
+            summary=summary if summary is not None else context.memory.summary,
+            confirmed_conclusions=(
+                confirmed_conclusions
+                if confirmed_conclusions is not None
+                else context.memory.confirmed_conclusions
+            ),
+            rejected_approaches=(
+                rejected_approaches
+                if rejected_approaches is not None
+                else context.memory.rejected_approaches
+            ),
+            user_preferences=(
+                user_preferences
+                if user_preferences is not None
+                else context.memory.user_preferences
+            ),
+        )
+        session = replace(context.session, summary=memory.summary)
+        return self._persist_context(
+            replace(context, session=session, memory=memory, cache_hit=False),
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+        )
+
+    def continue_or_create_goal(
+        self,
+        context: SessionContext,
+        *,
+        user_goal: str,
+        task_type: str,
+        mode: str,
+        target_scope: tuple[str, ...] = (),
+        validation_profile: str | None = None,
+        start_new: bool = False,
+        goal_id: str | None = None,
+        repo_fingerprint: str,
+        index_version: str,
+    ) -> SessionContext:
+        current = context.active_goal
+        if not start_new and current is not None and current.status == GOAL_ACTIVE:
+            return context
+
+        new_goal = CodeGoal(
+            goal_id=goal_id or str(uuid.uuid4()),
+            session_id=context.session.session_id,
+            scope=context.session.scope,
+            repo_id=context.session.repo_id,
+            task_type=task_type,
+            user_goal=user_goal,
+            mode=mode,
+            target_scope=target_scope,
+            validation_profile=validation_profile,
+        )
+        self._session_store.save_goal(new_goal)
+        session = context.session.with_active_goal(new_goal.goal_id)
+        memory = replace(context.memory, active_goal_id=new_goal.goal_id)
+        return self._persist_context(
+            replace(
+                context,
+                session=session,
+                memory=memory,
+                active_goal=new_goal,
+                cache_hit=False,
+            ),
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+        )
+
+    def save_working_memory(
+        self,
+        memory: WorkingMemory,
+        *,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> None:
+        self._save_memory_record(
+            layer=LAYER_WORKING,
+            owner_id=memory.run_id,
+            payload=asdict(memory),
+            scope=scope,
+            repo_id=repo_id,
+        )
+
+    def load_working_memory(
+        self,
+        *,
+        run_id: str,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> WorkingMemory | None:
+        record = self._load_memory_record(
+            layer=LAYER_WORKING,
+            owner_id=run_id,
+            scope=scope,
+            repo_id=repo_id,
+        )
+        if record is None:
+            return None
+        payload = json.loads(record.content)
+        return WorkingMemory(
+            run_id=str(payload["run_id"]),
+            user_goal=str(payload["user_goal"]),
+            selected_evidence_ids=tuple(payload.get("selected_evidence_ids", ())),
+            rejected_paths=tuple(payload.get("rejected_paths", ())),
+            steps_remaining=int(payload.get("steps_remaining", 0)),
+            structured_problem=(
+                str(payload["structured_problem"])
+                if payload.get("structured_problem") is not None
+                else None
+            ),
+            pending_tool=(
+                str(payload["pending_tool"])
+                if payload.get("pending_tool") is not None
+                else None
+            ),
+            patch_ref=(
+                str(payload["patch_ref"]) if payload.get("patch_ref") is not None else None
+            ),
+            check_status=(
+                str(payload["check_status"])
+                if payload.get("check_status") is not None
+                else None
+            ),
+        )
+
+    def save_semantic_memory(
+        self,
+        memory: SemanticMemory,
+        *,
+        scope: TenantScope,
+        source: str,
+        confidence: float,
+        consent: bool,
+        expires_at_epoch_ms: int | None = None,
+    ) -> None:
+        self._save_memory_record(
+            layer=LAYER_SEMANTIC,
+            owner_id=memory.index_version,
+            payload=asdict(memory),
+            scope=scope,
+            repo_id=memory.repo_id,
+            source=source,
+            confidence=confidence,
+            consent=consent,
+            expires_at_epoch_ms=expires_at_epoch_ms,
+        )
+
+    def load_semantic_memory(
+        self,
+        *,
+        repo_id: str,
+        index_version: str,
+        scope: TenantScope,
+    ) -> SemanticMemory | None:
+        record = self._load_memory_record(
+            layer=LAYER_SEMANTIC,
+            owner_id=index_version,
+            scope=scope,
+            repo_id=repo_id,
+        )
+        if record is None:
+            return None
+        payload = json.loads(record.content)
+        return SemanticMemory(
+            repo_id=str(payload["repo_id"]),
+            index_version=str(payload["index_version"]),
+            module_summaries=tuple(
+                (str(path), str(summary))
+                for path, summary in payload.get("module_summaries", ())
+            ),
+            symbol_names=tuple(str(name) for name in payload.get("symbol_names", ())),
+        )
+
+    def load_session_memory(
+        self,
+        *,
+        session_id: str,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> SessionMemory | None:
+        record = self._load_memory_record(
+            layer=LAYER_SESSION,
+            owner_id=session_id,
+            scope=scope,
+            repo_id=repo_id,
+        )
+        if record is None:
+            return None
+        return _session_memory_from_payload(json.loads(record.content))
+
+    def forget_working_memory(
+        self,
+        *,
+        run_id: str,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> None:
+        self._delete_memory_record(
+            layer=LAYER_WORKING,
+            owner_id=run_id,
+            scope=scope,
+            repo_id=repo_id,
+        )
+
+    def forget_semantic_memory(
+        self,
+        *,
+        repo_id: str,
+        index_version: str,
+        scope: TenantScope,
+    ) -> None:
+        self._delete_memory_record(
+            layer=LAYER_SEMANTIC,
+            owner_id=index_version,
+            scope=scope,
+            repo_id=repo_id,
+        )
+
+    def forget_session_memory(
+        self,
+        *,
+        session_id: str,
+        scope: TenantScope,
+        repo_id: str,
+        repo_fingerprint: str,
+        index_version: str,
+    ) -> None:
+        self._delete_memory_record(
+            layer=LAYER_SESSION,
+            owner_id=session_id,
+            scope=scope,
+            repo_id=repo_id,
+        )
+        key = self._session_cache_key(
+            session_id=session_id,
+            scope=scope,
+            repo_id=repo_id,
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+        )
+        if self._cache is not None:
+            try:
+                self._cache.delete(key.value)
+            except CacheUnavailableError:
+                pass
+
+    def _persist_context(
+        self,
+        context: SessionContext,
+        *,
+        repo_fingerprint: str,
+        index_version: str,
+    ) -> SessionContext:
+        self._session_store.save_session(context.session)
+        self._save_session_memory(
+            context.memory,
+            scope=context.session.scope,
+            repo_id=context.session.repo_id,
+        )
+        key = self._session_cache_key(
+            session_id=context.session.session_id,
+            scope=context.session.scope,
+            repo_id=context.session.repo_id,
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+        )
+        cache_fallback = self._cache is None
+        if self._cache is not None:
+            try:
+                self._cache.set(
+                    key.value,
+                    _context_to_json(context),
+                    ttl_seconds=self._cache_ttl_seconds,
+                )
+            except CacheUnavailableError:
+                cache_fallback = True
+        return replace(context, cache_fallback=cache_fallback)
+
+    def _save_session_memory(
+        self,
+        memory: SessionMemory,
+        *,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> None:
+        self._save_memory_record(
+            layer=LAYER_SESSION,
+            owner_id=memory.session_id,
+            payload=_session_memory_to_payload(memory),
+            scope=scope,
+            repo_id=repo_id,
+        )
+
+    def _save_memory_record(
+        self,
+        *,
+        layer: str,
+        owner_id: str,
+        payload: dict[str, object],
+        scope: TenantScope,
+        repo_id: str,
+        source: str = SESSION_MEMORY_SOURCE,
+        confidence: float | None = None,
+        consent: bool = True,
+        expires_at_epoch_ms: int | None = None,
+    ) -> None:
+        content = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        self._memory_store.save(
+            MemoryRecord(
+                record_id=_record_id(layer, owner_id, scope=scope, repo_id=repo_id),
+                layer=layer,
+                owner_id=owner_id,
+                content=content,
+                token_estimate=estimate_tokens(content),
+                is_trusted=False,
+                tenant_id=scope.tenant_id,
+                user_id=scope.user_id,
+                repo_id=repo_id,
+                source=source,
+                confidence=confidence,
+                consent=consent,
+                expires_at_epoch_ms=expires_at_epoch_ms,
+            )
+        )
+
+    def _load_memory_record(
+        self,
+        *,
+        layer: str,
+        owner_id: str,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> MemoryRecord | None:
+        record_id = _record_id(layer, owner_id, scope=scope, repo_id=repo_id)
+        record = self._memory_store.get(
+            layer,
+            owner_id,
+            record_id,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            repo_id=repo_id,
+        )
+        if record is None or record.status != "active":
+            return None
+        if record.expires_at_epoch_ms is not None:
+            now_epoch_ms = int(time.time() * 1000)
+            if now_epoch_ms >= record.expires_at_epoch_ms:
+                self._delete_memory_record(
+                    layer=layer,
+                    owner_id=owner_id,
+                    scope=scope,
+                    repo_id=repo_id,
+                )
+                return None
+        return record
+
+    def _delete_memory_record(
+        self,
+        *,
+        layer: str,
+        owner_id: str,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> None:
+        self._memory_store.delete(
+            layer,
+            owner_id,
+            _record_id(layer, owner_id, scope=scope, repo_id=repo_id),
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            repo_id=repo_id,
+        )
+
+    def _session_cache_key(
+        self,
+        *,
+        session_id: str,
+        scope: TenantScope,
+        repo_id: str,
+        repo_fingerprint: str,
+        index_version: str,
+    ) -> MemoryCacheKey:
+        filter_hash = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+        return MemoryCacheKey.for_query(
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            session_id=session_id,
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+            query="session-context",
+            top_k=1,
+            filter_hash=filter_hash,
+        )
+
+    def _load_active_goal(self, session: ConversationSession) -> CodeGoal | None:
+        if session.active_goal_id is None:
+            return None
+        goal = self._session_store.get_goal(session.active_goal_id)
+        if goal is None or goal.status != GOAL_ACTIVE:
+            return None
+        return goal
+
+    @staticmethod
+    def _assert_session_scope(
+        session: ConversationSession,
+        *,
+        scope: TenantScope,
+        repo_id: str,
+    ) -> None:
+        if session.scope != scope or session.repo_id != repo_id:
+            raise ValueError("session_id 已被其他 tenant/user/repo 使用")
+
+
+def _record_id(layer: str, owner_id: str, *, scope: TenantScope, repo_id: str) -> str:
+    raw = ":".join((layer, scope.tenant_id, scope.user_id, repo_id, owner_id))
+    return f"{layer}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+
+
+def _session_memory_to_payload(memory: SessionMemory) -> dict[str, object]:
+    return {
+        "session_id": memory.session_id,
+        "recent_turns": [asdict(turn) for turn in memory.recent_turns],
+        "active_goal_id": memory.active_goal_id,
+        "confirmed_conclusions": list(memory.confirmed_conclusions),
+        "rejected_approaches": list(memory.rejected_approaches),
+        "user_preferences": memory.user_preferences,
+        "summary": memory.summary,
+    }
+
+
+def _session_memory_from_payload(payload: dict[str, object]) -> SessionMemory:
+    raw_turns = payload.get("recent_turns", [])
+    turns = tuple(
+        ConversationTurn(
+            sequence=int(turn["sequence"]),
+            role=str(turn["role"]),
+            content=str(turn["content"]),
+        )
+        for turn in raw_turns
+        if isinstance(turn, dict)
+    )
+    raw_preferences = payload.get("user_preferences", {})
+    preferences = {
+        str(key): str(value)
+        for key, value in raw_preferences.items()
+    } if isinstance(raw_preferences, dict) else {}
+    return SessionMemory(
+        session_id=str(payload["session_id"]),
+        recent_turns=turns,
+        active_goal_id=(
+            str(payload["active_goal_id"])
+            if payload.get("active_goal_id") is not None
+            else None
+        ),
+        confirmed_conclusions=tuple(
+            str(value) for value in payload.get("confirmed_conclusions", ())
+        ),
+        rejected_approaches=tuple(
+            str(value) for value in payload.get("rejected_approaches", ())
+        ),
+        user_preferences=preferences,
+        summary=str(payload["summary"]) if payload.get("summary") is not None else None,
+    )
+
+
+def _context_to_json(context: SessionContext) -> str:
+    session = context.session
+    goal = context.active_goal
+    payload: dict[str, object] = {
+        "session": {
+            "session_id": session.session_id,
+            "tenant_id": session.scope.tenant_id,
+            "user_id": session.scope.user_id,
+            "repo_id": session.repo_id,
+            "summary": session.summary,
+            "active_goal_id": session.active_goal_id,
+        },
+        "memory": _session_memory_to_payload(context.memory),
+        "active_goal": asdict(goal) if goal is not None else None,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _context_from_json(raw: str) -> SessionContext:
+    payload = json.loads(raw)
+    session_payload = payload["session"]
+    memory = _session_memory_from_payload(payload["memory"])
+    scope = TenantScope(
+        tenant_id=str(session_payload["tenant_id"]),
+        user_id=str(session_payload["user_id"]),
+    )
+    session = ConversationSession(
+        session_id=str(session_payload["session_id"]),
+        scope=scope,
+        repo_id=str(session_payload["repo_id"]),
+        recent_turns=memory.recent_turns,
+        summary=(
+            str(session_payload["summary"])
+            if session_payload.get("summary") is not None
+            else None
+        ),
+        active_goal_id=(
+            str(session_payload["active_goal_id"])
+            if session_payload.get("active_goal_id") is not None
+            else None
+        ),
+    )
+    goal_payload = payload.get("active_goal")
+    active_goal = None
+    if isinstance(goal_payload, dict):
+        active_goal = CodeGoal(
+            goal_id=str(goal_payload["goal_id"]),
+            session_id=str(goal_payload["session_id"]),
+            scope=TenantScope(
+                tenant_id=str(goal_payload["scope"]["tenant_id"]),
+                user_id=str(goal_payload["scope"]["user_id"]),
+            ),
+            repo_id=str(goal_payload["repo_id"]),
+            task_type=str(goal_payload["task_type"]),
+            user_goal=str(goal_payload["user_goal"]),
+            mode=str(goal_payload["mode"]),
+            target_scope=tuple(goal_payload.get("target_scope", ())),
+            validation_profile=(
+                str(goal_payload["validation_profile"])
+                if goal_payload.get("validation_profile") is not None
+                else None
+            ),
+            status=str(goal_payload["status"]),
+        )
+    return SessionContext(session=session, memory=memory, active_goal=active_goal)

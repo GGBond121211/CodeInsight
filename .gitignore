@@ -34,6 +34,8 @@ work/*
 !work/.gitignore
 outputs/*
 !outputs/.gitignore
+backend/tmp-test-run/
+learning_visualizer/VISUALIZATION_HANDOFF.md
 
 # 实验原始产物（配置、runner 和 decision_records 仍进 Git）
 experiments/results/*

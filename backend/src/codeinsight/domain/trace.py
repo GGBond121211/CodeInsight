@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 # 事件类型
 # ---------------------------------------------------------------------------
 RUN_STARTED = "run_started"
+MODEL_CALLED = "model_called"
+MODEL_RESULT = "model_result"
 STEP_STARTED = "step_started"
 TOOL_CALLED = "tool_called"
 TOOL_RESULT = "tool_result"
@@ -51,6 +53,8 @@ RUN_FINISHED = "run_finished"
 SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
     {
         RUN_STARTED,
+        MODEL_CALLED,
+        MODEL_RESULT,
         STEP_STARTED,
         TOOL_CALLED,
         TOOL_RESULT,

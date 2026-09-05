@@ -31,12 +31,15 @@ from codeinsight.domain.change import (
     StateVersionConflictError,
     TenantScope,
 )
+from codeinsight.domain.memory import MemoryRecord
 from codeinsight.domain.trace import AuditRecord, IdempotencyKey, RunEvent, TraceContext
 from codeinsight.infrastructure.db.schema import (
     ApprovalRow,
     AuditRecordRow,
+    GatewayCostRow,
     GoalRow,
     IdempotencyRow,
+    MemoryRecordRow,
     RunEventRow,
     RunRow,
     SessionRow,
@@ -80,6 +83,127 @@ def _load_json_map(raw: str) -> dict[str, str]:
     for key, value in parsed.items():
         result[str(key)] = str(value)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Memory
+# ---------------------------------------------------------------------------
+
+
+class MySqlMemoryStore:
+    """Memory 的 MySQL 事实层；Redis 只缓存这里的读取结果。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save(self, record: MemoryRecord) -> None:
+        with self._session_factory() as db:
+            row = db.get(MemoryRecordRow, record.record_id)
+            if row is None:
+                row = MemoryRecordRow(record_id=record.record_id)
+                db.add(row)
+            row.tenant_id = record.tenant_id
+            row.user_id = record.user_id
+            row.repo_id = record.repo_id
+            row.layer = record.layer
+            row.owner_id = record.owner_id
+            row.content = record.content
+            row.token_estimate = record.token_estimate
+            row.is_trusted = record.is_trusted
+            row.source = record.source
+            row.confidence = record.confidence
+            row.expires_at_epoch_ms = record.expires_at_epoch_ms
+            row.consent = record.consent
+            row.status = record.status
+            db.commit()
+
+    def get(
+        self,
+        layer: str,
+        owner_id: str,
+        record_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        repo_id: str,
+    ) -> MemoryRecord | None:
+        statement = select(MemoryRecordRow).where(
+            MemoryRecordRow.record_id == record_id,
+            MemoryRecordRow.layer == layer,
+            MemoryRecordRow.owner_id == owner_id,
+            MemoryRecordRow.tenant_id == tenant_id,
+            MemoryRecordRow.user_id == user_id,
+            MemoryRecordRow.repo_id == repo_id,
+        )
+        with self._session_factory() as db:
+            row = db.scalars(statement).first()
+            if row is None:
+                return None
+            return _memory_from_row(row)
+
+    def list(
+        self,
+        layer: str,
+        owner_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        repo_id: str,
+    ) -> tuple[MemoryRecord, ...]:
+        statement = (
+            select(MemoryRecordRow)
+            .where(
+                MemoryRecordRow.layer == layer,
+                MemoryRecordRow.owner_id == owner_id,
+                MemoryRecordRow.tenant_id == tenant_id,
+                MemoryRecordRow.user_id == user_id,
+                MemoryRecordRow.repo_id == repo_id,
+            )
+            .order_by(MemoryRecordRow.record_id)
+        )
+        with self._session_factory() as db:
+            return tuple(_memory_from_row(row) for row in db.scalars(statement))
+
+    def delete(
+        self,
+        layer: str,
+        owner_id: str,
+        record_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        repo_id: str,
+    ) -> None:
+        statement = delete(MemoryRecordRow).where(
+            MemoryRecordRow.record_id == record_id,
+            MemoryRecordRow.layer == layer,
+            MemoryRecordRow.owner_id == owner_id,
+            MemoryRecordRow.tenant_id == tenant_id,
+            MemoryRecordRow.user_id == user_id,
+            MemoryRecordRow.repo_id == repo_id,
+        )
+        with self._session_factory() as db:
+            db.execute(statement)
+            db.commit()
+
+
+def _memory_from_row(row: MemoryRecordRow) -> MemoryRecord:
+    return MemoryRecord(
+        record_id=row.record_id,
+        layer=row.layer,
+        owner_id=row.owner_id,
+        content=row.content,
+        token_estimate=row.token_estimate,
+        is_trusted=row.is_trusted,
+        tenant_id=row.tenant_id,
+        user_id=row.user_id,
+        repo_id=row.repo_id,
+        source=row.source,
+        confidence=row.confidence,
+        expires_at_epoch_ms=row.expires_at_epoch_ms,
+        consent=row.consent,
+        status=row.status,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +709,71 @@ class MySqlIdempotencyStore:
         )
         with self._session_factory() as db:
             return db.scalars(statement).first()
+
+
+class MySqlGatewayCostStore:
+    """版本化 attempt 成本记录；价格更新不会覆盖历史行。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def record(self, cost) -> None:
+        row = GatewayCostRow(
+            attempt_id=cost.attempt_id,
+            request_id=cost.request_id,
+            tenant_id=cost.tenant_id,
+            user_id=cost.user_id,
+            scene=cost.scene,
+            prompt_version=cost.prompt_version,
+            provider=cost.provider,
+            model_tier=cost.model_tier,
+            model=cost.model,
+            input_tokens=cost.input_tokens,
+            output_tokens=cost.output_tokens,
+            cached_tokens=cost.cached_tokens,
+            price_version=cost.price_version,
+            total_stars=cost.total_stars,
+            latency_milliseconds=cost.latency_milliseconds,
+            ttft_milliseconds=cost.ttft_milliseconds,
+            fallback_reason=cost.fallback_reason,
+            error_class=cost.error_class,
+        )
+        with self._session_factory() as db:
+            db.add(row)
+            db.commit()
+
+    def list_for_request(self, request_id: str):
+        from codeinsight.infrastructure.model_gateway import CostRecord
+
+        statement = (
+            select(GatewayCostRow)
+            .where(GatewayCostRow.request_id == request_id)
+            .order_by(GatewayCostRow.attempt_id)
+        )
+        with self._session_factory() as db:
+            return tuple(
+                CostRecord(
+                    request_id=row.request_id,
+                    attempt_id=row.attempt_id,
+                    tenant_id=row.tenant_id,
+                    user_id=row.user_id,
+                    scene=row.scene,
+                    prompt_version=row.prompt_version,
+                    provider=row.provider,
+                    model_tier=row.model_tier,
+                    model=row.model,
+                    input_tokens=row.input_tokens,
+                    output_tokens=row.output_tokens,
+                    cached_tokens=row.cached_tokens,
+                    price_version=row.price_version,
+                    total_stars=row.total_stars,
+                    latency_milliseconds=row.latency_milliseconds,
+                    ttft_milliseconds=row.ttft_milliseconds,
+                    fallback_reason=row.fallback_reason,
+                    error_class=row.error_class,
+                )
+                for row in db.scalars(statement)
+            )
 
 
 def truncate_all_tables(engine: Engine) -> None:

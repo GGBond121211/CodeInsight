@@ -8,6 +8,7 @@ from codeinsight.domain.query_plan import QueryPlan, SubQuestion
 from codeinsight.domain.retrieval import RankedChunk
 from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.domain.source import SourceChunk
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -31,6 +32,11 @@ def _fake_embedding(texts):
     for _ in texts:
         vectors.append((1.0, 0.0))
     return EmbeddingBatch("fake", tuple(vectors), len(texts))
+
+
+class _FakeReranker:
+    def rerank(self, _query, documents, *, top_n):
+        return tuple(RerankResult(index, 1.0) for index in range(min(top_n, len(documents))))
 
 
 def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() -> None:
@@ -73,6 +79,7 @@ def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() ->
         search=search,
         query_plan=plan,
         semantic_embed=_fake_embedding,
+        reranker=_FakeReranker(),
     )
 
     assert calls == [
@@ -140,6 +147,7 @@ def test_query_plan_critic_revises_only_failed_subquestion() -> None:
         search=search,
         query_plan=plan,
         semantic_embed=_fake_embedding,
+        reranker=_FakeReranker(),
     )
 
     assert result.revisions == 1

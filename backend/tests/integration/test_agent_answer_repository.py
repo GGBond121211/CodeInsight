@@ -3,6 +3,7 @@ from pathlib import Path
 from codeinsight.application.agent_answer_repository import agent_answer_repository
 from codeinsight.domain.answer import ModelCompletion
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -26,6 +27,11 @@ class CompletionSequence:
         return ModelCompletion(content, "fake-model", 12, 5)
 
 
+class _FakeReranker:
+    def rerank(self, _query, documents, *, top_n):
+        return tuple(RerankResult(index, 1.0) for index in range(min(top_n, len(documents))))
+
+
 def test_agent_answer_maps_reviewed_evidence_from_real_retrieval() -> None:
     complete = CompletionSequence(
         '{"outcome":"answered","answer":"checkout validates input.","citations":["E1","E2"]}',
@@ -37,6 +43,7 @@ def test_agent_answer_maps_reviewed_evidence_from_real_retrieval() -> None:
         "How does checkout validate input?",
         complete=complete,
         semantic_embed=_fake_embed,
+        reranker=_FakeReranker(),
     )
 
     assert result.result.outcome == "answered"

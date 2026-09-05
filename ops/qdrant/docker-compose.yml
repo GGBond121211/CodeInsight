@@ -1,0 +1,21 @@
+# 兼容入口：Qdrant 已正式并入仓库根目录 docker-compose.yml。
+# 正常启动请使用根目录 Compose；本文件只为旧脚本保留，不能与主 Compose 同时启动。
+
+services:
+  qdrant:
+    image: qdrant/qdrant@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    container_name: codeinsight-qdrant
+    restart: unless-stopped
+    ports:
+      # 6333/6334 已被 Project-0009 的 Qdrant 占用；本项目隔离到 6335/6336。
+      - "127.0.0.1:6335:6333"
+      - "127.0.0.1:6336:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    # qdrant/qdrant 镜像不自带 wget/curl；由应用集成探针调用 /healthz，
+    # 避免把“容器内不存在探测工具”误报成服务不健康。
+
+volumes:
+  qdrant-data:
+    name: codeinsight-qdrant-data
+    external: true

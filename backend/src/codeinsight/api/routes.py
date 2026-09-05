@@ -3,7 +3,8 @@
 from collections.abc import Callable
 from dataclasses import replace
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.api.schemas import (
@@ -16,6 +17,15 @@ from codeinsight.api.schemas import (
     AutoAnswerResponse,
     AutoEventResponse,
     AutoSubQuestionResponse,
+    ChangeApplyRequest,
+    ChangeApproveRequest,
+    ChangeApproveResponse,
+    ChangeCancelResponse,
+    ChangeEventResponse,
+    ChangePreviewRequest,
+    ChangePreviewResponse,
+    ChangeResultResponse,
+    ChangeRollbackRequest,
     CitationResponse,
     HealthResponse,
     QueryPlanResponse,
@@ -28,6 +38,7 @@ from codeinsight.api.schemas import (
 from codeinsight.application.agent_answer_repository import agent_answer_repository
 from codeinsight.application.answer_repository import answer_repository
 from codeinsight.application.auto_answer_repository import auto_answer_repository
+from codeinsight.application.change_service import ChangeRequestError, ChangeService
 from codeinsight.application.query_router import QueryRouterResult, route_question
 from codeinsight.application.search_repository import search_repository
 from codeinsight.domain.answer import AutoAnswer, AutoAnswerEvent, SubQuestionAnswer
@@ -38,9 +49,11 @@ from codeinsight.domain.errors import (
 )
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.openai_chat import OpenAIChatModel
+from codeinsight.infrastructure.reranker import OpenAITextReranker, Reranker
 
 ModelFactory = Callable[[], OpenAIChatModel]
 EmbeddingFactory = Callable[[], OpenAIEmbeddingModel]
+RerankerFactory = Callable[[], Reranker]
 
 
 def _first_line(text: str) -> str:
@@ -175,6 +188,7 @@ def _auto_response(result: AutoAnswer) -> AutoAnswerResponse:
 def create_router(
     model_factory: ModelFactory,
     embedding_factory: EmbeddingFactory = OpenAIEmbeddingModel.from_environment,
+    reranker_factory: RerankerFactory = OpenAITextReranker.from_environment,
 ) -> APIRouter:
     """创建带有可注入模型组合边界的 API Router。"""
     router = APIRouter(prefix="/api/v1")
@@ -188,12 +202,14 @@ def create_router(
     def search(request: SearchRequest) -> SearchResponse:
         try:
             embedding_model = embedding_factory() if request.retrieval_mode == "hybrid" else None
+            reranker = reranker_factory() if request.retrieval_mode == "hybrid" else None
             results = search_repository(
                 request.repository_root,
                 request.question,
                 limit=request.limit,
                 retrieval_mode=request.retrieval_mode,
                 semantic_embed=embedding_model.embed if embedding_model else None,
+                reranker=reranker,
             )
         except ModelConfigurationError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -224,6 +240,7 @@ def create_router(
         try:
             model = model_factory()
             embedding_model = embedding_factory() if request.retrieval_mode == "hybrid" else None
+            reranker = reranker_factory() if request.retrieval_mode == "hybrid" else None
             result = answer_repository(
                 request.repository_root,
                 request.question,
@@ -231,6 +248,7 @@ def create_router(
                 limit=request.limit,
                 retrieval_mode=request.retrieval_mode,
                 semantic_embed=embedding_model.embed if embedding_model else None,
+                reranker=reranker,
             )
         except ModelConfigurationError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -258,6 +276,7 @@ def create_router(
         try:
             model = model_factory()
             embedding_model = embedding_factory() if request.retrieval_mode == "hybrid" else None
+            reranker = reranker_factory() if request.retrieval_mode == "hybrid" else None
             agent_result = agent_answer_repository(
                 request.repository_root,
                 request.question,
@@ -265,6 +284,7 @@ def create_router(
                 limit=request.limit,
                 retrieval_mode=request.retrieval_mode,
                 semantic_embed=embedding_model.embed if embedding_model else None,
+                reranker=reranker,
             )
         except ModelConfigurationError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -320,6 +340,11 @@ def create_router(
                 if router_result.plan.execution_route != "insufficient"
                 else None
             )
+            reranker = (
+                reranker_factory()
+                if router_result.plan.execution_route != "insufficient"
+                else None
+            )
             if router_result.plan.execution_route == "agent":
                 agent_result = run_citation_agent(
                     request.repository_root,
@@ -328,6 +353,7 @@ def create_router(
                     limit=request.limit,
                     retrieval_mode="auto",
                     semantic_embed=embedding_model.embed if embedding_model else None,
+                    reranker=reranker,
                     query_plan=router_result.plan,
                 )
                 result = _auto_from_agent(router_result, agent_result)
@@ -338,6 +364,7 @@ def create_router(
                     generate=model.generate,
                     limit=request.limit,
                     semantic_embed=embedding_model.embed if embedding_model else None,
+                    reranker=reranker,
                 )
         except ModelConfigurationError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -346,5 +373,100 @@ def create_router(
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return _auto_response(result)
+
+    return router
+
+
+def create_change_router(change_service: ChangeService | None = None) -> APIRouter:
+    """Step 6 变更 API；与只读的 v1 入口分开，避免改变旧契约。"""
+    router = APIRouter(prefix="/api/v2")
+    changes = change_service or ChangeService()
+
+    @router.post("/change/preview", response_model=ChangePreviewResponse)
+    def change_preview(request: ChangePreviewRequest) -> ChangePreviewResponse:
+        try:
+            result = changes.preview(
+                request.repository_root,
+                run_id=request.run_id,
+                path=request.path,
+                new_content=request.new_content,
+                validation_profile=request.validation_profile,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except (ChangeRequestError, ValueError, OSError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return ChangePreviewResponse(**result.as_dict())
+
+    @router.post("/change/approve", response_model=ChangeApproveResponse)
+    def change_approve(request: ChangeApproveRequest) -> ChangeApproveResponse:
+        try:
+            token = changes.approve(
+                request.run_id,
+                request.patch_id,
+                expires_in_seconds=request.expires_in_seconds,
+            )
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except (ChangeRequestError, ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return ChangeApproveResponse(
+            run_id=request.run_id,
+            patch_id=request.patch_id,
+            approval_token=token,
+            expires_in_seconds=request.expires_in_seconds,
+        )
+
+    @router.post("/change/apply", response_model=ChangeResultResponse)
+    def change_apply(request: ChangeApplyRequest) -> ChangeResultResponse:
+        try:
+            result = changes.apply(request.run_id, request.patch_id, request.approval_token)
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ChangeRequestError, ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return ChangeResultResponse(**result.as_dict())
+
+    @router.post("/change/rollback", response_model=ChangeResultResponse)
+    def change_rollback(request: ChangeRollbackRequest) -> ChangeResultResponse:
+        try:
+            result = changes.rollback(request.run_id, request.patch_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ChangeRequestError, ValueError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return ChangeResultResponse(**result.as_dict())
+
+    @router.post("/change/{run_id}/cancel", response_model=ChangeCancelResponse)
+    def change_cancel(run_id: str) -> ChangeCancelResponse:
+        try:
+            status, immediate = changes.cancel(run_id)
+        except ChangeRequestError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return ChangeCancelResponse(status=status, run_id=run_id, immediate=immediate)
+
+    @router.get("/change/{run_id}/events")
+    def change_events(
+        run_id: str, after_sequence: int = Query(default=0, ge=0)
+    ) -> StreamingResponse:
+        events = changes.events_after(run_id, after_sequence)
+
+        def stream():
+            for event in events:
+                payload = ChangeEventResponse(
+                    event_id=event.event_id,
+                    run_id=event.run_id,
+                    sequence=event.sequence,
+                    event_type=event.event_type,
+                    occurred_at_epoch_ms=event.occurred_at_epoch_ms,
+                    payload=event.payload,
+                ).model_dump_json()
+                yield f"id: {event.sse_event_id}\nevent: {event.event_type}\ndata: {payload}\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
 
     return router

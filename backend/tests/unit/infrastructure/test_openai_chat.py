@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 from openai import OpenAIError
 
+from codeinsight.application.context_assembler import ContextAssembler
 from codeinsight.domain.errors import (
     ModelCallError,
     ModelConfigurationError,
@@ -139,6 +140,21 @@ def test_complete_returns_raw_content_and_usage() -> None:
     assert result.model == "test-model"
     assert result.input_tokens == 11
     assert result.output_tokens == 6
+
+
+def test_context_assembler_estimate_is_carried_with_completion() -> None:
+    completions = FakeCompletions()
+    model = OpenAIChatModel(
+        client=_fake_client(completions),
+        model="test-model",
+        context_assembler=ContextAssembler(),
+    )  # type: ignore[arg-type]
+
+    result = model.complete("system", "user")
+
+    assert result.estimated_input_tokens is not None
+    assert result.estimated_input_tokens > 0
+    assert "[user_code_task]" in completions.kwargs["messages"][1]["content"]
 
 
 def test_sdk_error_becomes_safe_model_call_error() -> None:

@@ -18,7 +18,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field, replace
+
+from codeinsight.domain.change import ConversationTurn
 
 LAYER_WORKING = "working"
 LAYER_SESSION = "session"
@@ -39,22 +42,41 @@ MEMORY_LIFETIME_OWNER: dict[str, str] = {
 # 上下文分区。顺序即优先级：预算不足时从后往前裁。
 SECTION_SYSTEM = "system"
 SECTION_GOAL = "goal"
+SECTION_USER_CODE_TASK = "user_code_task"
 SECTION_EVIDENCE = "evidence"
+SECTION_CURRENT_DIFF = "current_diff"
+SECTION_TEST_FAILURE_DIGEST = "test_failure_digest"
 SECTION_TOOL_RESULTS = "tool_results"
+SECTION_TOOL_SCHEMA = "tool_schema"
 SECTION_SESSION_SUMMARY = "session_summary"
 SECTION_REPOSITORY_MAP = "repository_map"
+SECTION_OUTPUT_SCHEMA = "output_schema"
 
 CONTEXT_SECTION_PRIORITY: tuple[str, ...] = (
     SECTION_SYSTEM,
     SECTION_GOAL,
+    SECTION_USER_CODE_TASK,
     SECTION_EVIDENCE,
+    SECTION_CURRENT_DIFF,
+    SECTION_TEST_FAILURE_DIGEST,
     SECTION_TOOL_RESULTS,
+    SECTION_TOOL_SCHEMA,
     SECTION_SESSION_SUMMARY,
     SECTION_REPOSITORY_MAP,
+    SECTION_OUTPUT_SCHEMA,
 )
 
-# 永不裁剪的分区。裁掉 system 会丢掉安全规则，裁掉 goal 会让模型忘记在做什么。
-NEVER_TRIMMED_SECTIONS: frozenset[str] = frozenset({SECTION_SYSTEM, SECTION_GOAL})
+# 这些分区承载安全边界和本轮代码事实。预算不足时宁可显式拒绝，也不能
+# 静默丢掉目标、证据编号或当前 diff 后继续生成。
+NEVER_TRIMMED_SECTIONS: frozenset[str] = frozenset(
+    {
+        SECTION_SYSTEM,
+        SECTION_GOAL,
+        SECTION_USER_CODE_TASK,
+        SECTION_EVIDENCE,
+        SECTION_CURRENT_DIFF,
+    }
+)
 
 
 class ContextBudgetExceededError(Exception):
@@ -62,6 +84,86 @@ class ContextBudgetExceededError(Exception):
 
     这时正确做法是缩小任务范围或减少证据条数，而不是悄悄截断 system 分区。
     """
+
+
+@dataclass(frozen=True)
+class MemoryCacheKey:
+    """隔离 Memory 与检索缓存的键。
+
+    键中只放稳定标识或哈希，不放原始问题、代码内容和绝对路径。
+    ``repo_fingerprint`` 与 ``index_version`` 同时存在，避免仓库变更后
+    继续复用旧候选。
+    """
+
+    tenant_id: str
+    user_id: str
+    session_id: str
+    repo_fingerprint: str
+    index_version: str
+    query_hash: str
+    top_k: int
+    filter_hash: str
+    key_version: str = "v1"
+
+    def __post_init__(self) -> None:
+        values = (
+            self.tenant_id,
+            self.user_id,
+            self.session_id,
+            self.repo_fingerprint,
+            self.index_version,
+            self.query_hash,
+            self.filter_hash,
+            self.key_version,
+        )
+        for value in values:
+            if not value.strip():
+                raise ValueError("缓存键的隔离字段不能为空")
+        if self.top_k <= 0:
+            raise ValueError("缓存键的 top_k 必须为正")
+
+    @classmethod
+    def for_query(
+        cls,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        repo_fingerprint: str,
+        index_version: str,
+        query: str,
+        top_k: int,
+        filter_hash: str = "none",
+        key_version: str = "v1",
+    ) -> MemoryCacheKey:
+        query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()
+        return cls(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            repo_fingerprint=repo_fingerprint,
+            index_version=index_version,
+            query_hash=query_hash,
+            top_k=top_k,
+            filter_hash=filter_hash,
+            key_version=key_version,
+        )
+
+    @property
+    def value(self) -> str:
+        parts = (
+            "codeinsight",
+            self.key_version,
+            self.tenant_id,
+            self.user_id,
+            self.session_id,
+            self.repo_fingerprint,
+            self.index_version,
+            self.query_hash,
+            str(self.top_k),
+            self.filter_hash,
+        )
+        return ":".join(parts)
 
 
 @dataclass(frozen=True)
@@ -74,6 +176,14 @@ class MemoryRecord:
     content: str
     token_estimate: int
     is_trusted: bool = True
+    source: str = "runtime"
+    confidence: float | None = None
+    expires_at_epoch_ms: int | None = None
+    consent: bool = True
+    status: str = "active"
+    tenant_id: str = "default"
+    user_id: str = "local"
+    repo_id: str = "default"
 
     def __post_init__(self) -> None:
         if not self.record_id.strip():
@@ -86,6 +196,18 @@ class MemoryRecord:
             raise ValueError("记忆内容不能为空")
         if self.token_estimate < 0:
             raise ValueError("token_estimate 不能为负")
+        if not self.tenant_id.strip() or not self.user_id.strip() or not self.repo_id.strip():
+            raise ValueError("Memory 的 tenant_id/user_id/repo_id 不能为空")
+        if not self.source.strip():
+            raise ValueError("source 不能为空")
+        if self.confidence is not None and not 0 <= self.confidence <= 1:
+            raise ValueError("confidence 必须在 0 到 1 之间")
+        if self.expires_at_epoch_ms is not None and self.expires_at_epoch_ms <= 0:
+            raise ValueError("expires_at_epoch_ms 必须为正")
+        if self.status not in {"active", "forgotten"}:
+            raise ValueError(f"不支持的记忆状态：{self.status}")
+        if self.layer == LAYER_SEMANTIC and not self.consent:
+            raise ValueError("Semantic Memory 必须有明确 consent")
 
     @property
     def lifetime_owner(self) -> str:
@@ -105,6 +227,10 @@ class WorkingMemory:
     selected_evidence_ids: tuple[str, ...] = ()
     rejected_paths: tuple[str, ...] = ()
     steps_remaining: int = 0
+    structured_problem: str | None = None
+    pending_tool: str | None = None
+    patch_ref: str | None = None
+    check_status: str | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():
@@ -135,6 +261,8 @@ class SessionMemory:
     """
 
     session_id: str
+    recent_turns: tuple[ConversationTurn, ...] = ()
+    active_goal_id: str | None = None
     confirmed_conclusions: tuple[str, ...] = ()
     rejected_approaches: tuple[str, ...] = ()
     user_preferences: dict[str, str] = field(default_factory=dict)
@@ -143,6 +271,11 @@ class SessionMemory:
     def __post_init__(self) -> None:
         if not self.session_id.strip():
             raise ValueError("session_id 不能为空")
+        expected_sequence = 1
+        for turn in self.recent_turns:
+            if turn.sequence != expected_sequence:
+                raise ValueError("Session Memory 中的对话轮次必须连续")
+            expected_sequence += 1
 
 
 @dataclass(frozen=True)
@@ -203,7 +336,8 @@ class ContextSection:
 class ContextBudget:
     """一次模型调用的上下文预算。
 
-    裁剪按 ``CONTEXT_SECTION_PRIORITY`` 从后往前，system 与 goal 永不裁剪。
+    裁剪按 ``CONTEXT_SECTION_PRIORITY`` 从后往前，安全规则、目标、代码任务、
+    Evidence 和当前 diff 永不静默裁剪。
     从后往前的理由：RepositoryMap 只是导航辅助，丢了还能靠检索补；
     Evidence 丢了回答就没有依据。
     """

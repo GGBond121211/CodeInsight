@@ -4,6 +4,7 @@ from pathlib import Path
 
 from codeinsight.application.search_repository import search_repository
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -19,6 +20,11 @@ def _fake_multilingual_embedder(texts):
     return EmbeddingBatch("fake-multilingual", tuple(vectors), 4)
 
 
+class _FakeReranker:
+    def rerank(self, query, documents, *, top_n):
+        return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
+
+
 def test_hybrid_can_recover_a_semantic_business_phrase() -> None:
     results = search_repository(
         FIXTURE_ROOT,
@@ -26,6 +32,7 @@ def test_hybrid_can_recover_a_semantic_business_phrase() -> None:
         limit=5,
         retrieval_mode="hybrid",
         semantic_embed=_fake_multilingual_embedder,
+        reranker=_FakeReranker(),
     )
 
     assert results

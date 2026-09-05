@@ -1,0 +1,12 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {"title": "Gateway operations", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "targets": [{"expr": "sum by (operation, outcome) (rate(codeinsight_operations_total[5m]))", "legendFormat": "{{operation}} / {{outcome}}"}]},
+    {"title": "Gateway latency p95", "type": "timeseries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "targets": [{"expr": "histogram_quantile(0.95, sum by (le, operation) (rate(codeinsight_operation_duration_seconds_bucket[5m])))", "legendFormat": "{{operation}}"}]}
+  ],
+  "schemaVersion": 39,
+  "title": "CodeInsight Gateway Overview",
+  "time": {"from": "now-1h", "to": "now"},
+  "version": 1
+}

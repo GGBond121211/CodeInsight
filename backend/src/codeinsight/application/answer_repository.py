@@ -13,6 +13,7 @@ from codeinsight.domain.answer import (
 from codeinsight.domain.errors import ModelResponseError
 from codeinsight.domain.retrieval import RankedChunk
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.prompts.code_answer import PROMPT_VERSION, build_answer_prompt
 
 GenerateAnswer = Callable[[str, str], ModelAnswer]
@@ -83,6 +84,7 @@ def answer_repository(
     chunk_max_lines: int = 80,
     retrieval_mode: str = "hybrid",
     semantic_embed: SemanticEmbed | None = None,
+    reranker: Reranker | None = None,
 ) -> RepositoryAnswer:
     """只使用检索到的源码块回答一个仓库问题。"""
     results = search_repository(
@@ -92,6 +94,7 @@ def answer_repository(
         chunk_max_lines=chunk_max_lines,
         retrieval_mode=retrieval_mode,
         semantic_embed=semantic_embed,
+        reranker=reranker,
     )
     if not results:
         return RepositoryAnswer(

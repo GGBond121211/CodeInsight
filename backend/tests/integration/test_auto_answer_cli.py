@@ -50,7 +50,7 @@ class _FakeChatModel:
 def test_auto_answer_cli_routes_and_prints_public_metadata(monkeypatch, capsys) -> None:
     fake_model = _FakeChatModel()
 
-    def fake_chat_factory():
+    def fake_chat_factory(*, context_assembler=None):
         return fake_model
 
     monkeypatch.setattr(

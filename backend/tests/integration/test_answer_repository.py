@@ -7,6 +7,7 @@ from codeinsight.application.search_repository import search_repository
 from codeinsight.domain.answer import INSUFFICIENT_EVIDENCE, ModelAnswer
 from codeinsight.domain.errors import ModelResponseError
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -17,6 +18,11 @@ def _fake_embed(texts):
     for _ in texts:
         vectors.append((1.0, 0.0))
     return EmbeddingBatch("fake", tuple(vectors), len(texts))
+
+
+class _FakeReranker:
+    def rerank(self, query, documents, *, top_n):
+        return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
 
 
 def _generated_answer(
@@ -43,6 +49,7 @@ def test_answer_defaults_to_hybrid_and_maps_retrieved_evidence() -> None:
         "Where is checkout defined?",
         retrieval_mode="hybrid",
         semantic_embed=_fake_embed,
+        reranker=_FakeReranker(),
     )[0].chunk
 
     result = answer_repository(
@@ -50,6 +57,7 @@ def test_answer_defaults_to_hybrid_and_maps_retrieved_evidence() -> None:
         "Where is checkout defined?",
         generate=_generated_answer,
         semantic_embed=_fake_embed,
+        reranker=_FakeReranker(),
     )
 
     assert result.retrieval_mode == "hybrid"
@@ -67,6 +75,7 @@ def test_answer_preserves_parser_deduplication_order() -> None:
         "Where is checkout defined?",
         generate=generate,
         semantic_embed=_fake_embed,
+        reranker=_FakeReranker(),
     )
 
     citation_ids = []
@@ -85,6 +94,7 @@ def test_answer_rejects_unknown_evidence_id() -> None:
             "Where is checkout defined?",
             generate=generate,
             semantic_embed=_fake_embed,
+            reranker=_FakeReranker(),
         )
 
 
@@ -131,6 +141,7 @@ def test_model_insufficient_result_has_no_citations() -> None:
         "Which payment processor is used?",
         generate=insufficient,
         semantic_embed=_fake_embed,
+        reranker=_FakeReranker(),
     )
 
     assert result.outcome == INSUFFICIENT_EVIDENCE

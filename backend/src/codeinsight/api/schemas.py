@@ -162,3 +162,84 @@ class AutoAnswerResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
+
+
+class ChangePreviewRequest(BaseModel):
+    repository_root: str = Field(min_length=1)
+    run_id: str | None = None
+    path: str = Field(min_length=1)
+    new_content: str
+    validation_profile: str = "python_compile"
+
+    @field_validator("repository_root", "path", "validation_profile")
+    @classmethod
+    def strip_change_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("不能为空")
+        return stripped
+
+
+class ChangePreviewResponse(BaseModel):
+    status: Literal["preview_ready"] = "preview_ready"
+    run_id: str
+    patch_id: str
+    path: str
+    diff: str
+    diff_hash: str
+    base_fingerprint: str
+    validation_profile: str
+    requires_approval: bool = True
+
+
+class ChangeApproveRequest(BaseModel):
+    run_id: str = Field(min_length=1)
+    patch_id: str = Field(min_length=1)
+    expires_in_seconds: int = Field(default=300, ge=30, le=3600)
+
+
+class ChangeApproveResponse(BaseModel):
+    status: Literal["approval_granted"] = "approval_granted"
+    run_id: str
+    patch_id: str
+    approval_token: str
+    expires_in_seconds: int
+
+
+class ChangeApplyRequest(BaseModel):
+    run_id: str = Field(min_length=1)
+    patch_id: str = Field(min_length=1)
+    approval_token: str = Field(min_length=1)
+
+
+class ChangeResultResponse(BaseModel):
+    status: str
+    run_id: str
+    patch_id: str
+    diff: str
+    diff_hash: str
+    base_fingerprint: str
+    workspace_id: str | None = None
+    checkpoint_id: str | None = None
+    validation: dict[str, object] | None = None
+    reason: str | None = None
+
+
+class ChangeRollbackRequest(BaseModel):
+    run_id: str = Field(min_length=1)
+    patch_id: str = Field(min_length=1)
+
+
+class ChangeCancelResponse(BaseModel):
+    status: Literal["cancel_requested", "already_finished"]
+    run_id: str
+    immediate: bool
+
+
+class ChangeEventResponse(BaseModel):
+    event_id: str
+    run_id: str
+    sequence: int
+    event_type: str
+    occurred_at_epoch_ms: int
+    payload: dict[str, str]

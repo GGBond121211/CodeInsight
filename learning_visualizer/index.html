@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="CodeInsight 四天学习计划的节点式请求链可视化工具"
+    />
+    <link rel="icon" href="data:," />
+    <title>CodeInsight 学习可视化</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">CI</div>
+          <div>
+            <p class="eyebrow">四天学习计划 · 只读教学工具</p>
+            <h1>CodeInsight 学习可视化</h1>
+          </div>
+        </div>
+        <div class="topbar-note">只展示真实流程，不调用项目</div>
+      </header>
+
+      <section class="intro-row">
+        <div>
+          <p class="eyebrow">选择一张图</p>
+          <h2 id="mode-title">一次请求主链</h2>
+          <p id="mode-description" class="muted-copy">
+            从前端问题开始，沿着当前 Auto Answer 主链观察对象如何变化。
+          </p>
+        </div>
+        <div class="mode-tabs" role="tablist" aria-label="学习视图">
+          <button type="button" class="mode-tab is-selected" data-mode="main" role="tab" aria-selected="true">
+            主链
+          </button>
+          <button type="button" class="mode-tab" data-mode="retrieval" role="tab" aria-selected="false">
+            检索放大
+          </button>
+          <button type="button" class="mode-tab" data-mode="agent" role="tab" aria-selected="false">
+            Agent 循环
+          </button>
+        </div>
+      </section>
+
+      <section class="legend" aria-label="节点类型说明">
+        <span><i class="legend-dot stage-input"></i>输入 / API</span>
+        <span><i class="legend-dot stage-application"></i>应用编排</span>
+        <span><i class="legend-dot stage-retrieval"></i>检索</span>
+        <span><i class="legend-dot stage-model"></i>模型调用</span>
+        <span><i class="legend-dot stage-validation"></i>校验 / 输出</span>
+      </section>
+
+      <section class="visual-grid">
+        <section class="graph-panel" aria-label="CodeInsight 节点流程图">
+          <div class="graph-toolbar">
+            <div>
+              <span class="toolbar-label">当前学习步骤</span>
+              <strong id="step-counter">第 1 / 9 步</strong>
+            </div>
+            <div class="graph-actions">
+              <button type="button" class="small-button" data-action="reset">重新开始</button>
+              <button type="button" class="small-button" data-action="previous">上一步</button>
+              <button type="button" class="small-button primary-button" data-action="next">下一步</button>
+              <button type="button" class="small-button" data-action="play" aria-pressed="false">播放</button>
+            </div>
+          </div>
+
+          <div class="graph-shell">
+            <div id="graph-canvas" class="graph-canvas">
+              <svg id="edge-layer" class="edge-layer" aria-hidden="true"></svg>
+              <div id="node-layer" class="node-layer"></div>
+            </div>
+          </div>
+
+          <p class="graph-explain">
+            节点第一行是项目中的真实函数名；实线箭头表示调用，虚线箭头表示返回、数据传递或 HTTP 边界。
+          </p>
+
+          <div class="progress-block">
+            <div class="progress-track" aria-hidden="true">
+              <span id="progress-fill" class="progress-fill"></span>
+            </div>
+            <p id="step-description" class="step-description"></p>
+          </div>
+        </section>
+
+        <aside class="detail-panel" aria-live="polite">
+          <div class="detail-heading">
+            <span class="eyebrow">节点说明</span>
+            <span id="detail-stage" class="stage-label">选择一个节点</span>
+          </div>
+          <h2 id="detail-title">点击流程节点</h2>
+          <p id="detail-summary" class="detail-summary">
+            这里会显示它解决什么问题，以及它在当前主链中的位置。
+          </p>
+
+          <div class="detail-sections">
+            <div class="detail-item">
+              <span class="detail-label">完整文件地址</span>
+              <code id="detail-path">—</code>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">真实函数名</span>
+                <code id="detail-function">—</code>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">它内部调用 / 下一步函数</span>
+              <pre id="detail-calls">—</pre>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">输入</span>
+              <pre id="detail-input">—</pre>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">输出</span>
+              <pre id="detail-output">—</pre>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">可能失败</span>
+              <p id="detail-failure">—</p>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="packet-panel">
+        <div class="packet-heading">
+          <div>
+            <span class="eyebrow">当前数据包</span>
+            <h2 id="packet-title">教学示例</h2>
+          </div>
+          <span class="packet-badge">不是真实运行日志</span>
+        </div>
+        <pre id="packet-view" class="packet-view" aria-label="当前节点数据示例"></pre>
+      </section>
+
+      <footer class="footer-note">
+        本目录是可删除的学习辅助层，不属于 CodeInsight 的业务运行入口。
+      </footer>
+    </main>
+  </body>
+</html>

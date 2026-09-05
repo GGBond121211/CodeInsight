@@ -15,6 +15,7 @@ from codeinsight.domain.answer import (
     SubQuestionAnswer,
 )
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[4]
 FIXTURE_ROOT = BACKEND_ROOT / "backend" / "tests" / "fixtures" / "sample_repo"
@@ -27,6 +28,11 @@ class _FakeEmbedding:
         for _ in texts:
             vectors.append((1.0, 0.0))
         return EmbeddingBatch("fake", tuple(vectors), len(texts))
+
+
+class _FakeReranker:
+    def rerank(self, _query, documents, *, top_n):
+        return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
 
 
 class _FakeAutoModel:
@@ -78,7 +84,9 @@ def _model_factory(model):
 
 def test_auto_answer_returns_plan_subquestion_and_router_usage() -> None:
     model = _FakeAutoModel(_router_payload())
-    client = TestClient(create_app(_model_factory(model), _FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(
+        create_app(_model_factory(model), _FakeEmbedding, reranker_factory=_FakeReranker)
+    )  # type: ignore[arg-type]
 
     response = client.post(
         "/api/v1/auto/answer",
@@ -102,7 +110,9 @@ def test_auto_answer_returns_plan_subquestion_and_router_usage() -> None:
 
 def test_auto_answer_invalid_router_output_uses_linear_bm25_fallback() -> None:
     model = _FakeAutoModel("not-json")
-    client = TestClient(create_app(_model_factory(model), _FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(
+        create_app(_model_factory(model), _FakeEmbedding, reranker_factory=_FakeReranker)
+    )  # type: ignore[arg-type]
 
     response = client.post(
         "/api/v1/auto/answer",
@@ -184,7 +194,9 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
         "codeinsight.api.routes.run_citation_agent",
         fake_run_citation_agent,
     )
-    client = TestClient(create_app(_model_factory(model), _FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(
+        create_app(_model_factory(model), _FakeEmbedding, reranker_factory=_FakeReranker)
+    )  # type: ignore[arg-type]
 
     response = client.post(
         "/api/v1/auto/answer",

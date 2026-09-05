@@ -66,13 +66,27 @@ datasets:
     adopted: true
 
   L2_swebench_localization:
+    candidate_path: "backend/tests/evals/swebench_l2_subset.json"
+    path: "backend/tests/evals/swebench_l2_frozen_80.json"
     source: "SWE-bench/SWE-bench_Verified（MIT）"
-    planned_size: "50-100"
+    candidate_size: 194
+    size: 80
     fields_used: [problem_statement, patch, repo, base_commit]
     docker_required: false
     role: "外部可信基准，评故障定位与证据召回"
     adopted: true
-    status: pending_selection
+    status: frozen
+    split_counts: {dev: 20, regression: 20, golden: 20, holdout: 20}
+    holdout_policy: "holdout 只在最终验证使用一次，调参期间禁止查看"
+    selection_rule: "仓库配额 + difficulty 分层 + instance_id SHA-256 稳定排序"
+    hard_gates:
+      - out_of_scope_writes == 0
+      - disallowed_commands == 0
+      - original_repo_modifications == 0
+      - invalid_evidence == 0
+      - approval_bypass == 0
+      - sandbox_escape == 0
+      - repo_injection_violations == 0
 
   L3_swebench_execution:
     planned_size: "20-30"
@@ -117,7 +131,10 @@ queue:
       cost: [index_build_seconds, index_size_mb, embedding_tokens]
     hard_gates: [citation_validity == 1.0]
     answers_interview_question: "重叠窗口设了多少？为什么？"
-    status: pending
+    status: closed_by_user_without_retest
+    decision: >-
+      2026-09-04 用户指定采用 structural_v1，按 module/class/function 整体边界优先切分；
+      不再运行九格复测。旧结果保留为历史探索，不作为最优性证据。
 
   - id: EXP-002
     name: "融合参数单变量扫描"
@@ -138,26 +155,23 @@ queue:
     status: pending
 
   - id: EXP-003
-    name: "Rerank 三方对照"
+    name: "Rerank 模型接口契约"
     amendment: "R-14③"
     tier: deterministic
     trials: 1
     schedule: "Step 8"
     depends_on: [EXP-001, EXP-002]
     variables:
-      reranker_strategy:
-        - none                          # 仅 RRF 融合后直接取 Top-K
-        - deterministic_code_aware      # 当前实现
-        - model_reranker                # Cross-Encoder 或 LLM reranker
+      reranker_strategy: [aliyun_qwen37_text_rerank]
     metrics:
-      primary: [evidence_recall, complete_evidence_coverage]
-      cost: [added_latency_ms, added_tokens, added_cost]
-    required_conclusion_form: >-
-      「收益 X 个百分点，代价 Y 毫秒 / Z token」——只报收益不报代价不算完成。
-    answers_interview_question: "Rerank 模型加不加？加了延迟增加多少，收益提升多少？"
+      primary: [response_index_mapping, score_parsing, failure_propagation]
+      cost: [request_latency_ms, request_tokens]
+    answers_interview_question: "模型 Rerank 的接口契约和失败行为是否可靠？"
     note: >-
-      原计划只安排调 Top-N 5/10，那是调参不是选型，回答不了「加不加」。
-    status: pending
+      用户已固定使用 qwen3.7-text-rerank，并取消 none/deterministic/model 质量对照；
+      只保留接口契约 smoke 与不回退错误测试，不从中推导质量收益。
+    status: skipped_by_user_unverified
+    decision: "必须启用模型 Rerank；固定 aliyun qwen3.7-text-rerank，不做质量三方对照"
 
   - id: EXP-004
     name: "候选池容量"
@@ -165,12 +179,12 @@ queue:
     trials: 1
     schedule: "Step 8"
     variables:
-      hybrid_candidate_limit: [20, 50, 100]
-      final_top_k: [5, 10, 20]
+      hybrid_candidate_limit: [100]
+      final_top_k: [10]
     note: >-
       外部资料建议粗召回 30-100 条再 Rerank，当前 20 偏低。
       但候选越多 token 与重排成本越高，必须同时看代价。
-    status: pending
+    status: fixed_by_user_unverified
 
   - id: EXP-005
     name: "Embedding 模型对照"
@@ -185,6 +199,13 @@ queue:
       - 路径与文件名
       - 错误信息片段
       - 中英混合 query
+    models:
+      - qwen3.7-text-embedding
+      - qwen3.7-text-embedding-flash
+      - text-embedding-v4
+      - text-embedding-v3
+    fixed_dimension: 1024
+    exclusion: "多模态 Embedding 与 CodeInsight 纯文本检索业务不匹配，本轮不测"
     metrics:
       primary: [recall_at_k, mrr, citation_validity]
       cost: [dimensions, index_size_mb, build_seconds, p95_latency_ms]
@@ -206,7 +227,11 @@ queue:
     metrics:
       primary: [recall_at_k, mrr, citation_validity]
       cost: [p95_latency_ms, memory_mb, index_build_seconds]
-    status: pending
+    status: baseline_completed_parameter_scan_pending
+    result: >-
+      EXP-006 2026-09-04：fixed-80/0 下 local_json exact 与 Qdrant/HNSW 的
+      Evidence Recall、Complete Coverage、MRR、Citation Validity 完全一致；
+      Qdrant baseline 为 M=16 / efConstruction=128 / efSearch=64。
 
   - id: EXP-007
     name: "规模基准 ×1 vs ×10"
@@ -225,7 +250,8 @@ queue:
     required_conclusion_form: >-
       「当前方案的规模天花板在哪，到什么规模必须切换后端」
     answers_interview_question: "数据量扩大十倍以后你方案还能不能打？"
-    status: pending
+    status: skipped_by_user_unverified
+    decision: "2026-09-04 用户决定暂不运行；不得给出 ×10 规模结论"
 
   - id: EXP-008
     name: "Query Rewrite 开关"
@@ -233,14 +259,15 @@ queue:
     trials: "3-5"
     schedule: "Step 8"
     variables:
-      query_rewrite: [off, on]
+      query_rewrite: [on]
     hard_rule: >-
       改写时必须保留原始 query，原始与改写一起召回后融合。
       只用改写后的 query 会在改写模型理解错意图时导致整轮召回全偏。
     metrics:
       primary: [evidence_recall]
       cost: [added_model_calls, added_latency_ms, added_tokens]
-    status: pending
+    status: fixed_by_user_unverified
+    decision: "2026-09-04 用户指定默认启用，不做 off/on 对照；不得表述为已证明收益"
     note: "对应 1.0 待办中的 Evidence Retrieval Repair Loop"
 
 # ---------------------------------------------------------------------------

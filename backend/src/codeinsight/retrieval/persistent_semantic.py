@@ -13,7 +13,7 @@ from typing import Any
 from codeinsight.domain.semantic import EmbeddingBatch, SemanticIndex
 from codeinsight.domain.source import ScanResult, SourceChunk
 from codeinsight.ingestion.chunker import chunk_source_file
-from codeinsight.retrieval.semantic import build_semantic_index
+from codeinsight.retrieval.semantic import build_semantic_index, filter_indexable_chunks
 
 EmbeddingFunction = Callable[[Sequence[str]], EmbeddingBatch]
 CACHE_SCHEMA_VERSION = 1
@@ -148,15 +148,19 @@ def build_persistent_semantic_index(
             cached_chunk_list: list[SourceChunk] = []
             cached_vector_list: list[tuple[float, ...]] = []
             for item in cached_chunks:
-                cached_chunk_list.append(_chunk_from_payload(item))
+                chunk = _chunk_from_payload(item)
                 vector_values: list[float] = []
                 for value in item["embedding"]:
                     vector_values.append(float(value))
-                cached_vector_list.append(tuple(vector_values))
+                if chunk.text.strip():
+                    cached_chunk_list.append(chunk)
+                    cached_vector_list.append(tuple(vector_values))
             chunks = tuple(cached_chunk_list)
             vectors = tuple(cached_vector_list)
         else:
-            chunks = chunk_source_file(source, max_lines=chunk_max_lines)
+            chunks = filter_indexable_chunks(
+                chunk_source_file(source, max_lines=chunk_max_lines)
+            )
             vectors = ()
             if chunks:
                 changed_paths.append(source.relative_path)

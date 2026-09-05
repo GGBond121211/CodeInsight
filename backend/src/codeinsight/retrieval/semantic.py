@@ -14,6 +14,7 @@ from codeinsight.domain.semantic import (
     SemanticModelMetadata,
 )
 from codeinsight.domain.source import SourceChunk
+from codeinsight.retrieval.vector_store import VectorStore
 
 EmbeddingFunction = Callable[[Sequence[str]], EmbeddingBatch]
 
@@ -25,6 +26,16 @@ def _fingerprint(text: str) -> str:
 def _chunk_id(chunk: SourceChunk) -> str:
     identity = f"{chunk.relative_path}:{chunk.start_line}:{chunk.end_line}:{chunk.text}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
+def filter_indexable_chunks(chunks: Sequence[SourceChunk]) -> tuple[SourceChunk, ...]:
+    """过滤不能送入 Embedding 的空白块，同时保留原始行号和顺序。
+
+    切块阶段可以保留只有空行的范围，以便完整覆盖源码行并保持行号连续；
+    语义索引阶段则不能为这类范围请求向量，因为 Embedding 服务拒绝空文本。
+    过滤只发生在索引边界，不修改 ``SourceChunk`` 本身，也不影响词法检索。
+    """
+    return tuple(chunk for chunk in chunks if chunk.text.strip())
 
 
 def _validate_batch(batch: EmbeddingBatch, expected_count: int) -> int:
@@ -52,15 +63,16 @@ def build_semantic_index(
     service: str = "openai-compatible",
 ) -> SemanticIndex:
     """对 *chunks* 一次性生成 Embedding，并构建保留证据映射的内存索引。"""
-    if not chunks:
-        raise ValueError("语义索引至少需要一个源码块")
+    indexable_chunks = filter_indexable_chunks(chunks)
+    if not indexable_chunks:
+        raise ValueError("语义索引至少需要一个非空源码块")
     chunk_texts: list[str] = []
-    for chunk in chunks:
+    for chunk in indexable_chunks:
         chunk_texts.append(chunk.text)
     batch = embed(tuple(chunk_texts))
-    dimensions = _validate_batch(batch, len(chunks))
+    dimensions = _validate_batch(batch, len(indexable_chunks))
     entry_id_list: list[str] = []
-    for chunk in chunks:
+    for chunk in indexable_chunks:
         entry_id_list.append(_chunk_id(chunk))
     entry_ids = tuple(entry_id_list)
     index_material = "|".join((batch.model, *entry_ids))
@@ -75,7 +87,7 @@ def build_semantic_index(
     entry_list: list[SemanticIndexEntry] = []
     for chunk_id, chunk, vector in zip(
         entry_ids,
-        chunks,
+        indexable_chunks,
         batch.vectors,
         strict=True,
     ):
@@ -118,8 +130,15 @@ def search_chunks_semantic(
     *,
     limit: int = 5,
     min_score: float = 0.20,
+    vector_store: VectorStore | None = None,
+    query_filter: dict[str, object] | None = None,
 ) -> tuple[RankedChunk, ...]:
-    """返回余弦相似度足够高的匹配结果，同时保留源码证据。"""
+    """返回语义匹配结果，同时保留源码证据。
+
+    默认使用进程内 exact cosine；传入 ``vector_store`` 时，查询向量交给
+    local_json 或 Qdrant 后端计算，再用 ``SemanticIndex`` 恢复完整源码块。
+    因此切换后端只改变候选计算位置，不改变 Evidence 的路径和行号来源。
+    """
     if limit <= 0:
         raise ValueError("limit 必须是正整数")
     if not query.strip():
@@ -128,6 +147,27 @@ def search_chunks_semantic(
     _validate_batch(query_batch, 1)
     if query_batch.dimensions != index.metadata.dimensions:
         raise ValueError("查询 Embedding 的维度与语义索引不匹配")
+    if vector_store is not None:
+        entries_by_id = {entry.chunk_id: entry for entry in index.entries}
+        hits = vector_store.search(
+            query_batch.vectors[0],
+            limit=limit,
+            query_filter=query_filter,
+        )
+        ranked_chunks: list[RankedChunk] = []
+        for hit in hits:
+            entry = entries_by_id.get(hit.point_id)
+            if entry is None or hit.score < min_score:
+                continue
+            ranked_chunks.append(
+                RankedChunk(
+                    chunk=entry.chunk,
+                    score=hit.score,
+                    rank=len(ranked_chunks) + 1,
+                    retrieval_reason=SEMANTIC_MATCH_REASON,
+                )
+            )
+        return tuple(ranked_chunks)
     scored: list[tuple[SemanticIndexEntry, float]] = []
     for entry in index.entries:
         score = _cosine_similarity(

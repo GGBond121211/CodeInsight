@@ -22,6 +22,13 @@ from codeinsight.domain.change import (
     ConversationSession,
     RunSnapshot,
 )
+from codeinsight.domain.memory import MemoryRecord
+from codeinsight.domain.prompt_models import (
+    PromptRelease,
+    PromptRun,
+    PromptTemplate,
+    PromptVersion,
+)
 from codeinsight.domain.trace import AuditRecord, IdempotencyKey, RunEvent
 
 
@@ -112,3 +119,74 @@ class IdempotencyStore(Protocol):
     def register(self, key: IdempotencyKey, *, result_ref: str) -> bool: ...
 
     def lookup(self, key: IdempotencyKey) -> str | None: ...
+
+
+@runtime_checkable
+class MemoryStore(Protocol):
+    """三层 Memory 记录的持久化契约。"""
+
+    def save(self, record: MemoryRecord) -> None: ...
+
+    def get(
+        self,
+        layer: str,
+        owner_id: str,
+        record_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        repo_id: str,
+    ) -> MemoryRecord | None: ...
+
+    def list(
+        self,
+        layer: str,
+        owner_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        repo_id: str,
+    ) -> tuple[MemoryRecord, ...]: ...
+
+    def delete(
+        self,
+        layer: str,
+        owner_id: str,
+        record_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        repo_id: str,
+    ) -> None: ...
+
+
+@runtime_checkable
+class PromptStore(Protocol):
+    """Prompt 模板、版本、Release 和实际运行记录的契约。"""
+
+    def save_template(self, template: PromptTemplate) -> None: ...
+
+    def save_version(self, version: PromptVersion) -> None: ...
+
+    def save_release(self, release: PromptRelease) -> None: ...
+
+    def resolve(
+        self,
+        prompt_name: str,
+        *,
+        environment: str,
+        tenant_id: str,
+    ) -> tuple[PromptVersion, PromptRelease]: ...
+
+    def record_run(self, run: PromptRun) -> None: ...
+
+
+@runtime_checkable
+class CacheStore(Protocol):
+    """热点缓存契约。缓存失效不能替代事实 Store。"""
+
+    def get(self, key: str) -> str | None: ...
+
+    def set(self, key: str, value: str, *, ttl_seconds: int) -> None: ...
+
+    def delete(self, key: str) -> None: ...

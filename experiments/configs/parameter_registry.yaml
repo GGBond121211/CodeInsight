@@ -12,6 +12,14 @@
 #   fixed          本轮固定。不是安全约束，只是本阶段不动，改动需新决策记录。
 #   hard_gate      安全门禁。任何实验都不得修改。改动必须先改 BOUNDARIES.md。
 #   not_applicable 不适用于本项目范围。
+#
+# 每个当前值还必须有 evidence_status：
+#   measured               有真实实验/运行结果支持
+#   supported_by_contract  有代码契约和针对性测试支持，但不代表已调优
+#   verified_runtime       已在真实运行链路触发，但不代表参数最优
+#   pending                暂时默认值，尚无足够实验依据
+#   not_implemented        只登记了未来需求，当前尚未实现
+#   user_selected_unverified 用户直接固定但未做 A/B，不能作为最优性证据
 
 schema_version: 1
 created_at: "2026-09-02"
@@ -97,7 +105,8 @@ tunable:
     ceiling_reason: "过大会稀释证据密度并撑爆 Context Budget"
     scope: "ingestion/chunker.py"
     experiment: "R-14① 九格对照"
-    evidence: none
+    evidence: "EXP-001 2026-09-04：80 行/0% 的探索性 complete coverage 为 0.7917；学习复核发现案例级上下文和 Top-K 合并口径未充分定义，需复测"
+    evidence_status: incomplete_retest_required
     priority: high
     note: "1.0 无依据。会成为后续所有实验的基线，须最先确定。"
 
@@ -109,8 +118,21 @@ tunable:
     ceiling_reason: "重叠越大索引体积与重复召回越多，收益递减"
     scope: "ingestion/chunker.py"
     experiment: "R-14① 九格对照"
-    evidence: none
+    evidence: "EXP-001 2026-09-04：80 行/0% 的探索性结果中重复上下文为 0；但切分政策整体口径未完成复核，正 overlap 只保留为观察"
+    evidence_status: incomplete_retest_required
     priority: high
+
+  - name: chunking_strategy
+    current: "fixed_lines"
+    step8_selected: "structural_v1"
+    unit: enum
+    candidates: ["fixed_lines", "structural_v1"]
+    scope: "ingestion/chunker.py; ingestion/structural_chunker.py"
+    experiment: "EXP-001B"
+    evidence: "EXP-001B 2026-09-04：structural_v1 的 Complete Coverage 0.2917、Evidence Recall 0.5279，低于 fixed_lines 的 0.7917、0.9070"
+    evidence_status: user_selected_unverified
+    priority: high
+    note: "2026-09-04 用户按 JavaGuide 结构切分原则直接采用；不做本轮 A/B，超长/解析失败保留固定行回退。"
 
   # --- BM25 ---
   - name: bm25_k1
@@ -167,36 +189,40 @@ tunable:
   # --- 候选与 Top-K ---
   - name: hybrid_candidate_limit
     current: 20
+    step8_selected: 100
     unit: count
     candidates: [20, 50, 100]
     safety_ceiling: 200
     ceiling_reason: "候选越多重排成本越高，且噪声可能盖过信号"
     scope: "application/search_repository.py:20"
-    evidence: none
+    evidence: "2026-09-04 用户直接指定，不做候选池容量实验"
+    evidence_status: user_selected_unverified
     priority: medium
-    note: "外部资料建议粗召回 30-100 条再 Rerank，当前 20 偏低。"
+    note: "候选值仍保留为历史记录；本轮固定 100，不做 A/B。"
 
   - name: final_top_k
     current: 5
+    step8_selected: 10
     unit: count
     candidates: [5, 10, 20]
     safety_ceiling: 50
     ceiling_reason: "直接决定进 Prompt 的证据量与 token 成本"
-    evidence: none
+    evidence: "2026-09-04 用户直接指定，不做 Top-K 对照"
+    evidence_status: user_selected_unverified
     priority: medium
 
   # --- 重排 ---
   - name: reranker_strategy
-    current: "deterministic_code_aware"
+    current: "aliyun_qwen37_text_rerank"
     unit: enum
-    candidates: ["none", "deterministic_code_aware", "model_reranker"]
-    scope: "retrieval/hybrid.py 的 _code_relevance"
-    experiment: "R-14③ 三方对照"
-    evidence: none
+    candidates: ["aliyun_qwen37_text_rerank"]
+    scope: "retrieval/hybrid.py 的 RRF 后模型精排"
+    experiment: "R-14③ 已按用户决定取消质量对照"
+    evidence: "用户明确指定接入阿里云 qwen3.7-text-rerank，不再使用代码重排"
+    evidence_status: user_selected_unverified
     priority: high
     note: >-
-      当前方案延迟接近 0，这是优势，但没有 none 和 model 两个对照就无法证明。
-      必须同时记录 Recall 增益与延迟 / token 代价。
+      已完成真实最小接口 smoke，但没有运行质量 A/B；不得声称模型精排已经带来收益。
 
   # --- Router ---
   - name: router_min_confidence
@@ -232,27 +258,30 @@ tunable:
 
   # --- 2.0 新增（尚未实现，先登记） ---
   - name: hnsw_m
-    current: null
+    current: 16
     unit: count
     candidates: [8, 16, 32]
     scope: "Step 4 Qdrant"
-    status: not_implemented
+    evidence: "EXP-006 2026-09-04：M=16 与 efConstruction=128、efSearch=64 的质量与 exact baseline 一致；未做参数矩阵"
+    evidence_status: measured_unoptimized
     priority: medium
 
   - name: hnsw_ef_construction
-    current: null
+    current: 128
     unit: count
     candidates: [64, 128, 256]
     scope: "Step 4 Qdrant"
-    status: not_implemented
+    evidence: "EXP-006 2026-09-04：当前 Qdrant baseline 使用 128；未做参数矩阵"
+    evidence_status: measured_unoptimized
     priority: medium
 
   - name: hnsw_ef_search
-    current: null
+    current: 64
     unit: count
     candidates: [32, 64, 128]
     scope: "Step 4 Qdrant"
-    status: not_implemented
+    evidence: "EXP-006 2026-09-04：当前 Qdrant baseline 使用 64；与 exact 的固定集质量一致，未做参数矩阵"
+    evidence_status: measured_unoptimized
     priority: medium
 
   - name: agent_max_steps
@@ -266,13 +295,13 @@ tunable:
     priority: high
 
   - name: patch_repair_attempts
-    current: null
+    current: 2
     unit: count
     candidates: [0, 1, 2]
     safety_ceiling: 2
     ceiling_reason: "超过上限必须转 REVIEW_REQUIRED 或回滚，不得无限修"
     scope: "Step 6"
-    status: not_implemented
+    status: implemented_unoptimized
     priority: high
 
   - name: semantic_cache_threshold
@@ -284,6 +313,297 @@ tunable:
     status: not_implemented
     priority: medium
     note: "阈值调低会跨问题串答案，须与 R-8 的缓存键规则一起验证。"
+
+# ===========================================================================
+# Step 3 新增参数与决定的证据登记
+#
+# 这部分专门防止「参数已经出现在代码里，但没有来源」的情况。
+# `evidence` 记录事实来源；`evidence_status` 记录当前能支持到哪一层。
+# `pending` 不是失败，而是明确告诉后续步骤：这里还不能下结论。
+# ===========================================================================
+step3_evidence_register:
+
+  - id: S3-P01
+    kind: parameter
+    name: context_max_tokens
+    current: 8000
+    unit: tokens
+    source: "backend/src/codeinsight/application/context_assembler.py:46"
+    basis: none
+    evidence_status: pending
+    validation: "用 Step 3 专用校准集比较候选预算的实际 usage、延迟、证据完整率和成本"
+    owner_step: Step 8
+    note: "不能用模型最大上下文 1M 代替应用预算依据"
+
+  - id: S3-P02
+    kind: parameter
+    name: reserved_output_tokens
+    current: 1000
+    unit: tokens
+    source: "backend/src/codeinsight/application/context_assembler.py:47"
+    candidates: [256, 512, 1000, 1024]
+    basis: none
+    evidence: none
+    evidence_status: pending
+    validation: "固定问题与证据，比较输出截断率、输入可容纳量、延迟和成本"
+    owner_step: Step 8
+    note: "计划中的 256/512/1024 不能跳过当前 1000 基线"
+
+  - id: S3-P03
+    kind: parameter
+    name: token_estimator
+    current: "utf8_bytes_div_4"
+    unit: strategy
+    source: "backend/src/codeinsight/application/context_budget.py:16-24"
+    basis: "不引入 tokenizer 依赖的确定性工程近似"
+    evidence: "DEC-0045; 2026-09-04 three real DeepSeek probes"
+    evidence_status: measured
+    validation: "对同一批真实 DeepSeek 请求比较估算 prompt tokens 与 API usage.prompt_tokens 的误差"
+    owner_step: Step 3 (baseline); Step 8 (calibration)
+    note: "有工程理由，但没有真实模型 tokenizer 误差数据，不能标 measured"
+
+  - id: S3-P04
+    kind: parameter
+    name: memory_cache_ttl
+    current: 300
+    unit: seconds
+    source: "backend/src/codeinsight/application/session_service.py:55; backend/src/codeinsight/infrastructure/redis_cache.py:102"
+    basis: none
+    evidence: "单元测试覆盖 TTL 语义；300 秒具体取值尚未做对照"
+    evidence_status: pending
+    validation: "真实 Redis 写入后等待 TTL 到期，验证 cold read、回源和再次写回"
+    owner_step: Step 8
+
+  - id: S3-P05
+    kind: decision
+    name: non_trimmable_context_sections
+    current: "system, goal, user_code_task, evidence, current_diff"
+    unit: section_policy
+    source: "backend/src/codeinsight/domain/memory.py; backend/src/codeinsight/application/context_budget.py"
+    basis: "中间截断可能破坏安全规则、证据 ID、路径/行号和 diff 约束"
+    evidence: "DEC-0045; tests/unit/application/test_context_budget.py"
+    evidence_status: supported_by_contract
+    validation: "已覆盖超预算时不可裁剪分区显式失败；真实模型质量影响仍待校准"
+    owner_step: Step 3
+
+  - id: S3-P06
+    kind: decision
+    name: context_assembler_runtime_injection
+    current: "CLI/API injects ContextAssembler into OpenAIChatModel"
+    unit: composition
+    source: "backend/src/codeinsight/cli/main.py:29; backend/src/codeinsight/api/app.py:15"
+    basis: "保持 infrastructure 不反向依赖 application，同时让公开请求经过上下文装配"
+    evidence: "2026-09-04 CLI/HTTP real Auto Answer smoke"
+    evidence_status: verified_runtime
+    validation: "继续记录装配前后估算值与真实 usage；当前尚未记录 PromptRun"
+    owner_step: Step 3
+
+  - id: S3-P07
+    kind: decision
+    name: redis_cache_role
+    current: "cache_aside_only"
+    unit: mode
+    source: "backend/src/codeinsight/infrastructure/redis_cache.py"
+    basis: "事实数据留在 Memory/Session Store，Redis 故障只降低命中率"
+    evidence: "DEC-0045; 2026-09-04 Redis cold/warm/stopped"
+    evidence_status: verified_runtime
+    validation: "公开 SessionService 自动注入和跨进程压力测试仍未完成"
+    owner_step: Step 3
+
+  - id: S3-P08
+    kind: parameter
+    name: redis_project_port
+    current: 6380
+    unit: host_port
+    source: "docker-compose.yml:68"
+    basis: "本机已有 Redis 占用 6379，项目容器必须隔离"
+    evidence: "2026-09-04 redis-cli 127.0.0.1:6379 PONG; container 6380 healthy"
+    evidence_status: supported_by_contract
+    validation: "跨进程压力测试；不改变原有 6379 Redis"
+    owner_step: Step 3
+
+  - id: S3-P09
+    kind: parameter
+    name: structured_output_enforcement
+    current: "prompt_only_plus_application_parser"
+    unit: mode
+    source: "backend/src/codeinsight/infrastructure/openai_chat.py:22-98"
+    basis: "当前适配器严格解析 outcome/answer/citations，但没有向供应商发送 response_format"
+    evidence: "真实 JSON smoke 通过；尚未验证 response_format/JSON Schema 能力"
+    evidence_status: pending
+    validation: "按供应商能力逐一验证 response_format、非法 JSON 和额外字段处理"
+    owner_step: Step 7
+
+  - id: S3-P10
+    kind: integration
+    name: public_session_redis_injection
+    current: null
+    unit: status
+    source: "backend/src/codeinsight/application/session_service.py:49-62"
+    basis: "SessionService 支持可选 CacheStore，但公开 Auto Answer 尚未组装它"
+    evidence: none
+    evidence_status: not_implemented
+    validation: "公开会话请求 cold/warm/stopped，并验证租户/用户/仓库隔离"
+    owner_step: Step 10
+
+  - id: S3-P11
+    kind: integration
+    name: prompt_run_public_recording
+    current: null
+    unit: status
+    source: "backend/src/codeinsight/application/context_assembler.py:147-173"
+    basis: "PromptRun 需要真实 request/run/version/release 关联，当前公开入口没有这些 ID"
+    evidence: none
+    evidence_status: not_implemented
+    validation: "真实 Auto Answer 记录脱敏变量 Hash、预算和模型/策略版本"
+    owner_step: Step 7
+
+  - id: S3-P12
+    kind: validation
+    name: redis_ttl_expiry
+    current: "2s test key"
+    unit: status
+    source: "backend/src/codeinsight/infrastructure/redis_cache.py:82-88"
+    basis: "缓存必须在到期后回源，不能永久保留旧值"
+    evidence: "2026-09-04 Redis 项目容器：TTL before=2，等待 3 秒后 TTL=-2、value=null"
+    evidence_status: measured
+    validation: "300 秒具体值的成本/命中率对照移交 Step 8"
+    owner_step: Step 3
+
+  - id: S3-P13
+    kind: validation
+    name: redis_cross_process_pressure
+    current: "8 independent processes"
+    unit: observation
+    source: "docs/PLAN_2.0.md Redis rules; image checklist"
+    basis: "cache-aside 具备跨进程连接不等于能防止并发 cold read 重复回源"
+    evidence: "2026-09-04: 8 processes, 2 hits, 6 misses, fallback=0"
+    evidence_status: measured
+    validation: "Step 7/9 决定是否需要 single-flight/分布式锁，并测锁的延迟与故障代价"
+    owner_step: Step 7
+
+# ===========================================================================
+# Step 8 Gateway 成熟度登记
+#
+# 详细差距、实验方法和验收证据见 docs/STEP8_GATEWAY_MATURITY_BACKLOG.md。
+# 这里用于机器可读地防止把 Step 7 的机制测试误写成生产成熟度结论。
+# ===========================================================================
+step8_gateway_maturity_register:
+
+  - id: G8-GW-01
+    name: celery_process_kill_restart
+    current: "contract_and_fake_queue_only"
+    evidence_status: pending
+    owner_step: Step 8
+
+  - id: G8-GW-02
+    name: container_worker_recovery
+    current: null
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-03
+    name: multi_instance_shared_gateway_state
+    current: "process_local_circuit_rate_budget_cache"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-04
+    name: circuit_parameter_calibration
+    current: "threshold_2_cooldown_30s"
+    evidence_status: pending
+    owner_step: Step 8
+
+  - id: G8-GW-05
+    name: queue_and_concurrency_calibration
+    current: "legacy_concurrency_8; step8_target_300"
+    evidence_status: pending
+    owner_step: Step 8
+    candidates:
+      concurrency: [50, 100, 200, 300]
+      burst_concurrency: [450]
+      queue_limit: [300, 600, 1200]
+      queue_timeout_seconds: [1, 3, 5]
+    note: "用户提供上游 deepseek-v4-flash 支持 300 并发；项目尚未验证。高并发先用 Fake Provider，真实模型只做少量 smoke。"
+
+  - id: G8-GW-06
+    name: multidimensional_quota
+    current: "tenant_scene_token_bucket_and_process_local_budget"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-07
+    name: retry_backoff_jitter_retry_after
+    current: "immediate_bounded_retry"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-08
+    name: real_model_and_provider_capability_quality
+    current: "single_api_model_level_fallback"
+    evidence_status: pending
+    owner_step: Step 8
+
+  - id: G8-GW-09
+    name: provider_contract_and_capability_negotiation
+    current: "one_openai_compatible_chat_adapter"
+    evidence_status: pending
+    owner_step: Step 8
+
+  - id: G8-GW-10
+    name: formal_gateway_invocation_path
+    current: "auto_answer_in_process_plus_optional_http_service"
+    evidence_status: pending
+    owner_step: Step 8
+
+  - id: G8-GW-11
+    name: scene_schema_and_semantic_validation
+    current: "json_object_parse_and_one_repair"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-12
+    name: distributed_cache_ttl_single_flight
+    current: "process_local_exact_hash_cache"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-13
+    name: truthful_usage_ttft_finish_reason_and_price_history
+    current: "ttft_null_and_partial_cost_fields"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-14
+    name: token_streaming_lifecycle
+    current: null
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-15
+    name: cross_process_trace_propagation
+    current: "otel_api_without_exporter_or_collector"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-16
+    name: stable_gateway_event_and_badcase_feedback
+    current: "basic_model_called_and_model_result_events"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-17
+    name: versioned_runtime_gateway_configuration
+    current: "static_code_configuration"
+    evidence_status: not_implemented
+    owner_step: Step 8
+
+  - id: G8-GW-18
+    name: tenant_namespace_isolation
+    current: "local_single_user_with_tenant_fields"
+    evidence_status: pending
+    owner_step: Step 8
+    note: "只验证 namespace 隔离；完整鉴权和商业计费平台仍是 non-goal"
 
 # ===========================================================================
 # fixed —— 本轮固定，改动需新决策记录

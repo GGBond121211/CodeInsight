@@ -9,7 +9,13 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 ```text
 用户问题 → QueryPlan → 代码检索 → 独立证据 → 回答生成 → 文件与行号引用
 ```
-目前版本为 `1.0.0`。现在对外只保留 Auto Answer 一个入口。
+已发布稳定地基版本为 `1.0.0`，当前活跃开发线为 2.0；现在对外仍只保留 Auto Answer 一个入口。2.0 的阶段进度和尚未接入公开入口的能力，以 `docs/STATUS.md` 为准。
+
+## 2.0 当前发布边界
+
+当前是 `release-candidate / partial-pass`，不是已经推送到 GitHub 的正式 Release。Step 8 已完成低成本最小发布 profile，Step 9 已完成本地 Docker Compose 交付切片，Step 10 已完成低成本最终门禁和发布文档收口。完整 Embedding/Provider A/B、真实大并发、SWE-bench resolve、Kubernetes rollout/undo、Trivy/SBOM 和 GitHub 发布仍是 pending。
+
+详细验收矩阵见 [`docs/RELEASE_2_0_ACCEPTANCE.md`](docs/RELEASE_2_0_ACCEPTANCE.md)，当前事实入口见 [`docs/STATUS.md`](docs/STATUS.md)。
 
 我目前专注于项目的后端开发，重点是 Python、FastAPI、RAG、检索评测和 LangGraph 工作流。React 前端只用于把后端能力做成一个可以操作的本地演示页面，主要由 Codex 辅助完成；我负责前后端 HTTP API 的边界、接口联调和整体运行流程，不把这个项目当作前端能力展示。
 
@@ -24,7 +30,7 @@ CodeInsight 把这些步骤拆开处理：
 - Router 负责整理问题，并把混合问题拆成最多 8 个可以单独回答的子问题。
 - 每个子问题都有自己的候选、Top-K 证据、回答、outcome 和引用，不共用一个大证据池。
 - BM25 找代码标识符和精确词面，semantic retrieval 补充语义改写。
-- RRF/agreement 合并候选，确定性的代码感知 reranker 再做一次排序。
+- RRF/agreement 合并候选，阿里云 `qwen3.7-text-rerank` 再做模型精排；模型只重排候选，不制造新证据。
 - linear 路径直接逐题回答；Agent 路径多一层 Critic-Reviser，最多修改 5 次。
 - 模型只能引用 `E1/E2/...` 这类证据编号。文件路径和行号由后端映射，模型不能自己编。
 
@@ -43,8 +49,9 @@ flowchart TD
     AGENT --> RETRIEVE
     RETRIEVE --> BM25["BM25 候选"]
     RETRIEVE --> SEM["语义检索候选"]
-    BM25 --> RERANK["RRF / agreement + 代码感知重排"]
-    SEM --> RERANK
+    BM25 --> RRF["RRF / agreement 候选融合"]
+    SEM --> RRF
+    RRF --> RERANK["qwen3.7-text-rerank 模型精排"]
     RERANK --> EVIDENCE["各子问题自己的 Top-K 证据"]
     EVIDENCE --> DRAFT["基于证据生成草稿"]
     DRAFT -->|"linear"| MERGE["按顺序确定性汇总"]
@@ -61,11 +68,15 @@ flowchart TD
 - 按固定行数切分源码，保留仓库相对路径和从 1 开始的行号。
 - 整理多语言问题、识别意图并拆分子问题。
 - 使用 BM25 和 semantic 做混合检索。
-- 用本地 JSON 持久化语义索引，只重建发生变化的文件，不依赖 MySQL 或向量数据库。
-- 使用确定性的 RRF/agreement 融合和代码感知重排。
+- 语义索引构建缓存可复用本地 JSON；Qdrant/HNSW 仍是已验证的显式向量后端路径，当前默认应用组装与本次 Rerank 接入不改变其注入边界。
+- 使用 RRF/agreement 融合，并调用阿里云 `qwen3.7-text-rerank` 做最终精排；服务失败时直接失败，不回退本地代码排序。
 - 每个子问题单独维护证据，最后按 QueryPlan 顺序汇总。
 - 同时保留 linear RAG 和有次数上限的 LangGraph Critic-Reviser 路径。
 - 约束模型返回结构化结果，并由应用代码映射引用。
+- 模型调用统一经过本地 Gateway：默认使用 `deepseek-v4-flash`；遇到可恢复故障时，只降级到能力满足且更便宜的已登记模型，并记录每次 attempt 的价格版本、Token 与原因。
+- 代码变更链路支持 Tool Loop 生成多文件 Patch、显式审批、隔离 workspace、固定 pytest Sandbox、检查失败后最多两次重新审批的有限修复，以及异常整体回滚；原仓库不直接写入。
+- Workspace、Checkpoint、Approval、ValidationRun、事件和结果可在本地进程重启后恢复；这是本地作品集的持久闭环，不等同于多写者数据库或跨区域高可用。
+- 提供 Celery/Redis 固定检查 Worker、公开 Run 事件、OTel span 和 Prometheus 指标端点；Fake Provider 故障测试不作为模型质量结论。
 - 提供 CLI、FastAPI 和 React 页面。
 - 提供离线单元测试、集成测试和可复现的评测资产。
 
@@ -95,7 +106,36 @@ $env:CODEINSIGHT_EMBEDDING_BASE_URL="<openai-compatible-embedding-url>"
 
 密钥只保存在后端进程的环境变量中，不会传给 React 前端，也不会写入仓库。
 
-### 2. 启动后端
+### 2. 启动本地依赖
+
+```powershell
+docker volume create codeinsight-qdrant-data
+docker compose up -d --wait mysql redis qdrant
+docker compose ps
+```
+
+其中第一条命令在新机器上执行一次即可；已有本项目卷时 Docker 会提示已存在，可继续执行。Qdrant 由 008 根目录 Compose 统一管理，使用本项目固定的 6335/6336 端口；不要再从 `ops/qdrant/docker-compose.yml` 单独启动。
+
+### Step 9 本地全栈切片
+
+如需启动 API、双 Gateway、Worker、数据库、Qdrant、Prometheus、Grafana 和 OTel Collector：
+
+```powershell
+docker compose -f ops/docker-compose.yml up -d --wait
+docker compose -f ops/docker-compose.yml ps
+```
+
+本机宿主端口为 API `18000`、Gateway proxy `18010`、Prometheus `19090`、Grafana `13000`。Compose 默认使用 Fake Gateway 做部署契约和故障切换验证，不代表真实模型质量或生产 HA。
+
+## CI/CD
+
+- `CI`：Pull Request 和 `main`/`master` push 触发 Ruff、后端测试、Compose 配置检查、Docker 构建和供应链扫描入口。
+- `CD`：`main`/`master` push、`v*` tag 或手动触发时，重新执行发布范围验证，构建版本镜像，并渲染 Kubernetes manifest 作为 Actions artifact。
+- 当前 CD 是可复现的发布打包与部署前验证，不会自动推送 GHCR，也不会在没有集群和环境审批的情况下部署到云端。
+
+工作流文件位于 `.github/workflows/ci.yml` 和 `.github/workflows/cd.yml`。
+
+### 3. 启动后端
 
 ```powershell
 cd backend
@@ -105,7 +145,19 @@ uv run uvicorn codeinsight.api.app:app --host 127.0.0.1 --port 8001
 
 健康检查地址：`http://127.0.0.1:8001/api/v1/health`
 
-### 3. 启动前端
+需要独立运行 Step 7 Gateway 与固定检查 Worker 时，再开启两个终端：
+
+```powershell
+cd backend
+uv run uvicorn codeinsight.infrastructure.gateway_server:app --host 127.0.0.1 --port 8010
+
+# Windows 本地 Worker 使用 solo pool；任务命令来自 validation profile，而非模型文本。
+uv run celery -A codeinsight.agent.worker_tasks.celery_app worker --pool=solo --loglevel=INFO
+```
+
+Gateway 健康检查、模型清单和指标分别位于 `/health`、`/v1/models`、`/metrics`。
+
+### 4. 启动前端
 
 再打开一个终端：
 
@@ -215,8 +267,8 @@ npm.cmd run build
 ## 后续想做
 
 - 在证据不足时改写查询并重新检索，也就是 Evidence Retrieval Repair Loop。
-- 对比 learned reranker 和基于模型的 reranker。
-- 本地 JSON 索引遇到实际规模瓶颈后，再评估独立向量库。
+- 对 `qwen3.7-text-rerank` 的质量收益和代价仍保留为未测试边界；用户已取消原 Rerank A/B 对照。
+- Qdrant/HNSW 已由本地 Compose 管理；后续只需做规模交叉点和参数矩阵，不再重复评估“是否引入向量数据库”。历史 local JSON 对照结果保留。
 - 增加更多编程语言和 monorepo 场景。
 - 如果以后支持远程仓库，再单独设计安全边界。
 

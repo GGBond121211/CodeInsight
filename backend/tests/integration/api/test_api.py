@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from codeinsight.api.app import create_app
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -34,8 +35,15 @@ class FakeEmbedding:
         return EmbeddingBatch("fake", tuple(vectors), len(texts))
 
 
+class FakeReranker:
+    def rerank(self, _query, documents, *, top_n):
+        return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
+
+
 def test_health_and_auto_answer_are_the_only_registered_product_routes() -> None:
-    client = TestClient(create_app(FakeModel, FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(
+        create_app(FakeModel, FakeEmbedding, reranker_factory=FakeReranker)
+    )  # type: ignore[arg-type]
 
     assert client.get("/api/v1/health").status_code == 200
     auto = client.post(
@@ -50,7 +58,18 @@ def test_health_and_auto_answer_are_the_only_registered_product_routes() -> None
 
 
 def test_openapi_exposes_only_health_and_auto_answer() -> None:
-    client = TestClient(create_app(FakeModel, FakeEmbedding))  # type: ignore[arg-type]
+    client = TestClient(
+        create_app(FakeModel, FakeEmbedding, reranker_factory=FakeReranker)
+    )  # type: ignore[arg-type]
     paths = set(client.get("/openapi.json").json()["paths"])
 
-    assert paths == {"/api/v1/health", "/api/v1/auto/answer"}
+    assert paths == {
+        "/api/v1/health",
+        "/api/v1/auto/answer",
+        "/api/v2/change/preview",
+        "/api/v2/change/approve",
+        "/api/v2/change/apply",
+        "/api/v2/change/rollback",
+        "/api/v2/change/{run_id}/cancel",
+        "/api/v2/change/{run_id}/events",
+    }
