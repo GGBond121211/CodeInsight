@@ -25,7 +25,7 @@ def _upstreams() -> tuple[str, ...]:
     return values
 
 
-app = FastAPI(title="CodeInsight Gateway Proxy", version="2.0-step7")
+app = FastAPI(title="CodeInsight Gateway Proxy", version="2.0.1")
 
 
 @app.get("/health")
@@ -45,6 +45,51 @@ async def proxy_chat(request: Request) -> JSONResponse:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
+            try:
+                with urllib.request.urlopen(outgoing, timeout=3) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    return JSONResponse(payload, status_code=response.status)
+            except urllib.error.HTTPError as error:
+                try:
+                    payload = json.loads(error.read().decode("utf-8"))
+                except json.JSONDecodeError:
+                    payload = {"detail": "gateway upstream returned HTTP error"}
+                if error.code < 500:
+                    return JSONResponse(payload, status_code=error.code)
+                failures.append(f"HTTP_{error.code}")
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+                http.client.HTTPException,
+                json.JSONDecodeError,
+            ) as error:
+                failures.append(type(error).__name__)
+    raise HTTPException(
+        503,
+        detail={"code": "ALL_GATEWAYS_UNAVAILABLE", "attempts": len(failures)},
+    )
+
+
+@app.get("/v1/usage/summary")
+async def proxy_usage_summary(request: Request) -> JSONResponse:
+    return _proxy_get_json(request, "/v1/usage/summary")
+
+
+@app.get("/v1/usage/calls")
+async def proxy_usage_calls(request: Request) -> JSONResponse:
+    return _proxy_get_json(request, "/v1/usage/calls")
+
+
+def _proxy_get_json(request: Request, path: str) -> JSONResponse:
+    failures: list[str] = []
+    query = request.url.query
+    with get_telemetry().span("gateway_proxy", "forward_usage"):
+        for upstream in _upstreams():
+            target = f"{upstream}{path}"
+            if query:
+                target = f"{target}?{query}"
+            outgoing = urllib.request.Request(target, method="GET")
             try:
                 with urllib.request.urlopen(outgoing, timeout=3) as response:
                     payload = json.loads(response.read().decode("utf-8"))

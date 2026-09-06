@@ -164,3 +164,46 @@ def test_redis_failure_falls_back_to_session_and_memory_stores() -> None:
     )
     assert context.cache_fallback is True
     assert context.session.session_id == "session-1"
+
+
+def test_long_session_auto_compacts_old_turns_and_keeps_sequence_continuity() -> None:
+    service = SessionService(
+        InMemorySessionStore(),
+        InMemoryMemoryStore(),
+        max_recent_turns=2,
+    )
+    kwargs = {
+        "session_id": "session-long",
+        "scope": SCOPE,
+        "repo_id": "repo-1",
+        "repo_fingerprint": "fingerprint-1",
+        "index_version": "index-1",
+    }
+    context = service.get_or_create_session(**kwargs)
+    for number in range(1, 5):
+        context = service.append_turn(
+            context,
+            role="user" if number % 2 else "assistant",
+            content=f"第 {number} 轮需要保留的上下文",
+            repo_fingerprint=kwargs["repo_fingerprint"],
+            index_version=kwargs["index_version"],
+        )
+
+    assert [turn.sequence for turn in context.memory.recent_turns] == [3, 4]
+    assert context.memory.compacted_through_sequence == 2
+    assert context.memory.compaction_count == 2
+    assert context.memory.summary is not None
+    assert "第 1 轮" in context.memory.summary
+
+    context = service.append_turn(
+        context,
+        role="user",
+        content="第 5 轮继续",
+        repo_fingerprint=kwargs["repo_fingerprint"],
+        index_version=kwargs["index_version"],
+    )
+    assert [turn.sequence for turn in context.memory.recent_turns] == [4, 5]
+
+    restored = service.get_or_create_session(**kwargs)
+    assert restored.session.compacted_through_sequence == 3
+    assert [turn.sequence for turn in restored.session.recent_turns] == [4, 5]

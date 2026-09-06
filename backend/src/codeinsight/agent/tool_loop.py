@@ -13,7 +13,11 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from threading import Event
 from typing import Protocol
+
+from codeinsight.agent.tool_lifecycle import ToolLifecycleRecorder
+from codeinsight.domain.trace import RunEvent
 
 TOOL_ERROR_CODES = frozenset(
     {
@@ -24,6 +28,7 @@ TOOL_ERROR_CODES = frozenset(
         "UPSTREAM_5XX",
         "UNKNOWN",
         "DB_CONFLICT",
+        "ABORTED",
     }
 )
 
@@ -167,6 +172,7 @@ class ToolLoopResult:
     input_tokens: int
     output_tokens: int
     reason: str | None = None
+    lifecycle_events: tuple[RunEvent, ...] = ()
 
 
 class ToolLoop:
@@ -178,12 +184,21 @@ class ToolLoop:
         mcp_client: MCPToolClient,
         *,
         config: ToolLoopConfig | None = None,
+        run_id: str = "local-run",
+        event_log=None,
     ) -> None:
         self._model = model
         self._mcp = mcp_client
         self._config = config or ToolLoopConfig()
+        self._lifecycle = ToolLifecycleRecorder(run_id, event_log)
 
-    def run(self, system_prompt: str, user_prompt: str) -> ToolLoopResult:
+    def run(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        cancel_event: Event | None = None,
+    ) -> ToolLoopResult:
         messages: list[Mapping[str, object]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -201,6 +216,18 @@ class ToolLoop:
         start = time.monotonic()
 
         for step in range(1, self._config.max_steps + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                return self._result(
+                    "ABORTED",
+                    None,
+                    messages,
+                    calls,
+                    results,
+                    step - 1,
+                    input_tokens,
+                    output_tokens,
+                    "Run 已取消，未开始下一次模型调用",
+                )
             if time.monotonic() - start >= self._config.deadline_seconds:
                 return self._stuck(
                     messages,
@@ -214,12 +241,12 @@ class ToolLoop:
             try:
                 response = self._model.complete_with_tools(tuple(messages), tools)
             except Exception:
-                return ToolLoopResult(
+                return self._result(
                     "FAILED",
                     None,
-                    tuple(messages),
-                    tuple(calls),
-                    tuple(results),
+                    messages,
+                    calls,
+                    results,
                     step,
                     input_tokens,
                     output_tokens,
@@ -244,18 +271,39 @@ class ToolLoop:
                 )
             messages.append(assistant_message)
             if not response.tool_calls:
-                return ToolLoopResult(
+                return self._result(
                     "COMPLETED",
                     response.content,
-                    tuple(messages),
-                    tuple(calls),
-                    tuple(results),
+                    messages,
+                    calls,
+                    results,
                     step,
                     input_tokens,
                     output_tokens,
+                    )
+
+            submission_orders = {
+                index: len(calls) + index for index in range(len(response.tool_calls))
+            }
+            for index, call in enumerate(response.tool_calls):
+                self._lifecycle.requested(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    submission_order=submission_orders[index],
+                )
+                self._lifecycle.validated(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    submission_order=submission_orders[index],
+                    allowed=_find_tool(discovered, call.name) is not None,
                 )
 
             if len(calls) + len(response.tool_calls) > self._config.max_tool_calls:
+                self._abort_unexecuted_calls(
+                    response.tool_calls,
+                    submission_orders,
+                    reason="tool_call_budget",
+                )
                 return self._stuck(
                     messages,
                     calls,
@@ -268,6 +316,11 @@ class ToolLoop:
             for call in response.tool_calls:
                 call_counts[call.signature] += 1
                 if call_counts[call.signature] > self._config.repeated_call_limit:
+                    self._abort_unexecuted_calls(
+                        response.tool_calls,
+                        submission_orders,
+                        reason="repeated_call_limit",
+                    )
                     return self._stuck(
                         messages,
                         calls,
@@ -278,10 +331,24 @@ class ToolLoop:
                         f"重复工具调用达到上限：{call.name}",
                     )
 
-            batch = self._execute_batch(response.tool_calls, discovered)
-            for call, result in zip(response.tool_calls, batch, strict=True):
+            batch, execution_orders = self._execute_batch(
+                response.tool_calls,
+                discovered,
+                submission_orders=submission_orders,
+                cancel_event=cancel_event,
+            )
+            for index, (call, result) in enumerate(zip(response.tool_calls, batch, strict=True)):
                 calls.append(call)
                 results.append(result)
+                self._lifecycle.committed(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    submission_order=submission_orders[index],
+                    execution_order=execution_orders[index],
+                    ok=result.ok,
+                    error_code=result.error_code,
+                    state_fingerprint=result.state_fingerprint,
+                )
                 if not result.ok:
                     key = (call.name, result.error_code or "UNKNOWN", result.error_message or "")
                     error_counts[key] += 1
@@ -331,28 +398,113 @@ class ToolLoop:
         )
 
     def _execute_batch(
-        self, calls: Sequence[ToolCall], discovered: Sequence[Mapping[str, object]]
-    ) -> tuple[ToolResult, ...]:
+        self,
+        calls: Sequence[ToolCall],
+        discovered: Sequence[Mapping[str, object]],
+        *,
+        submission_orders: Mapping[int, int],
+        cancel_event: Event | None,
+    ) -> tuple[tuple[ToolResult, ...], tuple[int | None, ...]]:
         readonly: list[tuple[int, ToolCall]] = []
         results: list[ToolResult | None] = [None] * len(calls)
+        execution_orders: list[int | None] = [None] * len(calls)
+        execution_order = 0
         for index, call in enumerate(calls):
             spec = _find_tool(discovered, call.name)
-            if spec is not None and bool(spec.get("readOnly", False)):
+            if spec is None:
+                results[index] = ToolResult.failure(
+                    call.id,
+                    call.name,
+                    "VALIDATION",
+                    "工具未在 MCP 目录登记；执行层按 fail-closed 拒绝",
+                )
+                continue
+            if cancel_event is not None and cancel_event.is_set():
+                results[index] = ToolResult.failure(
+                    call.id,
+                    call.name,
+                    "ABORTED",
+                    "Run 已取消，工具尚未开始执行",
+                )
+                self._lifecycle.aborted(
+                    call_id=call.id,
+                    tool_name=call.name,
+                    submission_order=submission_orders[index],
+                    reason="cancelled_before_dispatch",
+                )
+                continue
+            execution_orders[index] = execution_order
+            execution_order += 1
+            parallel = bool(spec.get("readOnly", False))
+            self._lifecycle.dispatched(
+                call_id=call.id,
+                tool_name=call.name,
+                submission_order=submission_orders[index],
+                execution_order=execution_orders[index],
+                parallel=parallel,
+            )
+            if parallel:
                 readonly.append((index, call))
             else:
-                # 有副作用或未登记工具必须串行。未登记工具交由 Client 返回安全错误。
-                results[index] = self._mcp.call_tool(call)
+                # 有副作用工具必须串行；工具 Client 仍是唯一执行入口。
+                results[index] = self._safe_call_tool(call)
         if readonly:
             with ThreadPoolExecutor(max_workers=len(readonly)) as pool:
                 futures = [
-                    (index, pool.submit(self._mcp.call_tool, call)) for index, call in readonly
+                    (index, pool.submit(self._safe_call_tool, call)) for index, call in readonly
                 ]
                 for index, future in futures:
                     results[index] = future.result()
-        return tuple(item for item in results if item is not None)
+        return tuple(item for item in results if item is not None), tuple(execution_orders)
 
-    @staticmethod
+    def _safe_call_tool(self, call: ToolCall) -> ToolResult:
+        try:
+            return self._mcp.call_tool(call)
+        except Exception:
+            return ToolResult.failure(call.id, call.name, "UNKNOWN", "工具执行失败")
+
+    def _abort_unexecuted_calls(
+        self,
+        calls: Sequence[ToolCall],
+        submission_orders: Mapping[int, int],
+        *,
+        reason: str,
+    ) -> None:
+        for index, call in enumerate(calls):
+            self._lifecycle.aborted(
+                call_id=call.id,
+                tool_name=call.name,
+                submission_order=submission_orders[index],
+                reason=reason,
+            )
+
+    def _result(
+        self,
+        status: str,
+        final_content: str | None,
+        messages: list[Mapping[str, object]],
+        calls: list[ToolCall],
+        results: list[ToolResult],
+        steps: int,
+        input_tokens: int,
+        output_tokens: int,
+        reason: str | None = None,
+    ) -> ToolLoopResult:
+        return ToolLoopResult(
+            status,
+            final_content,
+            tuple(messages),
+            tuple(calls),
+            tuple(results),
+            steps,
+            input_tokens,
+            output_tokens,
+            reason,
+            self._lifecycle.events,
+        )
+
     def _stuck(
+        self,
         messages: list[Mapping[str, object]],
         calls: list[ToolCall],
         results: list[ToolResult],
@@ -361,12 +513,12 @@ class ToolLoop:
         output_tokens: int,
         reason: str,
     ) -> ToolLoopResult:
-        return ToolLoopResult(
+        return self._result(
             "STUCK",
             None,
-            tuple(messages),
-            tuple(calls),
-            tuple(results),
+            messages,
+            calls,
+            results,
             steps,
             input_tokens,
             output_tokens,

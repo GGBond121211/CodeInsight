@@ -23,6 +23,7 @@ from codeinsight.domain.memory import (
     MemoryCacheKey,
     MemoryRecord,
     SemanticMemory,
+    SessionCompactionResult,
     SessionMemory,
     WorkingMemory,
 )
@@ -53,13 +54,17 @@ class SessionService:
         cache: CacheStore | None = None,
         *,
         cache_ttl_seconds: int = 300,
+        max_recent_turns: int = 24,
     ) -> None:
         if cache_ttl_seconds <= 0:
             raise ValueError("cache_ttl_seconds 必须为正")
+        if max_recent_turns < 2:
+            raise ValueError("max_recent_turns 至少为 2")
         self._session_store = session_store
         self._memory_store = memory_store
         self._cache = cache
         self._cache_ttl_seconds = cache_ttl_seconds
+        self._max_recent_turns = max_recent_turns
 
     def get_or_create_session(
         self,
@@ -100,6 +105,7 @@ class SessionService:
                     recent_turns=session.recent_turns,
                     active_goal_id=session.active_goal_id,
                     summary=session.summary,
+                    compacted_through_sequence=session.compacted_through_sequence,
                 )
                 self._save_session_memory(memory, scope=scope, repo_id=repo_id)
             session = replace(
@@ -107,6 +113,7 @@ class SessionService:
                 recent_turns=memory.recent_turns,
                 summary=memory.summary,
                 active_goal_id=memory.active_goal_id,
+                compacted_through_sequence=memory.compacted_through_sequence,
             )
             active_goal = self._load_active_goal(session)
             return _context_to_json(
@@ -138,11 +145,47 @@ class SessionService:
     ) -> SessionContext:
         session = context.session.with_turn(role, content)
         memory = replace(context.memory, recent_turns=session.recent_turns)
-        return self._persist_context(
+        compacted_context, _ = self._compact_context(
             replace(context, session=session, memory=memory, cache_hit=False),
+            max_recent_turns=self._max_recent_turns,
+        )
+        return self._persist_context(
+            compacted_context,
             repo_fingerprint=repo_fingerprint,
             index_version=index_version,
         )
+
+    def compact_session(
+        self,
+        context: SessionContext,
+        *,
+        repo_fingerprint: str,
+        index_version: str,
+        max_recent_turns: int | None = None,
+        max_context_tokens: int | None = None,
+    ) -> tuple[SessionContext, SessionCompactionResult]:
+        """显式压缩 Session 历史，并返回可审计的丢弃范围。
+
+        压缩只生成逐轮截断摘要，不调用模型、不发明结论；真正的代码事实仍需
+        重新检索并进入 Evidence。默认 append_turn 已按 ``max_recent_turns`` 自动
+        触发，本方法供 Gateway/恢复流程在 token 预算更紧时主动触发。
+        """
+        if max_recent_turns is not None and max_recent_turns < 2:
+            raise ValueError("max_recent_turns 至少为 2")
+        if max_context_tokens is not None and max_context_tokens <= 0:
+            raise ValueError("max_context_tokens 必须为正")
+        compacted, result = self._compact_context(
+            context,
+            max_recent_turns=max_recent_turns,
+            max_context_tokens=max_context_tokens,
+        )
+        if result.dropped_turn_sequences:
+            compacted = self._persist_context(
+                compacted,
+                repo_fingerprint=repo_fingerprint,
+                index_version=index_version,
+            )
+        return compacted, result
 
     def update_session_memory(
         self,
@@ -403,6 +446,70 @@ class SessionService:
             except CacheUnavailableError:
                 pass
 
+    def _compact_context(
+        self,
+        context: SessionContext,
+        *,
+        max_recent_turns: int | None = None,
+        max_context_tokens: int | None = None,
+    ) -> tuple[SessionContext, SessionCompactionResult]:
+        memory = context.memory
+        original_turns = list(memory.recent_turns)
+        before = estimate_tokens(_session_history_text(memory))
+        if not original_turns:
+            return context, SessionCompactionResult((), (), before, before, False)
+
+        kept = list(original_turns)
+        dropped: list[ConversationTurn] = []
+
+        def over_budget() -> bool:
+            if max_context_tokens is None:
+                return False
+            candidate = replace(memory, recent_turns=tuple(kept))
+            return estimate_tokens(_session_history_text(candidate)) > max_context_tokens
+
+        while kept and (
+            (max_recent_turns is not None and len(kept) > max_recent_turns)
+            or over_budget()
+        ):
+            dropped.append(kept.pop(0))
+
+        if not dropped:
+            sequences = tuple(turn.sequence for turn in original_turns)
+            return context, SessionCompactionResult(
+                (), sequences, before, before, False
+            )
+
+        summary = _build_compaction_summary(memory.summary, dropped)
+        compacted_memory = replace(
+            memory,
+            recent_turns=tuple(kept),
+            summary=summary,
+            compacted_through_sequence=dropped[-1].sequence,
+            compaction_count=memory.compaction_count + 1,
+        )
+        compacted_session = replace(
+            context.session,
+            recent_turns=tuple(kept),
+            summary=summary,
+            compacted_through_sequence=dropped[-1].sequence,
+        )
+        compacted_context = replace(
+            context,
+            session=compacted_session,
+            memory=compacted_memory,
+            cache_hit=False,
+        )
+        after = estimate_tokens(_session_history_text(compacted_memory))
+        result = SessionCompactionResult(
+            dropped_turn_sequences=tuple(turn.sequence for turn in dropped),
+            kept_turn_sequences=tuple(turn.sequence for turn in kept),
+            tokens_before=before,
+            tokens_after=after,
+            summary_updated=True,
+        )
+        return compacted_context, result
+
     def _persist_context(
         self,
         context: SessionContext,
@@ -575,6 +682,34 @@ def _record_id(layer: str, owner_id: str, *, scope: TenantScope, repo_id: str) -
     return f"{layer}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
+def _session_history_text(memory: SessionMemory) -> str:
+    parts: list[str] = []
+    if memory.summary:
+        parts.append(f"summary: {memory.summary}")
+    if memory.confirmed_conclusions:
+        parts.append("confirmed: " + " | ".join(memory.confirmed_conclusions))
+    if memory.rejected_approaches:
+        parts.append("rejected: " + " | ".join(memory.rejected_approaches))
+    for turn in memory.recent_turns:
+        parts.append(f"turn {turn.sequence} {turn.role}: {turn.content}")
+    return "\n".join(parts)
+
+
+def _build_compaction_summary(
+    existing: str | None,
+    dropped: list[ConversationTurn],
+) -> str:
+    lines = [
+        "自动压缩历史（仅用于恢复线索，不是代码证据；需以当前检索结果为准）："
+    ]
+    if existing:
+        lines.append("已有摘要：" + existing[:600])
+    for turn in dropped:
+        snippet = " ".join(turn.content.split())[:120]
+        lines.append(f"第 {turn.sequence} 轮 {turn.role}：{snippet}")
+    return "\n".join(lines)[:1400]
+
+
 def _session_memory_to_payload(memory: SessionMemory) -> dict[str, object]:
     return {
         "session_id": memory.session_id,
@@ -584,6 +719,8 @@ def _session_memory_to_payload(memory: SessionMemory) -> dict[str, object]:
         "rejected_approaches": list(memory.rejected_approaches),
         "user_preferences": memory.user_preferences,
         "summary": memory.summary,
+        "compacted_through_sequence": memory.compacted_through_sequence,
+        "compaction_count": memory.compaction_count,
     }
 
 
@@ -619,6 +756,8 @@ def _session_memory_from_payload(payload: dict[str, object]) -> SessionMemory:
         ),
         user_preferences=preferences,
         summary=str(payload["summary"]) if payload.get("summary") is not None else None,
+        compacted_through_sequence=int(payload.get("compacted_through_sequence", 0)),
+        compaction_count=int(payload.get("compaction_count", 0)),
     )
 
 
@@ -633,6 +772,7 @@ def _context_to_json(context: SessionContext) -> str:
             "repo_id": session.repo_id,
             "summary": session.summary,
             "active_goal_id": session.active_goal_id,
+            "compacted_through_sequence": session.compacted_through_sequence,
         },
         "memory": _session_memory_to_payload(context.memory),
         "active_goal": asdict(goal) if goal is not None else None,
@@ -662,6 +802,11 @@ def _context_from_json(raw: str) -> SessionContext:
             str(session_payload["active_goal_id"])
             if session_payload.get("active_goal_id") is not None
             else None
+        ),
+        compacted_through_sequence=int(
+            session_payload.get(
+                "compacted_through_sequence", memory.compacted_through_sequence
+            )
         ),
     )
     goal_payload = payload.get("active_goal")

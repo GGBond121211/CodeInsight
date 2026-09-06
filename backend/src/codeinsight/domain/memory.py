@@ -267,15 +267,38 @@ class SessionMemory:
     rejected_approaches: tuple[str, ...] = ()
     user_preferences: dict[str, str] = field(default_factory=dict)
     summary: str | None = None
+    compacted_through_sequence: int = 0
+    compaction_count: int = 0
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
             raise ValueError("session_id 不能为空")
-        expected_sequence = 1
+        if self.compacted_through_sequence < 0:
+            raise ValueError("compacted_through_sequence 不能为负")
+        if self.compaction_count < 0:
+            raise ValueError("compaction_count 不能为负")
+        expected_sequence = self.compacted_through_sequence + 1
         for turn in self.recent_turns:
             if turn.sequence != expected_sequence:
                 raise ValueError("Session Memory 中的对话轮次必须连续")
             expected_sequence += 1
+
+
+@dataclass(frozen=True)
+class SessionCompactionResult:
+    """一次 Session 历史压缩的可解释结果。"""
+
+    dropped_turn_sequences: tuple[int, ...]
+    kept_turn_sequences: tuple[int, ...]
+    tokens_before: int
+    tokens_after: int
+    summary_updated: bool
+
+    def __post_init__(self) -> None:
+        if self.tokens_before < 0 or self.tokens_after < 0:
+            raise ValueError("Session 压缩 token 数不能为负")
+        if set(self.dropped_turn_sequences) & set(self.kept_turn_sequences):
+            raise ValueError("同一轮对话不能同时被压缩和保留")
 
 
 @dataclass(frozen=True)
@@ -410,6 +433,8 @@ class CompactionResult:
     dropped_section_names: tuple[str, ...]
     tokens_before: int
     tokens_after: int
+    compacted_section_names: tuple[str, ...] = ()
+    strategy: str = "drop_low_priority"
 
     def __post_init__(self) -> None:
         if self.tokens_after > self.tokens_before:
@@ -417,3 +442,7 @@ class CompactionResult:
         for name in NEVER_TRIMMED_SECTIONS:
             if name in self.dropped_section_names:
                 raise ValueError(f"{name} 分区不允许被裁剪")
+        if set(self.compacted_section_names) & NEVER_TRIMMED_SECTIONS:
+            raise ValueError("不可静默裁剪的核心分区不能进入压缩记录")
+        if not self.strategy.strip():
+            raise ValueError("压缩策略不能为空")

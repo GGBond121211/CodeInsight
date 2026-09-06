@@ -9,13 +9,14 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 ```text
 用户问题 → QueryPlan → 代码检索 → 独立证据 → 回答生成 → 文件与行号引用
 ```
-已发布稳定地基版本为 `1.0.0`，当前活跃开发线为 2.0；现在对外仍只保留 Auto Answer 一个入口。2.0 的阶段进度和尚未接入公开入口的能力，以 `docs/STATUS.md` 为准。
+当前正式发布版本为 `2.0.1`，对外仍只保留 Auto Answer 一个产品入口。Gateway 的用量、缓存与 Tool Loop 生命周期通过独立的本地观测端点提供，不改变回答接口的证据边界。
 
 ## 2.0 当前发布边界
 
-当前是 `release-candidate / partial-pass`，不是已经创建 tag 的正式 Release。Step 8 已完成低成本最小发布 profile，Step 9 已完成本地 Docker Compose 交付切片，Step 10 已完成低成本最终门禁和发布文档收口。完整 Embedding/Provider A/B、真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验统一延期到 `2.1+`；Trivy/SBOM 的 CI 门禁已经通过，正式版本 tag/Release 仍待后续发布决定。
+`2.0.1` 是正式 Release，不是 pre-release。它补齐了 Provider 原生 cache hit/miss 用量、请求指纹、低敏 Gateway 用量查询、Tool Loop 生命周期事件和 Session/Context 的确定性压缩。完整 Embedding/Provider A/B、真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验统一延期到 `2.1+`；这些边界不会因为版本号升级而被写成已完成能力。
 
 详细验收矩阵见 [`docs/RELEASE_2_0_ACCEPTANCE.md`](docs/RELEASE_2_0_ACCEPTANCE.md)，当前事实入口见 [`docs/STATUS.md`](docs/STATUS.md)。
+本次 2.0.1 的变更和明确边界见 [`docs/RELEASE_2_0_1.md`](docs/RELEASE_2_0_1.md)。
 
 我目前专注于项目的后端开发，重点是 Python、FastAPI、RAG、检索评测和 LangGraph 工作流。React 前端只用于把后端能力做成一个可以操作的本地演示页面，主要由 Codex 辅助完成；我负责前后端 HTTP API 的边界、接口联调和整体运行流程，不把这个项目当作前端能力展示。
 
@@ -157,6 +158,8 @@ uv run celery -A codeinsight.agent.worker_tasks.celery_app worker --pool=solo --
 ```
 
 Gateway 健康检查、模型清单和指标分别位于 `/health`、`/v1/models`、`/metrics`。
+
+Gateway 用量汇总和最近调用明细分别位于 `/v1/usage/summary`、`/v1/usage/calls`。明细只包含模型、路由、Token、缓存、成本、延迟、错误类别和不可逆请求指纹，不返回原始 prompt、工具参数、模型正文或隐藏推理。
 
 ### 4. 启动前端
 

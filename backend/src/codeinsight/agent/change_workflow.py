@@ -40,7 +40,13 @@ def run_change_workflow_to_preview(
     config: ToolLoopConfig | None = None,
 ) -> ChangeWorkflowPreviewResult:
     """把模型原生 ``generate_patch`` 调用接到受控 preview，不自动审批或应用。"""
-    completed = run_change_workflow(task, model=model, mcp_client=mcp_client, config=config)
+    completed = run_change_workflow(
+        task,
+        model=model,
+        mcp_client=mcp_client,
+        config=config,
+        run_id=run_id,
+    )
     generated = [call for call in completed.loop.tool_calls if call.name == "generate_patch"]
     if completed.loop.status != "COMPLETED" or not generated:
         raise ValueError("Tool Loop 未生成可交付 Patch")
@@ -68,6 +74,8 @@ def run_change_workflow(
     model: ToolModel,
     mcp_client: MCPToolClient,
     config: ToolLoopConfig | None = None,
+    run_id: str = "local-run",
+    event_log=None,
 ) -> ChangeWorkflowResult:
     """运行一条真实 MCP 主链路。
 
@@ -75,7 +83,15 @@ def run_change_workflow(
     单元测试中传 Fake Host；ToolLoop 仍然不会绕过 Client 调用内部 Python 函数。
     """
     system, user = planner_prompt(task)
-    return ChangeWorkflowResult(ToolLoop(model, mcp_client, config=config).run(system, user))
+    return ChangeWorkflowResult(
+        ToolLoop(
+            model,
+            mcp_client,
+            config=config,
+            run_id=run_id,
+            event_log=event_log,
+        ).run(system, user)
+    )
 
 
 def run_change_workflow_stdio(
@@ -84,6 +100,15 @@ def run_change_workflow_stdio(
     *,
     model: ToolModel,
     config: ToolLoopConfig | None = None,
+    run_id: str = "local-run",
+    event_log=None,
 ) -> ChangeWorkflowResult:
     with StdioMCPClient(repository_root) as client:
-        return run_change_workflow(task, model=model, mcp_client=client, config=config)
+        return run_change_workflow(
+            task,
+            model=model,
+            mcp_client=client,
+            config=config,
+            run_id=run_id,
+            event_log=event_log,
+        )

@@ -43,6 +43,7 @@ from codeinsight.infrastructure.provider_adapters import (
     ProviderRequest,
     ProviderResponse,
 )
+from codeinsight.infrastructure.request_fingerprint import request_fingerprints
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,11 @@ class AttemptTrace:
     cached_tokens: int
     fallback_reason: str | None
     error_class: str | None
+    cache_miss_tokens: int = 0
+    usage_source: str = "unknown"
+    request_fingerprint: str = ""
+    stable_prefix_fingerprint: str = ""
+    recorded_at_epoch_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -117,6 +123,11 @@ class CostRecord:
     ttft_milliseconds: float | None
     fallback_reason: str | None
     error_class: str | None = None
+    cache_miss_tokens: int = 0
+    usage_source: str = "unknown"
+    request_fingerprint: str = ""
+    stable_prefix_fingerprint: str = ""
+    recorded_at_epoch_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -130,6 +141,10 @@ class GatewayResponse:
     attempts: tuple[AttemptTrace, ...]
     cost: CostRecord
     cache_hit: bool = False
+    cache_miss_tokens: int = 0
+    request_fingerprint: str = ""
+    stable_prefix_fingerprint: str = ""
+    semantic_cache_hit: bool = False
 
 
 @dataclass(frozen=True)
@@ -264,7 +279,7 @@ class AdmissionController:
 
 
 class GatewaySemanticCache:
-    KEY_VERSION = "gateway-semantic-v1"
+    KEY_VERSION = "gateway-semantic-v2"
 
     def __init__(self) -> None:
         self._values: dict[str, GatewayResponse] = {}
@@ -285,8 +300,8 @@ class GatewaySemanticCache:
         ]
         if context.personalized:
             parts.append(request.user_id)
-        serialized = json.dumps(request.messages, ensure_ascii=False, sort_keys=True, default=str)
-        parts.append(hashlib.sha256(serialized.encode("utf-8")).hexdigest())
+        fingerprints = request_fingerprints(request, model_id=model_id)
+        parts.append(fingerprints.request)
         return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
     def get(self, key: str | None) -> GatewayResponse | None:
@@ -327,6 +342,9 @@ class ModelGateway:
         self.rate_limiter = rate_limiter or TokenBucketRateLimiter()
         self.max_retries = max_retries
         self.cost_records: list[CostRecord] = []
+        self._stats_lock = threading.RLock()
+        self.requests_total = 0
+        self.semantic_cache_hits = 0
 
     def complete(self, request: GatewayRequest) -> GatewayResponse:
         route = self.routes.get(request.scene)
@@ -342,10 +360,15 @@ class ModelGateway:
         if not candidates:
             raise NoCapableModelError("没有满足当前能力要求的模型")
 
+        with self._stats_lock:
+            self.requests_total += 1
         primary_cache_key = self.semantic_cache.key_for(request, candidates[0])
         cached = self.semantic_cache.get(primary_cache_key)
         if cached is not None:
-            return replace(cached, cache_hit=True)
+            with self._stats_lock:
+                self.semantic_cache_hits += 1
+            self.telemetry.record_gateway_usage(semantic_cache_hit=True)
+            return replace(cached, cache_hit=True, semantic_cache_hit=True)
 
         self.admission.acquire()
         attempts: list[AttemptTrace] = []
@@ -421,19 +444,29 @@ class ModelGateway:
                             "outcome": "success",
                             "input_tokens": str(response.input_tokens),
                             "output_tokens": str(response.output_tokens),
+                            "cache_read_tokens": str(response.cached_input_tokens),
+                            "cache_miss_tokens": str(response.effective_cache_miss_tokens),
+                            "cache_hit_ratio": f"{response.cache_hit_ratio:.6f}",
+                            "usage_source": response.usage_source,
+                            "request_fingerprint": response_cost.request_fingerprint,
+                            "stable_prefix_fingerprint": response_cost.stable_prefix_fingerprint,
                         },
                     )
                     attempts.append(response_trace)
                     self._record_cost(response_cost)
+                    fingerprints = request_fingerprints(request, model_id=profile.model_id)
                     result = GatewayResponse(
-                        response.content,
-                        response.tool_calls,
-                        response.model,
-                        response.input_tokens,
-                        response.output_tokens,
-                        response.cached_input_tokens,
-                        tuple(attempts),
-                        response_cost,
+                        content=response.content,
+                        tool_calls=response.tool_calls,
+                        model=response.model,
+                        input_tokens=response.input_tokens,
+                        output_tokens=response.output_tokens,
+                        cached_input_tokens=response.cached_input_tokens,
+                        attempts=tuple(attempts),
+                        cost=response_cost,
+                        cache_miss_tokens=response.effective_cache_miss_tokens,
+                        request_fingerprint=fingerprints.request,
+                        stable_prefix_fingerprint=fingerprints.stable_prefix,
                     )
                     if response.model == candidates[0]:
                         self.semantic_cache.set(primary_cache_key, result)
@@ -457,6 +490,8 @@ class ModelGateway:
             request.estimated_input_tokens + request.reserved_output_tokens,
         )
         attempt_id = uuid.uuid4().hex
+        fingerprints = request_fingerprints(request, model_id=profile.model_id)
+        recorded_at_epoch_ms = int(time.time() * 1000)
         started = time.perf_counter()
         self._emit(
             request,
@@ -466,6 +501,8 @@ class ModelGateway:
                 "scene": request.scene,
                 "model": profile.model_id,
                 "fallback_reason": fallback_reason or "none",
+                "request_fingerprint": fingerprints.request,
+                "stable_prefix_fingerprint": fingerprints.stable_prefix,
             },
         )
         try:
@@ -489,6 +526,10 @@ class ModelGateway:
                         request.response_format,
                         request.reserved_output_tokens or None,
                     )
+                )
+                self.telemetry.record_gateway_usage(
+                    cache_read_tokens=response.cached_input_tokens,
+                    cache_miss_tokens=response.effective_cache_miss_tokens,
                 )
         except GatewayError as error:
             elapsed = (time.perf_counter() - started) * 1000
@@ -521,6 +562,11 @@ class ModelGateway:
                 0,
                 fallback_reason,
                 error.code,
+                0,
+                "unavailable",
+                fingerprints.request,
+                fingerprints.stable_prefix,
+                recorded_at_epoch_ms,
             )
             cost = CostRecord(
                 request_id=request.request_id,
@@ -541,6 +587,11 @@ class ModelGateway:
                 ttft_milliseconds=None,
                 fallback_reason=fallback_reason,
                 error_class=error.code,
+                cache_miss_tokens=0,
+                usage_source="unavailable",
+                request_fingerprint=fingerprints.request,
+                stable_prefix_fingerprint=fingerprints.stable_prefix,
+                recorded_at_epoch_ms=recorded_at_epoch_ms,
             )
             raise _AttemptFailure(error, trace, cost) from error
         elapsed = (time.perf_counter() - started) * 1000
@@ -563,6 +614,11 @@ class ModelGateway:
             response.cached_input_tokens,
             fallback_reason,
             None,
+            response.effective_cache_miss_tokens,
+            response.usage_source,
+            fingerprints.request,
+            fingerprints.stable_prefix,
+            recorded_at_epoch_ms,
         )
         cost = _cost_record(request, profile, response, attempt_id, elapsed, fallback_reason)
         return response, trace, cost
@@ -582,9 +638,43 @@ class ModelGateway:
         )
 
     def _record_cost(self, record: CostRecord) -> None:
-        self.cost_records.append(record)
+        with self._stats_lock:
+            self.cost_records.append(record)
         if self.cost_store is not None:
             self.cost_store.record(record)
+
+    def usage_records(self, *, limit: int = 100) -> tuple[CostRecord, ...]:
+        """返回最近的 attempt 元数据；不包含 prompt、工具参数或模型正文。"""
+        if limit < 1 or limit > 1_000:
+            raise ValueError("usage records 的 limit 必须在 1 到 1000 之间")
+        with self._stats_lock:
+            return tuple(reversed(self.cost_records[-limit:]))
+
+    def usage_summary(self) -> dict[str, object]:
+        """返回供本地监控面板使用的低敏用量汇总。"""
+        with self._stats_lock:
+            records = tuple(self.cost_records)
+            requests_total = self.requests_total
+            semantic_cache_hits = self.semantic_cache_hits
+        input_tokens = sum(record.input_tokens for record in records)
+        cache_read_tokens = sum(record.cached_tokens for record in records)
+        cache_miss_tokens = sum(_cost_cache_miss(record) for record in records)
+        output_tokens = sum(record.output_tokens for record in records)
+        total_stars = sum((record.total_stars for record in records), Decimal(0))
+        return {
+            "requests": requests_total,
+            "provider_attempts": len(records),
+            "successful_attempts": sum(record.error_class is None for record in records),
+            "semantic_cache_hits": semantic_cache_hits,
+            "input_tokens": input_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_miss_tokens": cache_miss_tokens,
+            "output_tokens": output_tokens,
+            "cache_hit_ratio": (
+                cache_read_tokens / input_tokens if input_tokens else 0.0
+            ),
+            "estimated_cost_stars": str(total_stars),
+        }
 
     @staticmethod
     def _validate_response(request: GatewayRequest, response: ProviderResponse) -> None:
@@ -605,6 +695,7 @@ class ModelGateway:
         error: GatewayError,
         fallback_reason: str | None,
     ) -> AttemptTrace:
+        fingerprints = request_fingerprints(request, model_id=profile.model_id)
         return AttemptTrace(
             request.request_id,
             uuid.uuid4().hex,
@@ -622,6 +713,11 @@ class ModelGateway:
             0,
             fallback_reason,
             error.code,
+            0,
+            "unavailable",
+            fingerprints.request,
+            fingerprints.stable_prefix,
+            int(time.time() * 1000),
         )
 
 
@@ -633,31 +729,41 @@ def _cost_record(
     elapsed: float,
     fallback_reason: str | None,
 ) -> CostRecord:
-    uncached = max(0, response.input_tokens - response.cached_input_tokens)
+    uncached = response.effective_cache_miss_tokens
     stars = (
         Decimal(uncached) * profile.input_price_per_million
         + Decimal(response.cached_input_tokens) * profile.cached_input_price_per_million
         + Decimal(response.output_tokens) * profile.output_price_per_million
     ) / Decimal(1_000_000)
+    fingerprints = request_fingerprints(request, model_id=profile.model_id)
     return CostRecord(
-        request.request_id,
-        attempt_id,
-        request.tenant_id,
-        request.user_id,
-        request.scene,
-        request.prompt_version,
-        profile.provider,
-        profile.quality_tier,
-        response.model,
-        response.input_tokens,
-        response.output_tokens,
-        response.cached_input_tokens,
-        profile.price_version,
-        stars,
-        elapsed,
-        None,
-        fallback_reason,
+        request_id=request.request_id,
+        attempt_id=attempt_id,
+        tenant_id=request.tenant_id,
+        user_id=request.user_id,
+        scene=request.scene,
+        prompt_version=request.prompt_version,
+        provider=profile.provider,
+        model_tier=profile.quality_tier,
+        model=response.model,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        cached_tokens=response.cached_input_tokens,
+        price_version=profile.price_version,
+        total_stars=stars,
+        latency_milliseconds=elapsed,
+        ttft_milliseconds=None,
+        fallback_reason=fallback_reason,
+        cache_miss_tokens=uncached,
+        usage_source=response.usage_source,
+        request_fingerprint=fingerprints.request,
+        stable_prefix_fingerprint=fingerprints.stable_prefix,
+        recorded_at_epoch_ms=int(time.time() * 1000),
     )
+
+
+def _cost_cache_miss(record: CostRecord) -> int:
+    return record.cache_miss_tokens or max(0, record.input_tokens - record.cached_tokens)
 
 
 @lru_cache(maxsize=1)
