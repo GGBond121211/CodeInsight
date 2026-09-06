@@ -211,13 +211,16 @@ class ConversationSession:
     recent_turns: tuple[ConversationTurn, ...] = ()
     summary: str | None = None
     active_goal_id: str | None = None
+    compacted_through_sequence: int = 0
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
             raise ValueError("session_id 不能为空")
         if not self.repo_id.strip():
             raise ValueError("repo_id 不能为空")
-        expected = 1
+        if self.compacted_through_sequence < 0:
+            raise ValueError("compacted_through_sequence 不能为负")
+        expected = self.compacted_through_sequence + 1
         for turn in self.recent_turns:
             if turn.sequence != expected:
                 raise ValueError(
@@ -227,7 +230,11 @@ class ConversationSession:
 
     def with_turn(self, role: str, content: str) -> ConversationSession:
         """追加一轮对话，返回新实例。"""
-        turn = ConversationTurn(len(self.recent_turns) + 1, role, content)
+        turn = ConversationTurn(
+            self.compacted_through_sequence + len(self.recent_turns) + 1,
+            role,
+            content,
+        )
         return replace(self, recent_turns=self.recent_turns + (turn,))
 
     def with_active_goal(self, goal_id: str | None) -> ConversationSession:

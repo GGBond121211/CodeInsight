@@ -6,7 +6,7 @@ import json
 import uuid
 from collections.abc import Mapping
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from codeinsight.infrastructure.gateway_errors import GatewayError
@@ -28,11 +28,12 @@ class GatewayChatRequest(BaseModel):
     reserved_output_tokens: int = 1000
     tools: list[dict[str, object]] = Field(default_factory=list)
     response_format: dict[str, object] | None = None
+    run_id: str | None = None
 
 
 def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
     selected = gateway
-    app = FastAPI(title="CodeInsight Model Gateway", version="2.0-step7")
+    app = FastAPI(title="CodeInsight Model Gateway", version="2.0.1")
 
     def resolve_gateway() -> ModelGateway:
         nonlocal selected
@@ -73,6 +74,22 @@ def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
             ],
         }
 
+    @app.get("/v1/usage/summary")
+    def usage_summary() -> dict[str, object]:
+        """低敏用量汇总，供本地监控面板和排障使用。"""
+        return resolve_gateway().usage_summary()
+
+    @app.get("/v1/usage/calls")
+    def usage_calls(
+        limit: int = Query(default=100, ge=1, le=1_000),
+    ) -> dict[str, object]:
+        """最近 attempt 的明细；不返回 prompt、工具参数或模型正文。"""
+        records = resolve_gateway().usage_records(limit=limit)
+        return {
+            "object": "list",
+            "data": [_usage_record(record) for record in records],
+        }
+
     @app.post("/v1/chat/completions")
     def chat(request: GatewayChatRequest) -> dict[str, object]:
         capabilities = {"text"}
@@ -83,17 +100,18 @@ def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
         try:
             result = resolve_gateway().complete(
                 GatewayRequest(
-                    request.request_id,
-                    request.tenant_id,
-                    request.user_id,
-                    request.scene,
-                    request.prompt_version,
-                    tuple(_mapping(item) for item in request.messages),
-                    request.estimated_input_tokens,
-                    request.reserved_output_tokens,
-                    frozenset(capabilities),
-                    tuple(_mapping(item) for item in request.tools),
-                    request.response_format,
+                    request_id=request.request_id,
+                    tenant_id=request.tenant_id,
+                    user_id=request.user_id,
+                    scene=request.scene,
+                    prompt_version=request.prompt_version,
+                    messages=tuple(_mapping(item) for item in request.messages),
+                    estimated_input_tokens=request.estimated_input_tokens,
+                    reserved_output_tokens=request.reserved_output_tokens,
+                    required_capabilities=frozenset(capabilities),
+                    tools=tuple(_mapping(item) for item in request.tools),
+                    response_format=request.response_format,
+                    run_id=request.run_id,
                 )
             )
         except GatewayError as error:
@@ -128,12 +146,25 @@ def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
                 "prompt_tokens": result.input_tokens,
                 "completion_tokens": result.output_tokens,
                 "total_tokens": result.input_tokens + result.output_tokens,
+                "prompt_cache_hit_tokens": result.cached_input_tokens,
+                "prompt_cache_miss_tokens": result.cache_miss_tokens,
+                "cache_hit_ratio": (
+                    result.cached_input_tokens / result.input_tokens
+                    if result.input_tokens
+                    else 0.0
+                ),
+                "usage_source": result.cost.usage_source,
             },
             "gateway": {
                 "attempts": len(result.attempts),
                 "cache_hit": result.cache_hit,
+                "semantic_cache_hit": result.semantic_cache_hit,
+                "provider_cache_read_tokens": result.cached_input_tokens,
+                "provider_cache_miss_tokens": result.cache_miss_tokens,
                 "price_version": result.cost.price_version,
                 "cost_stars": str(result.cost.total_stars),
+                "request_fingerprint": result.request_fingerprint,
+                "stable_prefix_fingerprint": result.stable_prefix_fingerprint,
             },
         }
 
@@ -142,6 +173,37 @@ def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
 
 def _mapping(value: Mapping[str, object]) -> Mapping[str, object]:
     return value
+
+
+def _usage_record(record) -> dict[str, object]:
+    cache_miss_tokens = record.cache_miss_tokens or max(
+        0, record.input_tokens - record.cached_tokens
+    )
+    return {
+        "recorded_at_epoch_ms": record.recorded_at_epoch_ms or None,
+        "request_id": record.request_id,
+        "attempt_id": record.attempt_id,
+        "scene": record.scene,
+        "prompt_version": record.prompt_version,
+        "provider": record.provider,
+        "model_tier": record.model_tier,
+        "model": record.model,
+        "status": "error" if record.error_class else "ok",
+        "input_tokens": record.input_tokens,
+        "cache_read_tokens": record.cached_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
+        "output_tokens": record.output_tokens,
+        "cache_hit_ratio": (
+            record.cached_tokens / record.input_tokens if record.input_tokens else 0.0
+        ),
+        "estimated_cost_stars": str(record.total_stars),
+        "latency_milliseconds": record.latency_milliseconds,
+        "fallback_reason": record.fallback_reason,
+        "error_class": record.error_class,
+        "usage_source": record.usage_source,
+        "request_fingerprint": record.request_fingerprint or None,
+        "stable_prefix_fingerprint": record.stable_prefix_fingerprint or None,
+    }
 
 
 app = create_gateway_app()

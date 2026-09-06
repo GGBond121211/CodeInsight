@@ -27,7 +27,7 @@ class Telemetry:
     """OTel 负责链路语义，内存记录和 Prometheus 让测试及本地演示可见。"""
 
     def __init__(self) -> None:
-        self._tracer = trace.get_tracer("codeinsight", "2.0-step7")
+        self._tracer = trace.get_tracer("codeinsight", "2.0.1")
         self._records: list[SpanRecord] = []
         self._lock = RLock()
         self.registry = CollectorRegistry()
@@ -43,6 +43,21 @@ class Telemetry:
             "codeinsight_operation_duration_seconds",
             "CodeInsight component operation duration",
             labels,
+            registry=self.registry,
+        )
+        self.gateway_cache_read_tokens = Counter(
+            "codeinsight_gateway_cache_read_tokens_total",
+            "Provider prompt cache read tokens",
+            registry=self.registry,
+        )
+        self.gateway_cache_miss_tokens = Counter(
+            "codeinsight_gateway_cache_miss_tokens_total",
+            "Provider prompt cache miss tokens",
+            registry=self.registry,
+        )
+        self.gateway_semantic_cache_hits = Counter(
+            "codeinsight_gateway_semantic_cache_hits_total",
+            "Exact semantic response cache hits",
             registry=self.registry,
         )
 
@@ -93,6 +108,21 @@ class Telemetry:
     def records(self) -> tuple[SpanRecord, ...]:
         with self._lock:
             return tuple(self._records)
+
+    def record_gateway_usage(
+        self,
+        *,
+        cache_read_tokens: int = 0,
+        cache_miss_tokens: int = 0,
+        semantic_cache_hit: bool = False,
+    ) -> None:
+        """记录低基数 Gateway cache 指标，不把 request/model 放进 metric label。"""
+        if cache_read_tokens < 0 or cache_miss_tokens < 0:
+            raise ValueError("Gateway cache token 数不能为负")
+        self.gateway_cache_read_tokens.inc(cache_read_tokens)
+        self.gateway_cache_miss_tokens.inc(cache_miss_tokens)
+        if semantic_cache_hit:
+            self.gateway_semantic_cache_hits.inc()
 
     def metrics(self) -> bytes:
         return generate_latest(self.registry)

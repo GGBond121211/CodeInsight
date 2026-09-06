@@ -33,6 +33,11 @@ MODEL_RESULT = "model_result"
 STEP_STARTED = "step_started"
 TOOL_CALLED = "tool_called"
 TOOL_RESULT = "tool_result"
+TOOL_CALL_REQUESTED = "tool_call_requested"
+TOOL_CALL_VALIDATED = "tool_call_validated"
+TOOL_DISPATCHED = "tool_dispatched"
+TOOL_RESULT_COMMITTED = "tool_result_committed"
+TOOL_ABORTED = "tool_aborted"
 EVIDENCE_SELECTED = "evidence_selected"
 PLAN_PROPOSED = "plan_proposed"
 PATCH_GENERATED = "patch_generated"
@@ -58,6 +63,11 @@ SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
         STEP_STARTED,
         TOOL_CALLED,
         TOOL_RESULT,
+        TOOL_CALL_REQUESTED,
+        TOOL_CALL_VALIDATED,
+        TOOL_DISPATCHED,
+        TOOL_RESULT_COMMITTED,
+        TOOL_ABORTED,
         EVIDENCE_SELECTED,
         PLAN_PROPOSED,
         PATCH_GENERATED,

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codeinsight"
-version = "1.0.0"
+version = "2.0.1"
 description = "基于 Hybrid RAG 与 LangGraph 的多语言代码仓库理解工具"
 requires-python = ">=3.12,<3.14"
 dependencies = [
