@@ -9,15 +9,15 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 ```text
 用户问题 → QueryPlan → 代码检索 → 独立证据 → 回答生成 → 文件与行号引用
 ```
-当前正式发布版本为 `2.0.2`，对外提供 Auto Answer、统一多轮对话、代码变更闭环和本地用量观测能力。当前 `codex/2.0.3-development` 是未发布的开发分支，正在补齐普通聊天路由、含糊请求澄清和统一单回答契约；它不改变已发布版本的声明。
+当前正式发布版本为 `2.0.3`，对外提供 Auto Answer、统一多轮对话、代码变更闭环、本地用量观测和自然范围引导能力。
 
 ## 2.0 当前发布边界
 
-`2.0.2` 是正式 Release，不是 pre-release。它汇总了 v2.0.1 之后已经在本地完成的 dashboard、统一对话、上下文续聊、代码变更门禁、Sandbox 校验、模型/缓存观测和相关测试修复。真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验仍不在本版本承诺内。
+`2.0.3` 是正式 Release，不是 pre-release。它在 v2.0.2 基础上补齐了普通聊天与业务范围边界、自然引导、开发调试策略和统一对话回归验证。真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验仍不在本版本承诺内。
 
 当前公开能力见 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)，最小演示见 [`docs/DEMO.md`](docs/DEMO.md)，验收摘要见 [`docs/EVALUATION_SUMMARY.md`](docs/EVALUATION_SUMMARY.md)。
 
-## 2.0.3 Conversation 开发切片
+## 2.0.3 Conversation 能力
 
 统一 `/api/v2/chat/*` 入口先由业务编排层决定本轮任务，再选择执行路线：
 

@@ -36,7 +36,7 @@ class GatewayChatRequest(BaseModel):
 
 def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
     selected = gateway
-    app = FastAPI(title="CodeInsight Model Gateway", version="2.0.2")
+    app = FastAPI(title="CodeInsight Model Gateway", version="2.0.3")
 
     def resolve_gateway() -> ModelGateway:
         nonlocal selected
