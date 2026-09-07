@@ -802,6 +802,26 @@
   line-height: 1.55;
 }
 
+.chat-details {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-details summary {
+  cursor: pointer;
+  color: #587166;
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.chat-details summary::marker {
+  color: #79a08a;
+}
+
+.chat-meta-result {
+  background: rgba(247, 250, 247, 0.78);
+}
+
 .citation-chips {
   display: flex;
   flex-wrap: wrap;

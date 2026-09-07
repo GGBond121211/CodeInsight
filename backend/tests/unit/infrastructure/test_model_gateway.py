@@ -169,6 +169,27 @@ def test_gateway_chat_model_records_content_derived_prompt_version() -> None:
     assert gateway.cost_records[0].prompt_version != "runtime-prompt"
 
 
+def test_gateway_chat_model_text_route_does_not_request_json() -> None:
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.request = None
+
+        def invoke(self, request):
+            self.request = request
+            return _success(request.model, "你好！")
+
+    provider = RecordingProvider()
+    gateway = ModelGateway(provider=provider)  # type: ignore[arg-type]
+
+    completion = GatewayChatModel(gateway).complete_text("general system", "你好")
+
+    assert completion.content == "你好！"
+    assert provider.request is not None
+    assert provider.request.response_format is None
+    assert gateway.cost_records[0].scene == "general-chat"
+    assert gateway.cost_records[0].prompt_version == "general-chat-v1"
+
+
 def test_gateway_chat_model_exposes_provider_reasoning_without_recording_it() -> None:
     provider = FakeProviderAdapter(
         {

@@ -161,6 +161,7 @@ def default_routes(registry: ModelRegistry | None = None) -> dict[str, RouteProf
     selected = registry or default_model_registry()
     definitions = {
         "explain": frozenset({"text"}),
+        "general-chat": frozenset({"text"}),
         "change-plan": frozenset({"text", "tools", "structured_output"}),
         "patch": frozenset({"text", "tools", "structured_output"}),
         "patch-review": frozenset({"text", "structured_output"}),

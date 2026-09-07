@@ -30,9 +30,8 @@ const completedTurn: ChatTurnResponse = {
   user_message: 'checkout 如何校验输入？',
   assistant_message: '校验逻辑有证据支持。',
   result: {
-    kind: 'auto_answer',
+    kind: 'code_answer',
     outcome: 'answered',
-    answer: '校验逻辑有证据支持。',
     citations: [],
     observability: {
       cache_read_tokens: 20,
@@ -108,7 +107,8 @@ it('提交一轮消息并在实时事件结束后展示回答', async () => {
   render(<App />)
   await user.click(screen.getByRole('button', { name: '发送消息' }))
 
-  expect((await screen.findAllByText('校验逻辑有证据支持。')).length).toBeGreaterThanOrEqual(1)
+  expect(await screen.findAllByText('校验逻辑有证据支持。')).toHaveLength(1)
+  expect(screen.getByText('查看本轮证据与运行详情')).toBeInTheDocument()
   expect(screen.getByText('代码对话')).toBeInTheDocument()
   expect(submitChatTurn).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -118,6 +118,47 @@ it('提交一轮消息并在实时事件结束后展示回答', async () => {
       show_debug_reasoning: true,
     }),
   )
+})
+
+it('普通聊天只展示 assistant_message，不显示 CODE ANSWER 卡片', async () => {
+  const generalTurn: ChatTurnResponse = {
+    ...completedTurn,
+    task_type: 'general_chat',
+    user_message: '你好',
+    assistant_message: '你好！我是 CodeInsight。',
+    result: {
+      kind: 'general_chat',
+      outcome: 'answered',
+      route: 'general_chat',
+      model: 'deepseek-v4-flash',
+      observability: { cache_hit_ratio: 0 },
+    },
+  }
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...generalTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(getChatTurn).mockResolvedValue(generalTurn)
+
+  const user = userEvent.setup()
+  render(<App />)
+  const composer = screen.getByPlaceholderText('例如：刚才的 checkout 校验在哪里？或者：把这个校验提取成独立函数。')
+  await user.clear(composer)
+  await user.type(composer, '你好')
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(await screen.findByText('你好！我是 CodeInsight。')).toBeInTheDocument()
+  expect(screen.queryByText('CODE ANSWER')).not.toBeInTheDocument()
+  expect(screen.getByText('普通对话 · 查看模型与用量')).toBeInTheDocument()
 })
 
 it('失败后仍保留模型失败原因和实时事件', async () => {

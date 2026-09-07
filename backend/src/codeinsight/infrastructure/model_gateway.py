@@ -1063,6 +1063,69 @@ class GatewayChatModel:
             output_tokens=result.output_tokens,
         )
 
+    def complete_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        run_id: str | None = None,
+        event_log=None,
+        cache_context: CacheContext | None = None,
+    ) -> ModelCompletion:
+        """执行不带结构化 JSON 约束的文本回答。
+
+        普通对话与代码回答共用 Gateway 的预算、降级、缓存和 usage 对账，但
+        故意不传 response_format，避免把自然语言寒暄误变成 JSON 解析任务。
+        """
+        from codeinsight.prompts.general_chat import PROMPT_VERSION
+
+        output_budget = configured_max_output_tokens()
+        request_user_prompt = user_prompt
+        estimated = estimate_tokens(system_prompt + user_prompt)
+        if self._context_assembler is not None:
+            from codeinsight.application.context_assembler import ContextRequest
+
+            assembly = self._context_assembler.assemble(
+                ContextRequest(
+                    system_safety=system_prompt,
+                    user_goal="",
+                    user_code_task=user_prompt,
+                    model_version=self.model,
+                    strategy_version="context-assembler-v1",
+                    max_tokens=DEFAULT_CONTEXT_INPUT_TOKENS + output_budget,
+                    reserved_output_tokens=output_budget,
+                )
+            )
+            request_user_prompt = assembly.user_text
+            estimated = assembly.fitted.estimate.input_tokens
+        response = self.gateway.complete(
+            GatewayRequest(
+                request_id=uuid.uuid4().hex,
+                tenant_id="default",
+                user_id="local",
+                scene="general-chat",
+                prompt_version=PROMPT_VERSION,
+                messages=(
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": request_user_prompt},
+                ),
+                estimated_input_tokens=estimated,
+                reserved_output_tokens=output_budget,
+                required_capabilities=frozenset({"text"}),
+                run_id=run_id,
+                event_log=event_log,
+                cache_context=cache_context,
+            )
+        )
+        return ModelCompletion(
+            response.content or "",
+            response.model,
+            response.input_tokens,
+            response.output_tokens,
+            estimated,
+            response.reasoning_content,
+        )
+
     def complete_with_tools(
         self,
         messages: tuple[Mapping[str, object], ...] | list[Mapping[str, object]],

@@ -16,7 +16,7 @@ interface ChatMessage {
   turnId: string
   role: 'user' | 'assistant'
   content: string
-  taskType?: 'explain' | 'change'
+  taskType?: 'general_chat' | 'clarify' | 'explain' | 'change'
   result?: Record<string, unknown> | null
 }
 
@@ -79,6 +79,9 @@ function eventLabel(event: ChatEvent): string {
       return `正在调用降级模型 ${model} · ${reason}`
     }
     return `正在调用模型 ${model}`
+  }
+  if (event.event_type === 'model_generating' && event.payload.status === 'started') {
+    return `模型正在生成 ${event.payload.route === 'general_chat' ? '普通对话' : '代码回答'}`
   }
   if (event.event_type === 'model_result' && event.payload.outcome === 'error') {
     const detail = event.payload.error_detail
@@ -173,6 +176,32 @@ function ChatResult({
       </div>
     )
   }
+  if (kind === 'general_chat') {
+    const observability = (result.observability || {}) as Record<string, unknown>
+    return (
+      <div className="chat-result chat-meta-result">
+        <details className="chat-details">
+          <summary>普通对话 · 查看模型与用量</summary>
+          <span className="result-meta">
+            生效模型：{textValue(result.model, '未返回')} · Route：{textValue(result.route, 'general_chat')}
+          </span>
+          <span className="result-meta">
+            本轮 cache read/miss：{textValue(observability.cache_read_tokens, '0')} /{' '}
+            {textValue(observability.cache_miss_tokens, '0')} · 命中率：
+            {(Number(observability.cache_hit_ratio || 0) * 100).toFixed(1)}%
+          </span>
+        </details>
+      </div>
+    )
+  }
+  if (kind === 'clarify') {
+    return (
+      <div className="chat-result chat-meta-result">
+        <span className="result-tag">CLARIFY</span>
+        <span className="result-meta">本轮未访问仓库，也未调用模型。</span>
+      </div>
+    )
+  }
   const citations = Array.isArray(result.citations) ? result.citations : []
   const observability = (result.observability || {}) as Record<string, unknown>
   return (
@@ -181,28 +210,30 @@ function ChatResult({
         <span className="result-tag">CODE ANSWER</span>
         <strong>{textValue(result.outcome, 'answered')}</strong>
       </div>
-      <p>{textValue(result.answer, '没有返回回答。')}</p>
-      {citations.length > 0 && (
-        <div className="citation-chips" aria-label="回答引用">
-          {citations.map((item, index) => {
-            const citation = (item || {}) as Record<string, unknown>
-            return (
-              <span className="citation-chip" key={`${textValue(citation.evidence_id)}-${index}`}>
-                {textValue(citation.evidence_id, `E${index + 1}`)} · {textValue(citation.relative_path)}:
-                {textValue(citation.start_line)}-{textValue(citation.end_line)}
-              </span>
-            )
-          })}
-        </div>
-      )}
-      <span className="result-meta">
-        生效模型：{textValue(result.model, '未返回')} · Router：{textValue(result.router_model, '未返回')}
-      </span>
-      <span className="result-meta">
-        本轮 cache read/miss：{textValue(observability.cache_read_tokens, '0')} /{' '}
-        {textValue(observability.cache_miss_tokens, '0')} · 命中率：
-        {(Number(observability.cache_hit_ratio || 0) * 100).toFixed(1)}%
-      </span>
+      <details className="chat-details">
+        <summary>查看本轮证据与运行详情</summary>
+        {citations.length > 0 && (
+          <div className="citation-chips" aria-label="回答引用">
+            {citations.map((item, index) => {
+              const citation = (item || {}) as Record<string, unknown>
+              return (
+                <span className="citation-chip" key={`${textValue(citation.evidence_id)}-${index}`}>
+                  {textValue(citation.evidence_id, `E${index + 1}`)} · {textValue(citation.relative_path)}:
+                  {textValue(citation.start_line)}-{textValue(citation.end_line)}
+                </span>
+              )
+            })}
+          </div>
+        )}
+        <span className="result-meta">
+          生效模型：{textValue(result.model, '未返回')} · Router：{textValue(result.router_model, '未返回')}
+        </span>
+        <span className="result-meta">
+          本轮 cache read/miss：{textValue(observability.cache_read_tokens, '0')} /{' '}
+          {textValue(observability.cache_miss_tokens, '0')} · 命中率：
+          {(Number(observability.cache_hit_ratio || 0) * 100).toFixed(1)}%
+        </span>
+      </details>
     </div>
   )
 }
@@ -372,6 +403,7 @@ function App() {
           </p>
           <div className="control-note">
             <strong>同一 Session 的两条路径</strong>
+            <span>普通聊天 → 自然语言回答，不访问仓库</span>
             <span>代码理解 → 只读检索与引用回答</span>
             <span>修改请求 → MCP 探索 → diff 预览 → 用户审批 → 隔离校验</span>
           </div>

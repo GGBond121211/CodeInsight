@@ -181,7 +181,7 @@ export interface ChatTurnResponse {
   turn_id: string
   session_id: string
   run_id: string
-  task_type: 'explain' | 'change'
+  task_type: 'general_chat' | 'clarify' | 'explain' | 'change'
   status: 'QUEUED' | 'RUNNING' | 'WAITING_APPROVAL' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
   user_message: string
   assistant_message: string | null
