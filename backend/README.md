@@ -1,6 +1,6 @@
 # CodeInsight 后端
 
-后端对外提供 `auto-answer` 和统一 `chat` 两个业务入口，并提供用量观测与变更闭环接口。一次问答先经过 Router，由它整理并拆分问题，再选择内部 linear 或 LangGraph Agent 引擎；统一 chat 在同一 Session 内保留多轮上下文，并按任务类型进入解释或变更路径。原来的 `search`、`answer` 和 `agent-answer` 仍供 Auto Answer 内部复用，但对应的 HTTP 路由和 CLI 命令已经停用。
+后端对外提供 `auto-answer` 和统一 `chat` 两个业务入口，并提供用量观测与变更闭环接口。统一 chat 先在业务编排层把本轮请求分为 `general_chat`、`clarify`、`explain` 或 `change`，再进入对应路线；同一 Session 内保留多轮上下文，普通聊天不会被强制套用代码回答的 JSON 协议。原来的 `search`、`answer` 和 `agent-answer` 仍供 Auto Answer 内部复用，但对应的 HTTP 路由和 CLI 命令已经停用。
 
 检索链是 `BM25 + semantic → RRF/代码感知 reranker`。AST-BM25、graph-BM25 以及相关的 AST 分块、静态调用图和运行脚本已经删除。语义索引缓存在本地 JSON 中，没改过的文件可以直接复用向量。一次请求只加载或构建一个 SemanticIndex，供所有子问题使用；候选、重排结果和证据覆盖仍按子问题分开保存。
 
@@ -48,6 +48,8 @@ HTTP 当前注册：
 - `GET /api/v1/usage/calls`
 - `/api/v2/chat/*` 多轮对话、SSE 事件和审批接口
 - `/api/v2/change/*` 变更预览、审批、应用、校验、回滚和事件接口
+
+Chat 响应中 `assistant_message` 是唯一的自然语言正文；`result` 只保留路线、引用、模型、Router、usage、缓存和 Change 详情。`general_chat` 通过 Gateway 的 `general-chat` scene 调用文本模型，不发送 `response_format=json_object`；`clarify` 不调用仓库检索或修改工具。这样前端可以把运行详情展示在折叠面板里，同时不会把同一答案渲染两次。
 
 ## 验证
 

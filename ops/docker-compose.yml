@@ -5,13 +5,17 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: codeinsight-api:2.0.2-local
+    image: codeinsight-api:2.0.3-local
     restart: unless-stopped
     ports:
       - "127.0.0.1:18000:8000"
     env_file:
       - .env.example
     environment:
+      CODEINSIGHT_ENV: development
+      CODEINSIGHT_DEV_MODE: "1"
+      CODEINSIGHT_DEV_AUTO_APPROVE: "1"
+      CODEINSIGHT_DEV_SKIP_SANDBOX_VALIDATION: "1"
       CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
       CODEINSIGHT_MYSQL_HOST: mysql
       CODEINSIGHT_REDIS_URL: redis://redis:6379/0
@@ -31,7 +35,7 @@ services:
         condition: service_healthy
 
   gateway-a:
-    image: codeinsight-api:2.0.2-local
+    image: codeinsight-api:2.0.3-local
     restart: unless-stopped
     environment:
       CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
@@ -43,7 +47,7 @@ services:
       retries: 12
 
   gateway-b:
-    image: codeinsight-api:2.0.2-local
+    image: codeinsight-api:2.0.3-local
     restart: unless-stopped
     environment:
       CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
@@ -68,7 +72,7 @@ services:
         condition: service_healthy
 
   worker:
-    image: codeinsight-api:2.0.2-local
+    image: codeinsight-api:2.0.3-local
     restart: unless-stopped
     env_file:
       - .env.example

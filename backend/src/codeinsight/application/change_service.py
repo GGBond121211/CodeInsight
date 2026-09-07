@@ -52,6 +52,7 @@ from codeinsight.infrastructure.run_store import (
     ApprovalNotFoundError,
     InMemoryApprovalStore,
 )
+from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.infrastructure.sandbox import (
     DockerSandbox,
     SandboxCleanupError,
@@ -134,6 +135,7 @@ class ChangeService:
         approval_store: InMemoryApprovalStore | None = None,
         state_dir: str | Path | None = None,
         event_sink: Callable[[RunEvent], None] | None = None,
+        development_policy: DevelopmentPolicy | None = None,
     ) -> None:
         self.workspaces = workspace_manager or WorkspaceManager()
         self.sandbox = sandbox or DockerSandbox()
@@ -142,6 +144,7 @@ class ChangeService:
         self.approvals = approval_store or PersistentApprovalStore(root)
         self.events = PersistentEventLog(root)
         self.audit = PersistentAuditLog(root)
+        self.development_policy = development_policy or DevelopmentPolicy.from_environment()
         self._proposals: dict[tuple[str, str], _Proposal] = {}
         self._results: dict[str, ChangeResult] = {}
         self._cancelled: set[str] = set()
@@ -239,6 +242,13 @@ class ChangeService:
     def preflight_validation(self, profile: str) -> SandboxPreflightResult:
         """在模型生成补丁前确认固定校验环境可用。"""
         get_validation_profile(profile)
+        if self.development_policy.skip_sandbox_validation:
+            return SandboxPreflightResult(
+                profile,
+                True,
+                "DEV_MODE_VALIDATION_SKIPPED",
+                "开发模式已显式跳过 Docker 固定校验",
+            )
         checker = getattr(self.sandbox, "preflight", None)
         if not callable(checker):
             # 测试替身和外部注入的 Sandbox 仍由其 run() 契约负责校验。
@@ -248,11 +258,33 @@ class ChangeService:
             raise TypeError("Sandbox preflight 必须返回 SandboxPreflightResult")
         return result
 
-    def approve(self, run_id: str, patch_id: str, *, expires_in_seconds: int = 300) -> str:
+    def approve(
+        self,
+        run_id: str,
+        patch_id: str,
+        *,
+        expires_in_seconds: int = 300,
+        actor: str = "user",
+        source: str = "user",
+    ) -> str:
         with self._lock:
-            return self._approve(run_id, patch_id, expires_in_seconds=expires_in_seconds)
+            return self._approve(
+                run_id,
+                patch_id,
+                expires_in_seconds=expires_in_seconds,
+                actor=actor,
+                source=source,
+            )
 
-    def _approve(self, run_id: str, patch_id: str, *, expires_in_seconds: int) -> str:
+    def _approve(
+        self,
+        run_id: str,
+        patch_id: str,
+        *,
+        expires_in_seconds: int,
+        actor: str,
+        source: str,
+    ) -> str:
         proposal = self._proposal(run_id, patch_id)
         validate_change_set_base(
             self._proposal_base(proposal), proposal.artifact, proposal.base_fingerprints
@@ -269,22 +301,29 @@ class ChangeService:
             expires_at_epoch_ms=_now_ms() + expires_in_seconds * 1000,
         )
         self.approvals.issue(approval)
-        self._emit(run_id, APPROVAL_REQUESTED, {"patch_id": patch_id})
+        self._emit(run_id, APPROVAL_REQUESTED, {"patch_id": patch_id, "source": source})
         self._emit(
             run_id,
             APPROVAL_GRANTED,
-            {"patch_id": patch_id, "scope_count": str(len(proposal.artifact.touched_files))},
+            {
+                "patch_id": patch_id,
+                "scope_count": str(len(proposal.artifact.touched_files)),
+                "source": source,
+            },
         )
         self.audit.record(
             AuditRecord(
                 audit_id=f"audit-{uuid4().hex[:16]}",
                 run_id=run_id,
                 event_type=APPROVAL_GRANTED,
-                actor="user",
+                actor=actor,
                 occurred_at_epoch_ms=_now_ms(),
                 subject=patch_id,
                 outcome="granted",
-                details={"scope_count": str(len(proposal.artifact.touched_files))},
+                details={
+                    "scope_count": str(len(proposal.artifact.touched_files)),
+                    "source": source,
+                },
             )
         )
         return token
@@ -360,25 +399,55 @@ class ChangeService:
             self._emit(
                 run_id,
                 VALIDATION_STARTED,
-                {"profile": proposal.preview.validation_profile},
-            )
-            expected_tree = fingerprint_artifact(managed.run.workspace_path)
-            checked = self.sandbox.run(
-                proposal.preview.validation_profile, managed.run.workspace_path
-            )
-            self._emit(
-                run_id,
-                VALIDATION_FINISHED,
                 {
                     "profile": proposal.preview.validation_profile,
-                    "passed": str(checked.passed).lower(),
+                    "mode": (
+                        "development_skipped"
+                        if self.development_policy.skip_sandbox_validation
+                        else "docker"
+                    ),
                 },
             )
+            expected_tree = fingerprint_artifact(managed.run.workspace_path)
+            if self.development_policy.skip_sandbox_validation:
+                validation = self._skipped_validation_payload(
+                    proposal.preview.validation_profile
+                )
+                self._emit(
+                    run_id,
+                    VALIDATION_FINISHED,
+                    {
+                        "profile": proposal.preview.validation_profile,
+                        "passed": "skipped",
+                        "skipped": "true",
+                    },
+                )
+            else:
+                checked = self.sandbox.run(
+                    proposal.preview.validation_profile, managed.run.workspace_path
+                )
+                self._emit(
+                    run_id,
+                    VALIDATION_FINISHED,
+                    {
+                        "profile": proposal.preview.validation_profile,
+                        "passed": str(checked.passed).lower(),
+                    },
+                )
+                validation = self._validation_payload(checked, run_id)
             if fingerprint_artifact(managed.run.workspace_path) != expected_tree:
                 raise ChangeRequestError("检查程序修改了批准范围之外或批准后的产物")
-            validation = self._validation_payload(checked, run_id)
             self._store_validation(run_id, validation)
-            if not checked.passed:
+            if validation.get("skipped"):
+                result = self._result(
+                    proposal,
+                    managed.run.workspace_id,
+                    checkpoint.checkpoint_id,
+                    "COMPLETED",
+                    "开发模式已应用修改，但跳过了 Docker 固定校验；上线前必须关闭开发模式。",
+                    validation,
+                )
+            elif not bool(validation["passed"]):
                 result = self._result(
                     proposal,
                     managed.run.workspace_id,
@@ -465,29 +534,56 @@ class ChangeService:
         self._emit(
             event_id,
             VALIDATION_STARTED,
-            {"profile": proposal.preview.validation_profile, "retry": "true"},
-        )
-        checked = self.sandbox.run(
-            proposal.preview.validation_profile, managed.run.workspace_path
-        )
-        self._emit(
-            event_id,
-            VALIDATION_FINISHED,
             {
                 "profile": proposal.preview.validation_profile,
-                "passed": str(checked.passed).lower(),
                 "retry": "true",
+                "mode": (
+                    "development_skipped"
+                    if self.development_policy.skip_sandbox_validation
+                    else "docker"
+                ),
             },
         )
-        validation = self._validation_payload(checked, run_id)
+        if self.development_policy.skip_sandbox_validation:
+            validation = self._skipped_validation_payload(
+                proposal.preview.validation_profile
+            )
+            self._emit(
+                event_id,
+                VALIDATION_FINISHED,
+                {
+                    "profile": proposal.preview.validation_profile,
+                    "passed": "skipped",
+                    "skipped": "true",
+                    "retry": "true",
+                },
+            )
+        else:
+            checked = self.sandbox.run(
+                proposal.preview.validation_profile, managed.run.workspace_path
+            )
+            self._emit(
+                event_id,
+                VALIDATION_FINISHED,
+                {
+                    "profile": proposal.preview.validation_profile,
+                    "passed": str(checked.passed).lower(),
+                    "retry": "true",
+                },
+            )
+            validation = self._validation_payload(checked, run_id)
         self._store_validation(run_id, validation)
-        if checked.passed:
+        if validation.get("skipped") or bool(validation["passed"]):
             result = self._result(
                 proposal,
                 managed.run.workspace_id,
                 managed.run.latest_checkpoint.checkpoint_id,
                 "COMPLETED",
-                None,
+                (
+                    "开发模式已完成修改，但跳过了 Docker 固定校验；上线前必须关闭开发模式。"
+                    if validation.get("skipped")
+                    else None
+                ),
                 validation,
             )
         else:
@@ -679,8 +775,10 @@ class ChangeService:
         self._results[f"{result.run_id}:{result.patch_id}"] = result
 
     def _store_validation(self, run_id: str, payload: dict[str, object]) -> None:
+        skipped = bool(payload.get("skipped", False))
+        passed = bool(payload.get("passed", False))
         digest = None
-        if not bool(payload["passed"]):
+        if not passed and not skipped:
             digest = TestFailureDigest(
                 str(payload["failure_digest_id"]),
                 run_id,
@@ -693,8 +791,9 @@ class ChangeService:
             run_id,
             str(payload["profile"]),
             tuple(str(item) for item in payload["commands"]),
-            bool(payload["passed"]),
+            passed,
             digest,
+            skipped,
         )
         self.state.put(
             "validations",
@@ -705,6 +804,7 @@ class ChangeService:
                 "profile": validation.profile,
                 "commands": list(validation.commands),
                 "passed": validation.passed,
+                "skipped": validation.skipped,
                 "digest": (
                     {
                         "digest_id": digest.digest_id,
@@ -772,6 +872,7 @@ class ChangeService:
             "profile": result.profile,
             "commands": list(result.commands),
             "passed": result.passed,
+            "skipped": False,
         }
         if not result.passed:
             digest = TestFailureDigest(
@@ -789,6 +890,16 @@ class ChangeService:
                 }
             )
         return payload
+
+    def _skipped_validation_payload(self, profile: str) -> dict[str, object]:
+        return {
+            "profile": profile,
+            "commands": [],
+            "passed": None,
+            "skipped": True,
+            "reason": "CODEINSIGHT_DEV_SKIP_SANDBOX_VALIDATION",
+            "development_mode": self.development_policy.as_dict(),
+        }
 
     def _emit(self, run_id: str, event_type: str, payload: dict[str, str]) -> None:
         event = RunEvent(

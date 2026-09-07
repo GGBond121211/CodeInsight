@@ -39,7 +39,7 @@ spec:
         runAsUser: 10001
       containers:
         - name: api
-          image: codeinsight-api:2.0.2-local
+          image: codeinsight-api:2.0.3-local
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "uvicorn", "codeinsight.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
           ports: [{name: http, containerPort: 8000}]
@@ -77,7 +77,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 10001}
       containers:
         - name: gateway
-          image: codeinsight-api:2.0.2-local
+          image: codeinsight-api:2.0.3-local
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "uvicorn", "codeinsight.infrastructure.gateway_server:app", "--host", "0.0.0.0", "--port", "8010"]
           ports: [{name: http, containerPort: 8010}]
@@ -103,7 +103,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 10001}
       containers:
         - name: gateway
-          image: codeinsight-api:2.0.2-local
+          image: codeinsight-api:2.0.3-local
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "uvicorn", "codeinsight.infrastructure.gateway_server:app", "--host", "0.0.0.0", "--port", "8010"]
           ports: [{name: http, containerPort: 8010}]
@@ -152,7 +152,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 10001}
       containers:
         - name: worker
-          image: codeinsight-api:2.0.2-local
+          image: codeinsight-api:2.0.3-local
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "celery", "-A", "codeinsight.agent.worker_tasks.celery_app", "worker", "--pool=solo", "--loglevel=INFO"]
           env:

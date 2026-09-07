@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
@@ -11,6 +12,7 @@ from codeinsight.application.change_service import ChangeService
 from codeinsight.domain.answer import ModelCompletion
 from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.infrastructure.reranker import RerankResult
+from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.infrastructure.sandbox import SandboxPreflightResult, SandboxResult
 from codeinsight.infrastructure.workspace import WorkspaceManager
 
@@ -22,6 +24,7 @@ class FakeChatModel:
 
     def __init__(self) -> None:
         self.prompts: list[str] = []
+        self.text_prompts: list[str] = []
 
     def complete(self, _system_prompt: str, user_prompt: str) -> ModelCompletion:
         self.prompts.append(user_prompt)
@@ -42,6 +45,12 @@ class FakeChatModel:
             reasoning_content="正在根据证据组织回答",
         )
 
+    def complete_text(self, _system_prompt: str, user_prompt: str) -> ModelCompletion:
+        self.text_prompts.append(user_prompt)
+        return ModelCompletion(
+            "你好！我是 CodeInsight，可以帮你理解和修改代码。", self.model, 10, 6
+        )
+
 
 class FakeEmbedding:
     def embed(self, texts):
@@ -54,7 +63,11 @@ class FakeReranker:
 
 
 def _wait_for_terminal(client: TestClient, turn_id: str) -> dict:
-    for _ in range(100):
+    # The chat worker is intentionally asynchronous; GitHub-hosted runners can
+    # take longer than the local fast path while starting the next session turn.
+    # Keep polling bounded, but do not turn normal runner scheduling into a
+    # false product failure.
+    for _ in range(500):
         payload = client.get(f"/api/v2/chat/turns/{turn_id}").json()
         if payload["status"] in {"COMPLETED", "FAILED", "WAITING_APPROVAL"}:
             return payload
@@ -90,6 +103,8 @@ def test_chat_turns_stream_reasoning_and_restore_multi_turn_context() -> None:
     assert accepted.status_code == 202
     first = _wait_for_terminal(client, accepted.json()["turn_id"])
     assert first["status"] == "COMPLETED"
+    assert first["task_type"] == "explain"
+    assert "answer" not in first["result"]
     assert first["reasoning_available"] is True
 
     events = client.get(
@@ -149,6 +164,182 @@ def test_chat_turns_stream_reasoning_and_restore_multi_turn_context() -> None:
     ]
 
 
+def test_general_chat_uses_text_route_without_repository_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = FakeChatModel()
+
+    class ExplodingEmbedding:
+        def __init__(self) -> None:
+            raise AssertionError("普通对话不应创建 embedding 模型")
+
+    client = TestClient(
+        create_app(
+            lambda: model,
+            ExplodingEmbedding,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
+    )
+    session_id = client.post(
+        "/api/v2/chat/sessions", json={"repository_root": str(FIXTURE_ROOT)}
+    ).json()["session_id"]
+
+    def fail_if_repository_is_scanned(_root):
+        raise AssertionError("Session 已绑定后，普通对话不应重新扫描仓库")
+
+    monkeypatch.setattr(
+        "codeinsight.application.conversation_service.scan_repository",
+        fail_if_repository_is_scanned,
+    )
+
+    accepted = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(FIXTURE_ROOT),
+            "message": "你好",
+        },
+    )
+    result = _wait_for_terminal(client, accepted.json()["turn_id"])
+
+    assert result["status"] == "COMPLETED"
+    assert result["task_type"] == "general_chat"
+    assert result["assistant_message"] == "你好！我是 CodeInsight，可以帮你理解和修改代码。"
+    assert result["result"]["kind"] == "general_chat"
+    assert "answer" not in result["result"]
+    assert model.text_prompts
+    events = client.get(f"/api/v2/chat/turns/{result['turn_id']}/events")
+    assert "event: retrieval_started" not in events.text
+    assert "event: answer_ready" in events.text
+
+
+def test_scope_redirect_is_natural_but_does_not_call_model() -> None:
+    model = FakeChatModel()
+    model_factory_calls = 0
+
+    def model_factory():
+        nonlocal model_factory_calls
+        model_factory_calls += 1
+        return model
+
+    class ExplodingEmbedding:
+        def __init__(self) -> None:
+            raise AssertionError("范围引导不应创建 embedding 模型")
+
+    client = TestClient(
+        create_app(
+            model_factory,
+            ExplodingEmbedding,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
+    )
+    session_id = client.post(
+        "/api/v2/chat/sessions", json={"repository_root": str(FIXTURE_ROOT)}
+    ).json()["session_id"]
+
+    accepted = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(FIXTURE_ROOT),
+            "message": "我喜欢打篮球",
+        },
+    )
+    result = _wait_for_terminal(client, accepted.json()["turn_id"])
+
+    assert result["status"] == "COMPLETED"
+    assert result["task_type"] == "scope_redirect"
+    assert result["result"] == {
+        "kind": "scope_redirect",
+        "outcome": "redirected",
+        "route": "scope_redirect",
+        "reason": "out_of_scope",
+        "model_called": False,
+        "prompt_version": "scope-redirect-v1",
+    }
+    assert "CodeInsight" in result["assistant_message"]
+    assert "workflow.py" in result["assistant_message"]
+    assert model_factory_calls == 0
+    assert not model.text_prompts
+    assert not model.prompts
+
+    events = client.get(f"/api/v2/chat/turns/{result['turn_id']}/events")
+    assert '"kind": "scope_redirect"' in events.text
+    assert '"model_called": "false"' in events.text
+
+
+def test_ambiguous_chat_turn_returns_clarification_without_model_call() -> None:
+    model = FakeChatModel()
+
+    class ExplodingEmbedding:
+        def __init__(self) -> None:
+            raise AssertionError("澄清轮次不应创建 embedding 模型")
+
+    client = TestClient(
+        create_app(
+            lambda: model,
+            ExplodingEmbedding,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
+    )
+    session_id = client.post(
+        "/api/v2/chat/sessions", json={"repository_root": str(FIXTURE_ROOT)}
+    ).json()["session_id"]
+
+    accepted = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(FIXTURE_ROOT),
+            "message": "这个怎么样",
+        },
+    )
+    result = _wait_for_terminal(client, accepted.json()["turn_id"])
+
+    assert result["status"] == "COMPLETED"
+    assert result["task_type"] == "clarify"
+    assert result["result"]["kind"] == "clarify"
+    assert "还不能确定" in result["assistant_message"]
+    assert not model.prompts
+    assert not model.text_prompts
+
+
+def test_active_code_goal_keeps_pronoun_followup_on_code_route() -> None:
+    model = FakeChatModel()
+    client = TestClient(
+        create_app(
+            lambda: model,
+            FakeEmbedding,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
+    )
+    session_id = client.post(
+        "/api/v2/chat/sessions", json={"repository_root": str(FIXTURE_ROOT)}
+    ).json()["session_id"]
+
+    first = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(FIXTURE_ROOT),
+            "message": "checkout 如何校验输入？",
+        },
+    )
+    _wait_for_terminal(client, first.json()["turn_id"])
+    second = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(FIXTURE_ROOT),
+            "message": "这个怎么样",
+        },
+    )
+    result = _wait_for_terminal(client, second.json()["turn_id"])
+
+    assert result["task_type"] == "explain"
+    assert result["status"] == "COMPLETED"
+
+
 class PassingSandbox:
     def run(self, profile, workspace_path):
         return SandboxResult(profile, ("python -m compileall -q .",), True)
@@ -172,6 +363,16 @@ class RetryableSandbox:
                 "docker_engine: Access is denied",
             )
         return SandboxResult(profile, ("python -m compileall -q .",), True)
+
+
+class DevModeUnavailableSandbox:
+    def preflight(self, profile):
+        return SandboxPreflightResult(
+            profile, False, "SANDBOX_PERMISSION_DENIED", "docker_engine: Access is denied"
+        )
+
+    def run(self, profile, workspace_path):
+        raise AssertionError("开发模式跳过 Sandbox 后不应调用 run")
 
 
 class FakeChangeModel:
@@ -227,7 +428,12 @@ def test_change_turn_stops_at_preview_until_chat_approval(tmp_path: Path) -> Non
     )
     model = FakeChangeModel()
     client = TestClient(
-        create_app(lambda: model, FakeEmbedding, changes)  # type: ignore[arg-type]
+        create_app(
+            lambda: model,
+            FakeEmbedding,
+            changes,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
     )
     session_id = client.post(
         "/api/v2/chat/sessions", json={"repository_root": str(repo)}
@@ -301,6 +507,50 @@ def test_change_turn_stops_at_preview_until_chat_approval(tmp_path: Path) -> Non
     assert (effective_root / "app.py").read_text(encoding="utf-8") == "value = 2\n"
 
 
+def test_development_mode_auto_approves_change_and_marks_validation_skipped(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source_file = repo / "app.py"
+    source_file.write_text("value = 1\n", encoding="utf-8")
+    changes = ChangeService(
+        workspace_manager=WorkspaceManager(tmp_path / "managed"),
+        sandbox=DevModeUnavailableSandbox(),
+        development_policy=DevelopmentPolicy("development", True, True, True),
+    )
+    client = TestClient(
+        create_app(
+            lambda: FakeChangeModel(),
+            FakeEmbedding,
+            changes,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
+    )
+    session_id = client.post(
+        "/api/v2/chat/sessions", json={"repository_root": str(repo)}
+    ).json()["session_id"]
+
+    accepted = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(repo),
+            "message": "把 value 修改成 2",
+        },
+    )
+    result = _wait_for_terminal(client, accepted.json()["turn_id"])
+
+    assert result["status"] == "COMPLETED"
+    assert result["result"]["kind"] == "change_result"
+    assert result["result"]["validation"]["skipped"] is True
+    assert "开发模式" in result["assistant_message"]
+    assert source_file.read_text(encoding="utf-8") == "value = 1\n"
+    events = client.get(f"/api/v2/chat/turns/{result['turn_id']}/events")
+    assert '"source": "dev_mode"' in events.text
+    assert '"passed": "skipped"' in events.text
+
+
 def test_continue_after_sandbox_failure_retries_validation_without_duplicate_patch(
     tmp_path: Path,
 ) -> None:
@@ -315,7 +565,12 @@ def test_continue_after_sandbox_failure_retries_validation_without_duplicate_pat
     )
     model = FakeChangeModel()
     client = TestClient(
-        create_app(lambda: model, FakeEmbedding, changes)  # type: ignore[arg-type]
+        create_app(
+            lambda: model,
+            FakeEmbedding,
+            changes,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
     )
     session_id = client.post(
         "/api/v2/chat/sessions", json={"repository_root": str(repo)}

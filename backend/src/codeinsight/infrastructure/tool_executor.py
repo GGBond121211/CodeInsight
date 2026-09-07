@@ -65,7 +65,13 @@ class ToolExecutor:
                 return self._get_diff(call)
             return ToolResult.failure(call.id, call.name, "VALIDATION", "工具没有执行实现")
         except FileNotFoundError:
-            return ToolResult.failure(call.id, call.name, "NOT_FOUND", "目标不存在")
+            message = "目标不存在"
+            if call.name in {"read_file", "generate_patch"}:
+                message = (
+                    "目标不存在；path 必须相对于已绑定的仓库根目录，"
+                    "例如 src/app.py，不要重复仓库目录前缀；请改用 search_repository 找到实际路径。"
+                )
+            return ToolResult.failure(call.id, call.name, "NOT_FOUND", message)
         except TimeoutError:
             return ToolResult.failure(call.id, call.name, "TIMEOUT", "工具执行超时")
         except PermissionError:
@@ -211,7 +217,20 @@ class ToolExecutor:
         )
 
     def _safe_relative_path(self, value: str) -> str:
-        return safe_relative_path(value)
+        normalized = value.replace("\\", "/")
+        root_text = self.root.as_posix().rstrip("/")
+        if normalized == root_text or normalized.startswith(f"{root_text}/"):
+            try:
+                normalized = Path(normalized).resolve().relative_to(self.root).as_posix()
+            except ValueError as error:
+                raise PermissionError("路径必须位于仓库根目录内") from error
+        else:
+            marker = f"/{self.root.name}/"
+            if marker in normalized:
+                normalized = normalized.split(marker, 1)[1]
+            elif normalized.startswith(f"{self.root.name}/"):
+                normalized = normalized[len(self.root.name) + 1 :]
+        return safe_relative_path(normalized)
 
     def _safe_path(self, relative: str) -> Path:
         return safe_path(self.root, relative)

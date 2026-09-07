@@ -9,13 +9,27 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 ```text
 用户问题 → QueryPlan → 代码检索 → 独立证据 → 回答生成 → 文件与行号引用
 ```
-当前正式发布版本为 `2.0.2`，对外提供 Auto Answer、统一多轮对话、代码变更闭环和本地用量观测能力。Gateway 的用量、缓存与 Tool Loop 生命周期通过独立的本地观测端点提供，不改变回答接口的证据边界。
+当前正式发布版本为 `2.0.3`，对外提供 Auto Answer、统一多轮对话、代码变更闭环、本地用量观测和自然范围引导能力。
 
 ## 2.0 当前发布边界
 
-`2.0.2` 是正式 Release，不是 pre-release。它汇总了 v2.0.1 之后已经在本地完成的 dashboard、统一对话、上下文续聊、代码变更门禁、Sandbox 校验、模型/缓存观测和相关测试修复。真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验仍不在本版本承诺内。
+`2.0.3` 是正式 Release，不是 pre-release。它在 v2.0.2 基础上补齐了普通聊天与业务范围边界、自然引导、开发调试策略和统一对话回归验证。真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验仍不在本版本承诺内。
 
 当前公开能力见 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)，最小演示见 [`docs/DEMO.md`](docs/DEMO.md)，验收摘要见 [`docs/EVALUATION_SUMMARY.md`](docs/EVALUATION_SUMMARY.md)。
+
+## 2.0.3 Conversation 能力
+
+统一 `/api/v2/chat/*` 入口先由业务编排层决定本轮任务，再选择执行路线：
+
+| 任务类型 | 处理方式 | 用户可见结果 |
+| --- | --- | --- |
+| `general_chat` | Session 上下文 + 普通文本 Prompt + Gateway | 一份自然语言 `assistant_message` |
+| `scope_redirect` | 确定性范围引导，不调用模型、不访问仓库 | 自然承接后引导回代码任务 |
+| `explain` | Query Router + BM25/semantic/Rerank + 证据回答 | 一份代码解释，引用和用量在详情中 |
+| `change` | Tool Loop + diff 预览 + approval + 隔离校验 | 修改结果或等待审批，不越过既有门禁 |
+| `clarify` | 返回可执行的澄清问题 | 不扫描仓库、不调用修改工具 |
+
+`general_chat` 不再被强制套用代码问答的 JSON response format；已绑定 Session 后，普通聊天和澄清也不会重新扫描仓库。代码回答的自然语言正文只放在 `assistant_message`，`result` 只保留 `kind`、引用、模型、Router、缓存、usage 和变更详情，避免前端把同一答案显示两次。普通聊天仍通过同一个 Gateway，因此模型、降级链、延迟和缓存字段可以和代码路径统一观测。
 
 我目前专注于项目的后端开发，重点是 Python、FastAPI、RAG、检索评测和 LangGraph 工作流。React 前端只用于把后端能力做成一个可以操作的本地演示页面，主要由 Codex 辅助完成；我负责前后端 HTTP API 的边界、接口联调和整体运行流程，不把这个项目当作前端能力展示。
 
@@ -60,6 +74,17 @@ flowchart TD
     MERGE --> CITATIONS["经过校验的文件与行号引用"]
 ```
 
+Conversation 的业务编排位于同一 API 入口之后：
+
+```text
+用户消息 → Session 恢复 → 意图分类
+                     ├─ general_chat → 普通文本模型 → assistant_message
+                     ├─ scope_redirect → 范围引导模板 → assistant_message
+                     ├─ clarify     → 澄清回答
+                     ├─ explain     → Query Router → 检索/证据 → assistant_message
+                     └─ change      → Tool Loop → diff/approval/Sandbox
+```
+
 语义索引以 JSON 缓存在操作系统的本地目录里，不会写进被分析的仓库。没改过的文件可以复用已有向量；Embedding 模型或切块配置改变时，系统会使用新的缓存身份。
 
 ## 目前能做什么
@@ -77,7 +102,9 @@ flowchart TD
 - 代码变更链路支持 Tool Loop 生成多文件 Patch、显式审批、隔离 workspace、固定 pytest Sandbox、检查失败后最多两次重新审批的有限修复，以及异常整体回滚；原仓库不直接写入。
 - Workspace、Checkpoint、Approval、ValidationRun、事件和结果可在本地进程重启后恢复；这是本地作品集的持久闭环，不等同于多写者数据库或跨区域高可用。
 - 提供 Celery/Redis 固定检查 Worker、公开 Run 事件、OTel span 和 Prometheus 指标端点；Fake Provider 故障测试不作为模型质量结论。
-- 提供 `auto-answer` CLI、FastAPI 和 React 页面；`change-demo` 是无模型的隔离变更契约演示。
+- 提供 `auto-answer` CLI、FastAPI 和 React Conversation 页面；同一 Session 可交错普通聊天、代码理解和修改，`clarify` 不会强行进入代码检索。
+- Conversation 前端只展示一份 `assistant_message`；代码引用、模型/降级链、缓存、usage、事件和 reasoning 位于可展开的运行详情中。业务外闲聊进入 `scope_redirect`，保留 Session 但不调用模型或仓库工具。
+- 提供 `change-demo` 无模型的隔离变更契约演示。
 - 提供离线单元测试、集成测试和可复现的评测资产。
 
 ## 本地运行
@@ -114,6 +141,25 @@ $env:CODEINSIGHT_EMBEDDING_BASE_URL="<openai-compatible-embedding-url>"
 阻塞原因。若已批准补丁只是因为 Sandbox 临时故障而进入 `REVIEW_REQUIRED`，同一 Session
 输入“继续”会重新校验已有隔离 workspace，不会重复生成相同补丁。
 
+### 本地开发调试模式
+
+当前 2.0.3 开发栈可以显式打开两个只面向本地调试的便利开关：自动确认修改预览，
+以及在 Docker 校验环境不可用时跳过固定校验；修改探索会放宽为 12 步、96 次工具调用、
+同类工具错误 5 次，但仍有 120 秒总 deadline。它们不会关闭隔离 workspace、路径与基线
+校验、补丁范围限制、检查产物指纹、危险工具拦截或敏感文件过滤；跳过校验也会在结果中
+明确标记为“未执行”，不会伪装成校验通过。
+
+```powershell
+$env:CODEINSIGHT_ENV="development"
+$env:CODEINSIGHT_DEV_MODE="1"
+$env:CODEINSIGHT_DEV_AUTO_APPROVE="1"
+$env:CODEINSIGHT_DEV_SKIP_SANDBOX_VALIDATION="1"
+```
+
+`ops/docker-compose.yml` 已将这组开关配置为本地开发栈默认值；正式部署必须设置
+`CODEINSIGHT_ENV=production`，生产环境会强制关闭这些开关，即使环境变量误带过去也不会
+自动审批或跳过校验。关闭开发模式后，原来的人工审批和 Docker 固定校验流程自动恢复。
+
 ### 2. 启动本地依赖
 
 ```powershell
@@ -143,6 +189,8 @@ docker compose -f ops/docker-compose.yml ps
 - 当前 CD 不会在没有集群和环境审批的情况下部署到云端。
 
 工作流文件位于 `.github/workflows/ci.yml` 和 `.github/workflows/cd.yml`。
+
+版本分支、主工作树和临时 worktree 的生命周期规则见 [`CONTRIBUTING.md`](CONTRIBUTING.md) 的“分支与工作树生命周期”。
 
 ### 3. 启动后端
 

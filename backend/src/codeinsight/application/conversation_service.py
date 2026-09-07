@@ -12,11 +12,12 @@ import inspect
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
 from codeinsight.agent.change_workflow import run_change_workflow_to_preview
+from codeinsight.agent.tool_loop import ToolLoopConfig
 from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.conversation_router import (
@@ -24,6 +25,10 @@ from codeinsight.application.conversation_router import (
     classify_chat_task,
 )
 from codeinsight.application.query_router import QueryRouterResult, route_question
+from codeinsight.application.scope_redirect import (
+    SCOPE_REDIRECT_VERSION,
+    build_scope_redirect_message,
+)
 from codeinsight.application.session_service import SessionContext, SessionService
 from codeinsight.domain.agent import AgentRepositoryAnswer
 from codeinsight.domain.answer import AutoAnswer, AutoAnswerEvent, SubQuestionAnswer
@@ -57,6 +62,7 @@ from codeinsight.infrastructure.model_gateway import CacheContext
 from codeinsight.infrastructure.redaction import redact_sensitive
 from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.infrastructure.run_store import InMemorySessionStore
+from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.ingestion.scanner import scan_repository
 
 INDEX_VERSION = "conversation-scan-v1"
@@ -108,6 +114,12 @@ class ConversationService:
         self._embedding_factory = embedding_factory
         self._reranker_factory = reranker_factory
         self.change_service = change_service
+        selected_policy = getattr(change_service, "development_policy", None)
+        self.development_policy = (
+            selected_policy
+            if isinstance(selected_policy, DevelopmentPolicy)
+            else DevelopmentPolicy.from_environment()
+        )
         self.session_service = session_service or SessionService(
             InMemorySessionStore(),
             InMemoryMemoryStore(),
@@ -169,7 +181,9 @@ class ConversationService:
         if not message.strip():
             raise ValueError("message 不能为空")
         root, repo_id, repo_fingerprint, contains_workspace_state = (
-            self._resolve_session_repository(session_id, repository_root)
+            self._resolve_session_repository(
+                session_id, repository_root, refresh_fingerprint=False
+            )
         )
         if client_turn_id is not None:
             with self._client_turn_lock:
@@ -179,7 +193,7 @@ class ConversationService:
                     if existing_input is not None and existing_input.repo_id != repo_id:
                         raise ValueError("client_turn_id 不能跨仓库复用")
                     return self.runtime.get_turn(existing.turn_id)
-        self.session_service.get_or_create_session(
+        context = self.session_service.get_or_create_session(
             session_id=session_id,
             scope=TenantScope(),
             repo_id=repo_id,
@@ -187,7 +201,10 @@ class ConversationService:
             index_version=INDEX_VERSION,
         )
         self._remember_session_workspace(session_id, repo_id, root)
-        classification = classify_chat_task(message)
+        classification = classify_chat_task(
+            message,
+            has_active_code_goal=context.active_goal is not None,
+        )
         turn_input = _TurnInput(
             str(root),
             repo_id,
@@ -217,16 +234,28 @@ class ConversationService:
                 "task_type": classification.task_type,
                 "confidence": f"{classification.confidence:.2f}",
                 "rule": classification.rule,
+                "previous_task_type": (
+                    context.active_goal.task_type if context.active_goal is not None else "none"
+                ),
+                "goal_action": _goal_action(classification.task_type, context.active_goal),
             },
         )
         return turn
 
     def _resolve_session_repository(
-        self, session_id: str, repository_root: str
+        self,
+        session_id: str,
+        repository_root: str,
+        *,
+        refresh_fingerprint: bool = True,
     ) -> tuple[Path, str, str, bool]:
-        requested_root, requested_repo_id, requested_fingerprint = _repository_metadata(
-            repository_root
-        )
+        if refresh_fingerprint:
+            requested_root, requested_repo_id, requested_fingerprint = _repository_metadata(
+                repository_root
+            )
+        else:
+            requested_root, requested_repo_id = _repository_identity(repository_root)
+            requested_fingerprint = _unscanned_repository_fingerprint(requested_root)
         with self._session_workspace_lock:
             workspace = self._session_workspaces.get(session_id)
         if workspace is None:
@@ -236,9 +265,13 @@ class ConversationService:
         effective_root = workspace.effective_root
         if not effective_root.is_dir():
             effective_root = workspace.source_root
-        effective_root, _, effective_fingerprint = _repository_metadata(
-            str(effective_root)
-        )
+        if refresh_fingerprint:
+            effective_root, _, effective_fingerprint = _repository_metadata(
+                str(effective_root)
+            )
+        else:
+            effective_root, _ = _repository_identity(str(effective_root))
+            effective_fingerprint = _unscanned_repository_fingerprint(effective_root)
         return (
             effective_root,
             workspace.repo_id,
@@ -321,6 +354,15 @@ class ConversationService:
     ) -> ChatExecution:
         context: SessionContext | None = None
         try:
+            if classification.task_type in {"explain", "change"}:
+                refreshed_root, _, refreshed_fingerprint = _repository_metadata(
+                    turn_input.repository_root
+                )
+                turn_input = replace(
+                    turn_input,
+                    repository_root=str(refreshed_root),
+                    repo_fingerprint=refreshed_fingerprint,
+                )
             context = self.session_service.get_or_create_session(
                 session_id=turn.session_id,
                 scope=TenantScope(),
@@ -356,21 +398,22 @@ class ConversationService:
                     },
                 )
             goal_type = classification.task_type
-            mode = MODE_ISOLATED_WRITE if goal_type == "change" else MODE_READ_ONLY
-            context = self.session_service.continue_or_create_goal(
-                context,
-                user_goal=turn.user_message,
-                task_type=goal_type,
-                mode=mode,
-                validation_profile=(
-                    turn_input.validation_profile if goal_type == "change" else None
-                ),
-                start_new=(
-                    context.active_goal is None or context.active_goal.task_type != goal_type
-                ),
-                repo_fingerprint=turn_input.repo_fingerprint,
-                index_version=INDEX_VERSION,
-            )
+            if goal_type in {"change", "explain"}:
+                mode = MODE_ISOLATED_WRITE if goal_type == "change" else MODE_READ_ONLY
+                context = self.session_service.continue_or_create_goal(
+                    context,
+                    user_goal=turn.user_message,
+                    task_type=goal_type,
+                    mode=mode,
+                    validation_profile=(
+                        turn_input.validation_profile if goal_type == "change" else None
+                    ),
+                    start_new=(
+                        context.active_goal is None or context.active_goal.task_type != goal_type
+                    ),
+                    repo_fingerprint=turn_input.repo_fingerprint,
+                    index_version=INDEX_VERSION,
+                )
             current_user_sequence = (
                 context.memory.recent_turns[-1].sequence
                 if context.memory.recent_turns
@@ -385,24 +428,34 @@ class ConversationService:
                     "active_goal": str(context.active_goal is not None).lower(),
                 },
             )
-            bound_model = _RunBoundModel(
-                self._model_factory(),
-                history=_render_session_context(
-                    context, exclude_sequence=current_user_sequence
-                ),
-                turn_id=turn.turn_id,
-                runtime=self.runtime,
-                show_debug_reasoning=show_debug_reasoning,
-                repo_id=turn_input.repo_id,
-                repo_fingerprint=turn_input.repo_fingerprint,
-                contains_workspace_state=(
-                    turn_input.contains_workspace_state or classification.task_type == "change"
-                ),
-            )
-            if goal_type == "change":
-                execution = self._execute_change(turn, turn_input, bound_model)
+            if goal_type == "scope_redirect":
+                execution = self._execute_scope_redirect(
+                    turn, has_active_code_goal=context.active_goal is not None
+                )
             else:
-                execution = self._execute_explain(turn, turn_input, bound_model)
+                bound_model = _RunBoundModel(
+                    self._model_factory(),
+                    history=_render_session_context(
+                        context, exclude_sequence=current_user_sequence
+                    ),
+                    turn_id=turn.turn_id,
+                    runtime=self.runtime,
+                    show_debug_reasoning=show_debug_reasoning,
+                    repo_id=turn_input.repo_id,
+                    repo_fingerprint=turn_input.repo_fingerprint,
+                    contains_workspace_state=(
+                        turn_input.contains_workspace_state
+                        or classification.task_type == "change"
+                    ),
+                )
+                if goal_type == "change":
+                    execution = self._execute_change(turn, turn_input, bound_model)
+                elif goal_type == "general_chat":
+                    execution = self._execute_general_chat(turn, bound_model)
+                elif goal_type == "clarify":
+                    execution = self._execute_clarify(turn)
+                else:
+                    execution = self._execute_explain(turn, turn_input, bound_model)
             assistant = execution.assistant_message
             if assistant:
                 self.session_service.append_turn(
@@ -438,6 +491,96 @@ class ConversationService:
                 assistant_message=f"本轮执行失败：{safe}",
                 error=safe,
             )
+
+    def _execute_general_chat(
+        self, turn: ChatTurn, model: _RunBoundModel
+    ) -> ChatExecution:
+        from codeinsight.prompts.general_chat import PROMPT_VERSION, build_general_chat_prompt
+
+        self.runtime.emit(
+            turn.run_id,
+            MODEL_GENERATING,
+            {"route": "general_chat", "status": "started"},
+        )
+        system_prompt, user_prompt = build_general_chat_prompt(turn.user_message)
+        completion = model.complete_text(system_prompt, user_prompt)
+        answer = completion.content.strip()
+        if not answer:
+            raise ModelResponseError("普通对话返回空回答")
+        self.runtime.emit(
+            turn.run_id,
+            MODEL_GENERATING,
+            {"route": "general_chat", "status": "completed"},
+        )
+        self.runtime.emit(turn.run_id, ANSWER_READY, {"kind": "general_chat"})
+        payload = {
+            "kind": "general_chat",
+            "outcome": "answered",
+            "route": "general_chat",
+            "model": completion.model,
+            "prompt_version": PROMPT_VERSION,
+            "usage": {
+                "input_tokens": completion.input_tokens or 0,
+                "output_tokens": completion.output_tokens or 0,
+            },
+            "observability": _usage_payload(
+                self.runtime.event_log.read_events(turn.run_id),
+                fallback_input=completion.input_tokens or 0,
+                fallback_output=completion.output_tokens or 0,
+            ),
+        }
+        return ChatExecution(
+            status=CHAT_COMPLETED,
+            assistant_message=answer,
+            result=payload,
+        )
+
+    def _execute_clarify(self, turn: ChatTurn) -> ChatExecution:
+        message = (
+            "我还不能确定你希望我做什么。请说明具体文件、函数或目标，"
+            "例如“解释 workflow.py”或“修复这个函数”；如果是在追问上一轮，"
+            "也可以说清楚要继续分析还是修改。"
+        )
+        self.runtime.emit(
+            turn.run_id,
+            INTENT_CLASSIFIED,
+            {"execution_route": "clarify", "confidence": "0.60", "fallback": "false"},
+        )
+        self.runtime.emit(turn.run_id, ANSWER_READY, {"kind": "clarify"})
+        return ChatExecution(
+            status=CHAT_COMPLETED,
+            assistant_message=message,
+            result={
+                "kind": "clarify",
+                "outcome": "clarification_required",
+                "route": "clarify",
+            },
+        )
+
+    def _execute_scope_redirect(
+        self, turn: ChatTurn, *, has_active_code_goal: bool
+    ) -> ChatExecution:
+        """自然承接业务外闲聊，但不调用模型、检索仓库或创建新 Goal。"""
+        message = build_scope_redirect_message(
+            has_active_code_goal=has_active_code_goal,
+        )
+        self.runtime.emit(
+            turn.run_id,
+            ANSWER_READY,
+            {"kind": "scope_redirect", "model_called": "false"},
+        )
+        return ChatExecution(
+            status=CHAT_COMPLETED,
+            assistant_message=message,
+            result={
+                "kind": "scope_redirect",
+                "outcome": "redirected",
+                "route": "scope_redirect",
+                "reason": "out_of_scope",
+                "model_called": False,
+                "prompt_version": SCOPE_REDIRECT_VERSION,
+            },
+        )
 
     def _execute_explain(
         self, turn: ChatTurn, turn_input: _TurnInput, model: _RunBoundModel
@@ -522,9 +665,16 @@ class ConversationService:
                 "available": str(bool(getattr(preflight, "available", False))).lower(),
                 "error_class": str(getattr(preflight, "error_class", None) or ""),
                 "message_excerpt": str(getattr(preflight, "message_excerpt", ""))[:500],
+                "development_mode": str(self.development_policy.enabled).lower(),
+                "validation_skipped": str(
+                    self.development_policy.skip_sandbox_validation
+                ).lower(),
             }
             self.runtime.emit(turn.run_id, VALIDATION_PREFLIGHT, preflight_payload)
-            if not bool(getattr(preflight, "available", False)):
+            if (
+                not bool(getattr(preflight, "available", False))
+                and not self.development_policy.skip_sandbox_validation
+            ):
                 error_class = preflight_payload["error_class"] or "SANDBOX_UNAVAILABLE"
                 detail = preflight_payload["message_excerpt"] or (
                     "请检查 Docker Desktop、docker_engine 权限和校验镜像。"
@@ -583,6 +733,14 @@ class ConversationService:
         )
         from codeinsight.infrastructure.mcp_client import StdioMCPClient
 
+        workflow_config = None
+        if self.development_policy.enabled:
+            workflow_config = ToolLoopConfig(
+                max_steps=12,
+                deadline_seconds=120.0,
+                max_tool_calls=96,
+                repeated_error_limit=5,
+            )
         try:
             with StdioMCPClient(turn_input.repository_root) as client:
                 workflow = run_change_workflow_to_preview(
@@ -593,6 +751,7 @@ class ConversationService:
                     change_service=self.change_service,
                     run_id=turn.run_id,
                     validation_profile=turn_input.validation_profile,
+                    config=workflow_config,
                     event_log=self.runtime.event_log,
                 )
         except ValueError as error:
@@ -618,12 +777,36 @@ class ConversationService:
                 error=message,
             )
         preview = workflow.preview.as_dict()
-        preview["requires_approval"] = True
+        preview["development_mode"] = self.development_policy.as_dict()
+        preview["requires_approval"] = not self.development_policy.auto_approve_changes
         self.runtime.emit(
             turn.run_id,
             APPROVAL_REQUESTED,
-            {"patch_id": workflow.preview.patch_id, "status": "waiting"},
+            {
+                "patch_id": workflow.preview.patch_id,
+                "status": (
+                    "auto_approved"
+                    if self.development_policy.auto_approve_changes
+                    else "waiting"
+                ),
+                "source": "dev_mode"
+                if self.development_policy.auto_approve_changes
+                else "chat_ui",
+            },
         )
+        if self.development_policy.auto_approve_changes:
+            token = self.change_service.approve(
+                turn.run_id,
+                workflow.preview.patch_id,
+                actor="dev_mode",
+                source="dev_auto_approve",
+            )
+            return self._apply_change(
+                turn,
+                turn_input,
+                workflow.preview.patch_id,
+                token,
+            )
         return ChatExecution(
             status=CHAT_WAITING_APPROVAL,
             assistant_message="已生成修改预览；请检查 diff，确认后再应用。",
@@ -665,11 +848,14 @@ class ConversationService:
             )
         elif result.status == "COMPLETED":
             self._change_recoveries.pop(turn.session_id, None)
-        assistant_message = (
-            "修改已应用并完成校验。"
-            if result.status == "COMPLETED"
-            else f"修改流程结束，状态为 {result.status}。"
-        )
+        if result.status == "COMPLETED" and result.validation and result.validation.get(
+            "skipped"
+        ):
+            assistant_message = "修改已应用；当前开发模式跳过了 Docker 固定校验。"
+        elif result.status == "COMPLETED":
+            assistant_message = "修改已应用并完成校验。"
+        else:
+            assistant_message = f"修改流程结束，状态为 {result.status}。"
         context = self.session_service.get_or_create_session(
             session_id=turn.session_id,
             scope=TenantScope(),
@@ -748,6 +934,21 @@ class _RunBoundModel:
             output_tokens=completion.output_tokens,
         )
 
+    def complete_text(self, system_prompt: str, user_prompt: str):
+        method = getattr(self._base, "complete_text", None)
+        if not callable(method):
+            raise ModelConfigurationError("当前模型适配器不支持普通文本对话")
+        result = _call_with_run_context(
+            method,
+            system_prompt,
+            self._with_history(user_prompt),
+            run_id=self._runtime.get_turn(self._turn_id).run_id,
+            event_log=self._runtime.event_log,
+            cache_context=self._cache_context,
+        )
+        self._publish_reasoning(result)
+        return result
+
     def complete_with_tools(
         self,
         messages: Sequence[Mapping[str, object]],
@@ -817,15 +1018,25 @@ def _call_with_run_context(method, *args, run_id: str, event_log, cache_context=
 
 
 def _repository_metadata(repository_root: str) -> tuple[Path, str, str]:
-    root = Path(repository_root).resolve()
+    root, repo_id = _repository_identity(repository_root)
     scan = scan_repository(root)
-    repo_id = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
     digest = hashlib.sha256()
     for source in scan.files:
         digest.update(source.relative_path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(source.text.encode("utf-8"))
     return root, repo_id, digest.hexdigest()
+
+
+def _repository_identity(repository_root: str) -> tuple[Path, str]:
+    root = Path(repository_root).resolve()
+    repo_id = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    return root, repo_id
+
+
+def _unscanned_repository_fingerprint(root: Path) -> str:
+    """为不需要代码事实的普通聊天生成稳定隔离标识，不读取仓库内容。"""
+    return hashlib.sha256(f"unscanned:{root}".encode()).hexdigest()
 
 
 def _render_session_context(
@@ -868,6 +1079,16 @@ def _session_payload(context: SessionContext) -> dict[str, object]:
         "cache_hit": context.cache_hit,
         "cache_fallback": context.cache_fallback,
     }
+
+
+def _goal_action(task_type: str, active_goal) -> str:
+    if task_type in {"general_chat", "scope_redirect", "clarify"}:
+        return "preserve"
+    if active_goal is None:
+        return "create"
+    if active_goal.task_type == task_type:
+        return "continue"
+    return "replace"
 
 
 def _auto_from_agent(
@@ -922,9 +1143,8 @@ def _citation_payload(citation) -> dict[str, object]:
 
 def _auto_payload(result: AutoAnswer) -> dict[str, object]:
     return {
-        "kind": "auto_answer",
+        "kind": "code_answer",
         "outcome": result.outcome,
-        "answer": result.answer,
         "citations": [_citation_payload(item) for item in result.citations],
         "retrieval_mode": result.retrieval_mode,
         "model": result.model,

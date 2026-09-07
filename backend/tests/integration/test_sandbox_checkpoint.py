@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from codeinsight.application.change_service import ChangeRequestError, ChangeService
+from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.infrastructure.sandbox import SandboxPreflightResult, SandboxResult
 from codeinsight.infrastructure.workspace import WorkspaceManager
 
@@ -49,6 +50,16 @@ class RetryableSandbox:
                 "docker_engine: Access is denied",
             )
         return SandboxResult(profile, ("python -m compileall -q .",), True)
+
+
+class DevModeUnavailableSandbox:
+    def preflight(self, profile):
+        return SandboxPreflightResult(
+            profile, False, "SANDBOX_PERMISSION_DENIED", "docker_engine: Access is denied"
+        )
+
+    def run(self, profile, workspace_path):
+        raise AssertionError("开发模式跳过 Sandbox 后不应调用 run")
 
 
 def _repo(tmp_path: Path) -> tuple[Path, Path]:
@@ -145,6 +156,41 @@ def test_unavailable_sandbox_is_rejected_before_approval_is_consumed(tmp_path: P
     assert approval is not None
     assert approval.is_consumed is False
     assert source.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_development_mode_auto_path_skips_unavailable_sandbox_but_keeps_isolation(
+    tmp_path: Path,
+) -> None:
+    repo, source = _repo(tmp_path)
+    service = ChangeService(
+        workspace_manager=WorkspaceManager(tmp_path / "managed"),
+        sandbox=DevModeUnavailableSandbox(),
+        development_policy=DevelopmentPolicy(
+            "development", True, True, True
+        ),
+    )
+    preview = service.preview(
+        repo,
+        run_id="run-dev-mode",
+        path="app.py",
+        new_content="value = 2\n",
+        validation_profile="python_compile",
+    )
+    assert service.preflight_validation("python_compile").available is True
+    token = service.approve("run-dev-mode", preview.patch_id, actor="dev_mode")
+    result = service.apply("run-dev-mode", preview.patch_id, token)
+
+    assert result.status == "COMPLETED"
+    assert result.validation is not None
+    assert result.validation["skipped"] is True
+    assert result.validation["passed"] is None
+    assert "开发模式" in (result.reason or "")
+    assert source.read_text(encoding="utf-8") == "value = 1\n"
+    managed = service.workspaces.get("run-dev-mode")
+    assert managed is not None
+    assert (
+        Path(managed.run.workspace_path) / "app.py"
+    ).read_text(encoding="utf-8") == "value = 2\n"
 
 
 def test_retry_validation_reuses_applied_patch_without_generating_a_new_one(

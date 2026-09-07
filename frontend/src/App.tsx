@@ -16,7 +16,7 @@ interface ChatMessage {
   turnId: string
   role: 'user' | 'assistant'
   content: string
-  taskType?: 'explain' | 'change'
+  taskType?: 'general_chat' | 'scope_redirect' | 'clarify' | 'explain' | 'change'
   result?: Record<string, unknown> | null
 }
 
@@ -80,6 +80,12 @@ function eventLabel(event: ChatEvent): string {
     }
     return `正在调用模型 ${model}`
   }
+  if (event.event_type === 'intent_classified' && event.payload.task_type === 'scope_redirect') {
+    return '当前话题与代码业务无关，正在自然引导回 CodeInsight'
+  }
+  if (event.event_type === 'model_generating' && event.payload.status === 'started') {
+    return `模型正在生成 ${event.payload.route === 'general_chat' ? '普通对话' : '代码回答'}`
+  }
   if (event.event_type === 'model_result' && event.payload.outcome === 'error') {
     const detail = event.payload.error_detail
       ? MODEL_ERROR_DETAILS[event.payload.error_detail] || event.payload.error_detail
@@ -90,6 +96,12 @@ function eventLabel(event: ChatEvent): string {
   if (event.event_type === 'model_result' && event.payload.cache_hit_ratio) {
     const model = event.payload.model ? ` ${event.payload.model} ` : ''
     return `模型${model}已返回 · 本次 cache hit ${(Number(event.payload.cache_hit_ratio) * 100).toFixed(1)}%`
+  }
+  if (event.event_type === 'validation_started' && event.payload.mode === 'development_skipped') {
+    return '开发模式：跳过 Docker 固定校验'
+  }
+  if (event.event_type === 'validation_finished' && event.payload.skipped === 'true') {
+    return '开发模式：固定校验未执行'
   }
   return EVENT_LABELS[event.event_type] || event.event_type
 }
@@ -117,13 +129,19 @@ function ChatResult({
   const kind = textValue(result.kind)
   if (kind === 'change_preview') {
     const preview = (result.preview || {}) as Record<string, unknown>
+    const development = (preview.development_mode || {}) as Record<string, unknown>
+    const autoApprove = development.auto_approve_changes === true
     return (
       <div className="chat-result change-preview-card">
         <div className="chat-result-heading">
           <span className="result-tag">CHANGE PREVIEW</span>
           <strong>{textValue(preview.path, '待修改文件')}</strong>
         </div>
-        <p>修改只会写入受控隔离 workspace；确认 diff 后，点击批准才会应用。</p>
+        <p>
+          {autoApprove
+            ? '开发模式将自动确认此预览；修改仍只会写入受控隔离 workspace。'
+            : '修改只会写入受控隔离 workspace；确认 diff 后，点击批准才会应用。'}
+        </p>
         <pre className="diff-preview">{textValue(preview.diff, '没有返回 diff')}</pre>
         {approvalPending && (
           <button className="primary-action approval-action" type="button" onClick={onApprove} disabled={approving}>
@@ -135,6 +153,7 @@ function ChatResult({
   }
   if (kind === 'change_result') {
     const validation = (result.validation || {}) as Record<string, unknown>
+    const validationSkipped = validation.skipped === true
     return (
       <div className="chat-result change-result-card">
         <div className="chat-result-heading">
@@ -149,7 +168,13 @@ function ChatResult({
           <p className="validation-excerpt">{textValue(validation.message_excerpt)}</p>
         )}
         <span className="result-meta">
-          校验：{validation.passed === true ? '通过' : validation.passed === false ? '未通过' : '未返回'}
+          校验：{validationSkipped
+            ? '开发模式已跳过'
+            : validation.passed === true
+              ? '通过'
+              : validation.passed === false
+                ? '未通过'
+                : '未返回'}
         </span>
       </div>
     )
@@ -173,6 +198,43 @@ function ChatResult({
       </div>
     )
   }
+  if (kind === 'general_chat') {
+    const observability = (result.observability || {}) as Record<string, unknown>
+    return (
+      <div className="chat-result chat-meta-result">
+        <details className="chat-details">
+          <summary>普通对话 · 查看模型与用量</summary>
+          <span className="result-meta">
+            生效模型：{textValue(result.model, '未返回')} · Route：{textValue(result.route, 'general_chat')}
+          </span>
+          <span className="result-meta">
+            本轮 cache read/miss：{textValue(observability.cache_read_tokens, '0')} /{' '}
+            {textValue(observability.cache_miss_tokens, '0')} · 命中率：
+            {(Number(observability.cache_hit_ratio || 0) * 100).toFixed(1)}%
+          </span>
+        </details>
+      </div>
+    )
+  }
+  if (kind === 'scope_redirect') {
+    return (
+      <div className="chat-result chat-meta-result">
+        <div className="chat-result-heading">
+          <span className="result-tag">SCOPE REDIRECT</span>
+          <strong>回到 CodeInsight</strong>
+        </div>
+        <span className="result-meta">本轮未调用模型，也未访问仓库；已保留当前 Session 上下文。</span>
+      </div>
+    )
+  }
+  if (kind === 'clarify') {
+    return (
+      <div className="chat-result chat-meta-result">
+        <span className="result-tag">CLARIFY</span>
+        <span className="result-meta">本轮未访问仓库，也未调用模型。</span>
+      </div>
+    )
+  }
   const citations = Array.isArray(result.citations) ? result.citations : []
   const observability = (result.observability || {}) as Record<string, unknown>
   return (
@@ -181,28 +243,30 @@ function ChatResult({
         <span className="result-tag">CODE ANSWER</span>
         <strong>{textValue(result.outcome, 'answered')}</strong>
       </div>
-      <p>{textValue(result.answer, '没有返回回答。')}</p>
-      {citations.length > 0 && (
-        <div className="citation-chips" aria-label="回答引用">
-          {citations.map((item, index) => {
-            const citation = (item || {}) as Record<string, unknown>
-            return (
-              <span className="citation-chip" key={`${textValue(citation.evidence_id)}-${index}`}>
-                {textValue(citation.evidence_id, `E${index + 1}`)} · {textValue(citation.relative_path)}:
-                {textValue(citation.start_line)}-{textValue(citation.end_line)}
-              </span>
-            )
-          })}
-        </div>
-      )}
-      <span className="result-meta">
-        生效模型：{textValue(result.model, '未返回')} · Router：{textValue(result.router_model, '未返回')}
-      </span>
-      <span className="result-meta">
-        本轮 cache read/miss：{textValue(observability.cache_read_tokens, '0')} /{' '}
-        {textValue(observability.cache_miss_tokens, '0')} · 命中率：
-        {(Number(observability.cache_hit_ratio || 0) * 100).toFixed(1)}%
-      </span>
+      <details className="chat-details">
+        <summary>查看本轮证据与运行详情</summary>
+        {citations.length > 0 && (
+          <div className="citation-chips" aria-label="回答引用">
+            {citations.map((item, index) => {
+              const citation = (item || {}) as Record<string, unknown>
+              return (
+                <span className="citation-chip" key={`${textValue(citation.evidence_id)}-${index}`}>
+                  {textValue(citation.evidence_id, `E${index + 1}`)} · {textValue(citation.relative_path)}:
+                  {textValue(citation.start_line)}-{textValue(citation.end_line)}
+                </span>
+              )
+            })}
+          </div>
+        )}
+        <span className="result-meta">
+          生效模型：{textValue(result.model, '未返回')} · Router：{textValue(result.router_model, '未返回')}
+        </span>
+        <span className="result-meta">
+          本轮 cache read/miss：{textValue(observability.cache_read_tokens, '0')} /{' '}
+          {textValue(observability.cache_miss_tokens, '0')} · 命中率：
+          {(Number(observability.cache_hit_ratio || 0) * 100).toFixed(1)}%
+        </span>
+      </details>
     </div>
   )
 }
@@ -372,8 +436,9 @@ function App() {
           </p>
           <div className="control-note">
             <strong>同一 Session 的两条路径</strong>
+            <span>普通聊天 → 自然语言回答，不访问仓库</span>
             <span>代码理解 → 只读检索与引用回答</span>
-            <span>修改请求 → MCP 探索 → diff 预览 → 用户审批 → 隔离校验</span>
+            <span>修改请求 → MCP 探索 → diff 预览 → 开发模式自动审批/生产模式人工审批 → 隔离校验</span>
           </div>
         </aside>
 

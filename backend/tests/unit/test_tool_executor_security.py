@@ -52,3 +52,37 @@ def test_executor_rejects_sensitive_files_and_schema_ranges(tmp_path: Path):
     )
     assert not sensitive.ok and sensitive.error_code == "PERMISSION"
     assert not invalid_limit.ok and invalid_limit.error_code == "VALIDATION"
+
+
+def test_executor_normalizes_a_bound_repository_prefix_without_widening_scope(
+    tmp_path: Path,
+):
+    root = tmp_path / "sample_repo"
+    root.mkdir()
+    source = root / "src.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    executor = ToolExecutor(root)
+
+    prefixed = executor.execute(
+        ToolCall("prefixed", "read_file", {"path": "tests/fixtures/sample_repo/src.py"})
+    )
+    absolute = executor.execute(
+        ToolCall("absolute", "read_file", {"path": str(source.resolve())})
+    )
+
+    assert prefixed.ok and prefixed.data["path"] == "src.py"
+    assert absolute.ok and absolute.data["path"] == "src.py"
+
+
+def test_executor_reports_relative_path_guidance_for_missing_model_path(tmp_path: Path):
+    root = tmp_path / "sample_repo"
+    root.mkdir()
+    executor = ToolExecutor(root)
+
+    result = executor.execute(
+        ToolCall("missing", "read_file", {"path": "sample_repo/missing.py"})
+    )
+
+    assert not result.ok
+    assert result.error_code == "NOT_FOUND"
+    assert "相对于已绑定的仓库根目录" in (result.error_message or "")
