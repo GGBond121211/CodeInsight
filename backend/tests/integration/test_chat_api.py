@@ -428,7 +428,12 @@ def test_change_turn_stops_at_preview_until_chat_approval(tmp_path: Path) -> Non
     )
     model = FakeChangeModel()
     client = TestClient(
-        create_app(lambda: model, FakeEmbedding, changes)  # type: ignore[arg-type]
+        create_app(
+            lambda: model,
+            FakeEmbedding,
+            changes,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
     )
     session_id = client.post(
         "/api/v2/chat/sessions", json={"repository_root": str(repo)}
@@ -515,7 +520,12 @@ def test_development_mode_auto_approves_change_and_marks_validation_skipped(
         development_policy=DevelopmentPolicy("development", True, True, True),
     )
     client = TestClient(
-        create_app(lambda: FakeChangeModel(), FakeEmbedding, changes)  # type: ignore[arg-type]
+        create_app(
+            lambda: FakeChangeModel(),
+            FakeEmbedding,
+            changes,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
     )
     session_id = client.post(
         "/api/v2/chat/sessions", json={"repository_root": str(repo)}
@@ -555,7 +565,12 @@ def test_continue_after_sandbox_failure_retries_validation_without_duplicate_pat
     )
     model = FakeChangeModel()
     client = TestClient(
-        create_app(lambda: model, FakeEmbedding, changes)  # type: ignore[arg-type]
+        create_app(
+            lambda: model,
+            FakeEmbedding,
+            changes,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
     )
     session_id = client.post(
         "/api/v2/chat/sessions", json={"repository_root": str(repo)}
