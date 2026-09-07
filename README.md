@@ -139,6 +139,25 @@ $env:CODEINSIGHT_EMBEDDING_BASE_URL="<openai-compatible-embedding-url>"
 阻塞原因。若已批准补丁只是因为 Sandbox 临时故障而进入 `REVIEW_REQUIRED`，同一 Session
 输入“继续”会重新校验已有隔离 workspace，不会重复生成相同补丁。
 
+### 本地开发调试模式
+
+当前 2.0.3 开发栈可以显式打开两个只面向本地调试的便利开关：自动确认修改预览，
+以及在 Docker 校验环境不可用时跳过固定校验；修改探索会放宽为 12 步、96 次工具调用、
+同类工具错误 5 次，但仍有 120 秒总 deadline。它们不会关闭隔离 workspace、路径与基线
+校验、补丁范围限制、检查产物指纹、危险工具拦截或敏感文件过滤；跳过校验也会在结果中
+明确标记为“未执行”，不会伪装成校验通过。
+
+```powershell
+$env:CODEINSIGHT_ENV="development"
+$env:CODEINSIGHT_DEV_MODE="1"
+$env:CODEINSIGHT_DEV_AUTO_APPROVE="1"
+$env:CODEINSIGHT_DEV_SKIP_SANDBOX_VALIDATION="1"
+```
+
+`ops/docker-compose.yml` 已将这组开关配置为本地开发栈默认值；正式部署必须设置
+`CODEINSIGHT_ENV=production`，生产环境会强制关闭这些开关，即使环境变量误带过去也不会
+自动审批或跳过校验。关闭开发模式后，原来的人工审批和 Docker 固定校验流程自动恢复。
+
 ### 2. 启动本地依赖
 
 ```powershell

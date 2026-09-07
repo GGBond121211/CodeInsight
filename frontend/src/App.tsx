@@ -94,6 +94,12 @@ function eventLabel(event: ChatEvent): string {
     const model = event.payload.model ? ` ${event.payload.model} ` : ''
     return `模型${model}已返回 · 本次 cache hit ${(Number(event.payload.cache_hit_ratio) * 100).toFixed(1)}%`
   }
+  if (event.event_type === 'validation_started' && event.payload.mode === 'development_skipped') {
+    return '开发模式：跳过 Docker 固定校验'
+  }
+  if (event.event_type === 'validation_finished' && event.payload.skipped === 'true') {
+    return '开发模式：固定校验未执行'
+  }
   return EVENT_LABELS[event.event_type] || event.event_type
 }
 
@@ -120,13 +126,19 @@ function ChatResult({
   const kind = textValue(result.kind)
   if (kind === 'change_preview') {
     const preview = (result.preview || {}) as Record<string, unknown>
+    const development = (preview.development_mode || {}) as Record<string, unknown>
+    const autoApprove = development.auto_approve_changes === true
     return (
       <div className="chat-result change-preview-card">
         <div className="chat-result-heading">
           <span className="result-tag">CHANGE PREVIEW</span>
           <strong>{textValue(preview.path, '待修改文件')}</strong>
         </div>
-        <p>修改只会写入受控隔离 workspace；确认 diff 后，点击批准才会应用。</p>
+        <p>
+          {autoApprove
+            ? '开发模式将自动确认此预览；修改仍只会写入受控隔离 workspace。'
+            : '修改只会写入受控隔离 workspace；确认 diff 后，点击批准才会应用。'}
+        </p>
         <pre className="diff-preview">{textValue(preview.diff, '没有返回 diff')}</pre>
         {approvalPending && (
           <button className="primary-action approval-action" type="button" onClick={onApprove} disabled={approving}>
@@ -138,6 +150,7 @@ function ChatResult({
   }
   if (kind === 'change_result') {
     const validation = (result.validation || {}) as Record<string, unknown>
+    const validationSkipped = validation.skipped === true
     return (
       <div className="chat-result change-result-card">
         <div className="chat-result-heading">
@@ -152,7 +165,13 @@ function ChatResult({
           <p className="validation-excerpt">{textValue(validation.message_excerpt)}</p>
         )}
         <span className="result-meta">
-          校验：{validation.passed === true ? '通过' : validation.passed === false ? '未通过' : '未返回'}
+          校验：{validationSkipped
+            ? '开发模式已跳过'
+            : validation.passed === true
+              ? '通过'
+              : validation.passed === false
+                ? '未通过'
+                : '未返回'}
         </span>
       </div>
     )
@@ -405,7 +424,7 @@ function App() {
             <strong>同一 Session 的两条路径</strong>
             <span>普通聊天 → 自然语言回答，不访问仓库</span>
             <span>代码理解 → 只读检索与引用回答</span>
-            <span>修改请求 → MCP 探索 → diff 预览 → 用户审批 → 隔离校验</span>
+            <span>修改请求 → MCP 探索 → diff 预览 → 开发模式自动审批/生产模式人工审批 → 隔离校验</span>
           </div>
         </aside>
 

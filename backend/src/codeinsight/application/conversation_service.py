@@ -17,6 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from codeinsight.agent.change_workflow import run_change_workflow_to_preview
+from codeinsight.agent.tool_loop import ToolLoopConfig
 from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.conversation_router import (
@@ -57,6 +58,7 @@ from codeinsight.infrastructure.model_gateway import CacheContext
 from codeinsight.infrastructure.redaction import redact_sensitive
 from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.infrastructure.run_store import InMemorySessionStore
+from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.ingestion.scanner import scan_repository
 
 INDEX_VERSION = "conversation-scan-v1"
@@ -108,6 +110,12 @@ class ConversationService:
         self._embedding_factory = embedding_factory
         self._reranker_factory = reranker_factory
         self.change_service = change_service
+        selected_policy = getattr(change_service, "development_policy", None)
+        self.development_policy = (
+            selected_policy
+            if isinstance(selected_policy, DevelopmentPolicy)
+            else DevelopmentPolicy.from_environment()
+        )
         self.session_service = session_service or SessionService(
             InMemorySessionStore(),
             InMemoryMemoryStore(),
@@ -622,9 +630,16 @@ class ConversationService:
                 "available": str(bool(getattr(preflight, "available", False))).lower(),
                 "error_class": str(getattr(preflight, "error_class", None) or ""),
                 "message_excerpt": str(getattr(preflight, "message_excerpt", ""))[:500],
+                "development_mode": str(self.development_policy.enabled).lower(),
+                "validation_skipped": str(
+                    self.development_policy.skip_sandbox_validation
+                ).lower(),
             }
             self.runtime.emit(turn.run_id, VALIDATION_PREFLIGHT, preflight_payload)
-            if not bool(getattr(preflight, "available", False)):
+            if (
+                not bool(getattr(preflight, "available", False))
+                and not self.development_policy.skip_sandbox_validation
+            ):
                 error_class = preflight_payload["error_class"] or "SANDBOX_UNAVAILABLE"
                 detail = preflight_payload["message_excerpt"] or (
                     "请检查 Docker Desktop、docker_engine 权限和校验镜像。"
@@ -683,6 +698,14 @@ class ConversationService:
         )
         from codeinsight.infrastructure.mcp_client import StdioMCPClient
 
+        workflow_config = None
+        if self.development_policy.enabled:
+            workflow_config = ToolLoopConfig(
+                max_steps=12,
+                deadline_seconds=120.0,
+                max_tool_calls=96,
+                repeated_error_limit=5,
+            )
         try:
             with StdioMCPClient(turn_input.repository_root) as client:
                 workflow = run_change_workflow_to_preview(
@@ -693,6 +716,7 @@ class ConversationService:
                     change_service=self.change_service,
                     run_id=turn.run_id,
                     validation_profile=turn_input.validation_profile,
+                    config=workflow_config,
                     event_log=self.runtime.event_log,
                 )
         except ValueError as error:
@@ -718,12 +742,36 @@ class ConversationService:
                 error=message,
             )
         preview = workflow.preview.as_dict()
-        preview["requires_approval"] = True
+        preview["development_mode"] = self.development_policy.as_dict()
+        preview["requires_approval"] = not self.development_policy.auto_approve_changes
         self.runtime.emit(
             turn.run_id,
             APPROVAL_REQUESTED,
-            {"patch_id": workflow.preview.patch_id, "status": "waiting"},
+            {
+                "patch_id": workflow.preview.patch_id,
+                "status": (
+                    "auto_approved"
+                    if self.development_policy.auto_approve_changes
+                    else "waiting"
+                ),
+                "source": "dev_mode"
+                if self.development_policy.auto_approve_changes
+                else "chat_ui",
+            },
         )
+        if self.development_policy.auto_approve_changes:
+            token = self.change_service.approve(
+                turn.run_id,
+                workflow.preview.patch_id,
+                actor="dev_mode",
+                source="dev_auto_approve",
+            )
+            return self._apply_change(
+                turn,
+                turn_input,
+                workflow.preview.patch_id,
+                token,
+            )
         return ChatExecution(
             status=CHAT_WAITING_APPROVAL,
             assistant_message="已生成修改预览；请检查 diff，确认后再应用。",
@@ -765,11 +813,14 @@ class ConversationService:
             )
         elif result.status == "COMPLETED":
             self._change_recoveries.pop(turn.session_id, None)
-        assistant_message = (
-            "修改已应用并完成校验。"
-            if result.status == "COMPLETED"
-            else f"修改流程结束，状态为 {result.status}。"
-        )
+        if result.status == "COMPLETED" and result.validation and result.validation.get(
+            "skipped"
+        ):
+            assistant_message = "修改已应用；当前开发模式跳过了 Docker 固定校验。"
+        elif result.status == "COMPLETED":
+            assistant_message = "修改已应用并完成校验。"
+        else:
+            assistant_message = f"修改流程结束，状态为 {result.status}。"
         context = self.session_service.get_or_create_session(
             session_id=turn.session_id,
             scope=TenantScope(),

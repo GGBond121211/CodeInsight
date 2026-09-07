@@ -12,6 +12,7 @@ from codeinsight.application.change_service import ChangeService
 from codeinsight.domain.answer import ModelCompletion
 from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.infrastructure.reranker import RerankResult
+from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.infrastructure.sandbox import SandboxPreflightResult, SandboxResult
 from codeinsight.infrastructure.workspace import WorkspaceManager
 
@@ -309,6 +310,16 @@ class RetryableSandbox:
         return SandboxResult(profile, ("python -m compileall -q .",), True)
 
 
+class DevModeUnavailableSandbox:
+    def preflight(self, profile):
+        return SandboxPreflightResult(
+            profile, False, "SANDBOX_PERMISSION_DENIED", "docker_engine: Access is denied"
+        )
+
+    def run(self, profile, workspace_path):
+        raise AssertionError("开发模式跳过 Sandbox 后不应调用 run")
+
+
 class FakeChangeModel:
     model = "fake-change"
 
@@ -434,6 +445,45 @@ def test_change_turn_stops_at_preview_until_chat_approval(tmp_path: Path) -> Non
     effective_root = Path(conversation._turn_inputs[followup_turn["turn_id"]].repository_root)
     assert effective_root != repo.resolve()
     assert (effective_root / "app.py").read_text(encoding="utf-8") == "value = 2\n"
+
+
+def test_development_mode_auto_approves_change_and_marks_validation_skipped(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source_file = repo / "app.py"
+    source_file.write_text("value = 1\n", encoding="utf-8")
+    changes = ChangeService(
+        workspace_manager=WorkspaceManager(tmp_path / "managed"),
+        sandbox=DevModeUnavailableSandbox(),
+        development_policy=DevelopmentPolicy("development", True, True, True),
+    )
+    client = TestClient(
+        create_app(lambda: FakeChangeModel(), FakeEmbedding, changes)  # type: ignore[arg-type]
+    )
+    session_id = client.post(
+        "/api/v2/chat/sessions", json={"repository_root": str(repo)}
+    ).json()["session_id"]
+
+    accepted = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(repo),
+            "message": "把 value 修改成 2",
+        },
+    )
+    result = _wait_for_terminal(client, accepted.json()["turn_id"])
+
+    assert result["status"] == "COMPLETED"
+    assert result["result"]["kind"] == "change_result"
+    assert result["result"]["validation"]["skipped"] is True
+    assert "开发模式" in result["assistant_message"]
+    assert source_file.read_text(encoding="utf-8") == "value = 1\n"
+    events = client.get(f"/api/v2/chat/turns/{result['turn_id']}/events")
+    assert '"source": "dev_mode"' in events.text
+    assert '"passed": "skipped"' in events.text
 
 
 def test_continue_after_sandbox_failure_retries_validation_without_duplicate_patch(

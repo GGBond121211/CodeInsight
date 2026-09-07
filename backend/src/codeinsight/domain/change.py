@@ -589,7 +589,11 @@ class TestFailureDigest:
 
 @dataclass(frozen=True)
 class ValidationRun:
-    """一次固定检查的执行结果。命令来自 allowlist，不由模型拼接。"""
+    """一次固定检查的执行结果。命令来自 allowlist，不由模型拼接。
+
+    ``skipped`` 只用于显式的本地开发模式：它和检查通过/失败不同，表示
+    这次没有执行命令，避免把“未校验”伪装成“通过”或“失败”。
+    """
 
     validation_id: str
     run_id: str
@@ -597,11 +601,12 @@ class ValidationRun:
     commands: tuple[str, ...]
     passed: bool
     digest: TestFailureDigest | None = None
+    skipped: bool = False
 
     def __post_init__(self) -> None:
-        if not self.commands:
+        if not self.commands and not self.skipped:
             raise ValueError("检查必须至少执行一条命令")
-        if not self.passed and self.digest is None:
+        if not self.passed and not self.skipped and self.digest is None:
             raise ValueError("检查失败必须附带 TestFailureDigest，否则无法有限修复")
 
 
