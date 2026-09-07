@@ -25,7 +25,7 @@ def _upstreams() -> tuple[str, ...]:
     return values
 
 
-app = FastAPI(title="CodeInsight Gateway Proxy", version="2.0.1")
+app = FastAPI(title="CodeInsight Gateway Proxy", version="2.0.2")
 
 
 @app.get("/health")

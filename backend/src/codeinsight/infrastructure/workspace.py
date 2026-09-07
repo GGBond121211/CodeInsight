@@ -17,9 +17,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from codeinsight.domain.change import WorkspaceCheckpoint, WorkspaceRun
-
-SENSITIVE_BASENAMES = frozenset({".env", ".env.local", ".env.production", "id_rsa", "id_dsa"})
-SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+from codeinsight.ingestion.path_policy import (
+    VCS_DIRECTORIES,
+    is_sensitive,
+    is_unsafe_directory,
+)
 
 
 @dataclass(frozen=True)
@@ -41,11 +43,18 @@ class WorkspaceManager:
         self._load_state()
 
     def create(self, source_repo: str | Path, run_id: str) -> ManagedWorkspace:
+        existing = self._workspaces.get(run_id)
+        if existing is not None:
+            if str(Path(source_repo).resolve()) != existing.run.source_repo_path:
+                raise ValueError("同一 Run 不能绑定不同的 source_repo")
+            return existing
         source = Path(source_repo).resolve()
         if not source.is_dir():
             raise ValueError("source_repo 必须是存在的目录")
         workspace_id = f"ws-{uuid4().hex[:16]}"
         destination = (self.base_dir / workspace_id).resolve()
+        if destination.is_relative_to(source):
+            raise ValueError("隔离工作区必须位于源仓库之外")
         destination.mkdir(parents=True)
         self._copy_tree(source, destination)
         managed = ManagedWorkspace(
@@ -130,11 +139,23 @@ class WorkspaceManager:
             ],
         }
         target = self._state_path(managed.run.run_id)
-        temporary = target.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8"
-        )
-        os.replace(temporary, target)
+        # Keep the temporary name independent of the long target hash:
+        # pytest can place this path near Windows' MAX_PATH boundary when the
+        # repository path is nested.
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        for _ in range(32):
+            temporary = target.with_name(f".{uuid4().hex[:16]}.tmp")
+            try:
+                with temporary.open("x", encoding="utf-8") as stream:
+                    stream.write(serialized)
+            except FileExistsError:
+                continue
+            try:
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return
+        raise FileExistsError("无法为 workspace 状态分配唯一临时文件")
 
     def _load_state(self) -> None:
         for state_file in sorted(self._state_dir.glob("*.json")):
@@ -185,20 +206,18 @@ class WorkspaceManager:
         for current, directories, files in os.walk(source, topdown=True, followlinks=False):
             current_path = Path(current)
             directories[:] = [
-                name for name in directories if name not in {".git", ".hg", ".svn"}
+                name for name in directories
+                if name.lower() not in VCS_DIRECTORIES
+                and not is_unsafe_directory(Path(current) / name)
             ]
             relative = current_path.relative_to(source)
             target_dir = destination / relative
             target_dir.mkdir(parents=True, exist_ok=True)
-            for name in directories:
-                candidate = current_path / name
-                if candidate.is_symlink():
-                    raise PermissionError("workspace 复制拒绝符号链接目录")
             for name in files:
                 origin = current_path / name
                 if origin.is_symlink():
                     raise PermissionError("workspace 复制拒绝符号链接文件")
-                if _is_sensitive(origin):
+                if is_sensitive(origin):
                     continue
                 target = target_dir / name
                 shutil.copy2(origin, target)
@@ -206,7 +225,9 @@ class WorkspaceManager:
     @staticmethod
     def _clear_directory(directory: Path) -> None:
         for item in directory.iterdir():
-            if item.is_dir() and not item.is_symlink():
+            if getattr(item, "is_junction", lambda: False)():
+                item.rmdir()
+            elif item.is_dir() and not item.is_symlink():
                 shutil.rmtree(item)
             else:
                 item.unlink()
@@ -216,11 +237,15 @@ def fingerprint_tree(root: str | Path) -> str:
     path = Path(root).resolve()
     digest = hashlib.sha256()
     for current, directories, files in os.walk(path, topdown=True, followlinks=False):
-        directories[:] = [name for name in directories if name not in {".git", ".hg", ".svn"}]
+        directories[:] = sorted(
+            name for name in directories
+            if name.lower() not in VCS_DIRECTORIES
+            and not is_unsafe_directory(Path(current) / name)
+        )
         current_path = Path(current)
         for name in sorted(files):
             candidate = current_path / name
-            if candidate.is_symlink() or _is_sensitive(candidate):
+            if candidate.is_symlink() or is_sensitive(candidate):
                 continue
             relative = candidate.relative_to(path).as_posix()
             digest.update(relative.encode("utf-8"))
@@ -230,13 +255,26 @@ def fingerprint_tree(root: str | Path) -> str:
     return digest.hexdigest()
 
 
-def _is_sensitive(path: Path) -> bool:
-    basename = path.name.lower()
-    return (
-        basename in SENSITIVE_BASENAMES
-        or basename.startswith(".env.")
-        or basename.endswith(SENSITIVE_SUFFIXES)
-    )
+def fingerprint_artifact(root: str | Path) -> str:
+    """检测验证期间的产物改动，包含新增敏感文件；忽略检查生成的缓存。"""
+    path = Path(root).resolve()
+    digest = hashlib.sha256()
+    for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+        directories[:] = sorted(
+            name for name in directories if name not in {"__pycache__", ".pytest_cache"}
+        )
+        for name in directories:
+            if is_unsafe_directory(Path(current) / name):
+                raise PermissionError("验证产物包含符号链接或 junction")
+        for name in sorted(files):
+            candidate = Path(current) / name
+            if candidate.is_symlink():
+                raise PermissionError("验证产物包含符号链接")
+            digest.update(candidate.relative_to(path).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(candidate.read_bytes())
+            digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _now_ms() -> int:

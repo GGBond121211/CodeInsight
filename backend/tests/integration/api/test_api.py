@@ -40,7 +40,7 @@ class FakeReranker:
         return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
 
 
-def test_health_and_auto_answer_are_the_only_registered_product_routes() -> None:
+def test_health_auto_answer_and_usage_are_the_registered_product_routes() -> None:
     client = TestClient(
         create_app(FakeModel, FakeEmbedding, reranker_factory=FakeReranker)
     )  # type: ignore[arg-type]
@@ -57,7 +57,7 @@ def test_health_and_auto_answer_are_the_only_registered_product_routes() -> None
         assert client.post(path, json={}).status_code == 404
 
 
-def test_openapi_exposes_only_health_and_auto_answer() -> None:
+def test_openapi_exposes_current_product_routes() -> None:
     client = TestClient(
         create_app(FakeModel, FakeEmbedding, reranker_factory=FakeReranker)
     )  # type: ignore[arg-type]
@@ -66,10 +66,21 @@ def test_openapi_exposes_only_health_and_auto_answer() -> None:
     assert paths == {
         "/api/v1/health",
         "/api/v1/auto/answer",
+        "/api/v1/usage/summary",
+        "/api/v1/usage/calls",
         "/api/v2/change/preview",
         "/api/v2/change/approve",
         "/api/v2/change/apply",
         "/api/v2/change/rollback",
         "/api/v2/change/{run_id}/cancel",
         "/api/v2/change/{run_id}/events",
+        "/api/v2/change/{run_id}/patches/{patch_id}",
+        "/api/v2/chat/sessions",
+        "/api/v2/chat/sessions/{session_id}",
+        "/api/v2/chat/turns",
+        "/api/v2/chat/turns/{turn_id}",
+        "/api/v2/chat/runs/{run_id}",
+        "/api/v2/chat/turns/{turn_id}/approve",
+        "/api/v2/chat/turns/{turn_id}/cancel",
+        "/api/v2/chat/turns/{turn_id}/events",
     }

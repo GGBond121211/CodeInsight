@@ -38,6 +38,7 @@ def run_change_workflow_to_preview(
     run_id: str,
     validation_profile: str = "python_compile",
     config: ToolLoopConfig | None = None,
+    event_log=None,
 ) -> ChangeWorkflowPreviewResult:
     """把模型原生 ``generate_patch`` 调用接到受控 preview，不自动审批或应用。"""
     completed = run_change_workflow(
@@ -46,10 +47,12 @@ def run_change_workflow_to_preview(
         mcp_client=mcp_client,
         config=config,
         run_id=run_id,
+        event_log=event_log,
     )
     generated = [call for call in completed.loop.tool_calls if call.name == "generate_patch"]
     if completed.loop.status != "COMPLETED" or not generated:
-        raise ValueError("Tool Loop 未生成可交付 Patch")
+        reason = completed.loop.reason or "模型未生成 generate_patch"
+        raise ValueError(f"Tool Loop 未生成可交付 Patch：{reason}")
     changes: dict[str, str | None] = {}
     for call in generated:
         path = call.arguments.get("path")

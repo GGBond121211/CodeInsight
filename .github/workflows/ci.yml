@@ -20,6 +20,23 @@ jobs:
       - run: uv run --project backend ruff check backend/src backend/tests
       - run: uv run --project backend python -m pytest --basetemp=work/pytest-ci -q backend/tests
 
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --run
+      - run: npm run build
+
   deployment-contract:
     runs-on: ubuntu-latest
     steps:

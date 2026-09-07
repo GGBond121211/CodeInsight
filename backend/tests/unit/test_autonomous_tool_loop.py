@@ -115,6 +115,36 @@ def test_repeated_tool_calls_become_stuck_without_infinite_loop():
     assert "重复工具调用" in (result.reason or "")
 
 
+def test_default_budget_allows_extended_readonly_exploration():
+    host = FakeHost({})
+
+    class Explorer:
+        def __init__(self):
+            self.round = 0
+
+        def complete_with_tools(self, messages, tools):
+            self.round += 1
+            if self.round <= 4:
+                return ToolModelResponse(
+                    None,
+                    tuple(
+                        ToolCall(
+                            f"search-{self.round}-{index}",
+                            "search_repository",
+                            {"question": f"evidence-{self.round}-{index}"},
+                        )
+                        for index in range(5)
+                    ),
+                    "fake",
+                )
+            return ToolModelResponse("patch plan ready", (), "fake")
+
+    result = ToolLoop(Explorer(), host).run("system", "inspect")
+
+    assert result.status == "COMPLETED"
+    assert len(result.tool_calls) == 20
+
+
 def test_plain_json_text_is_not_converted_to_tool_call():
     host = FakeHost({})
 

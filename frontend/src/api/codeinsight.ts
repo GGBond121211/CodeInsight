@@ -22,20 +22,6 @@ async function postJson<TResponse>(path: string, request: object): Promise<TResp
   return (await response.json()) as TResponse
 }
 
-/* 停用的公开客户端接线；为将来明确恢复而保留。
-export function searchRepository(request: SearchRequest): Promise<SearchResponse> {
-  return postJson<SearchResponse>('/search', request)
-}
-
-export function answerRepository(request: AnswerRequest): Promise<AnswerResponse> {
-  return postJson<AnswerResponse>('/answer', request)
-}
-
-export function agentAnswerRepository(request: AnswerRequest): Promise<AgentAnswerResponse> {
-  return postJson<AgentAnswerResponse>('/agent/answer', request)
-}
-*/
-
 export function autoAnswerRepository(request: AutoAnswerRequest): Promise<AutoAnswerResponse> {
   return postJson<AutoAnswerResponse>('/auto/answer', request)
 }

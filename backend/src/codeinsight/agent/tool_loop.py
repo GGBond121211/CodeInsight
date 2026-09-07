@@ -131,6 +131,8 @@ class ToolModelResponse:
     model: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # 不进入 ToolLoop 消息或事件日志，仅由调试实时通道临时消费。
+    reasoning_content: str | None = None
 
 
 class ToolModel(Protocol):
@@ -149,7 +151,10 @@ class MCPToolClient(Protocol):
 class ToolLoopConfig:
     max_steps: int = 8
     deadline_seconds: float = 60.0
-    max_tool_calls: int = 16
+    # Read-only repository exploration can legitimately require more than one
+    # batch before the model has enough evidence to emit generate_patch. Keep
+    # this finite so a malformed tool plan still fails closed.
+    max_tool_calls: int = 64
     token_budget: int | None = None
     repeated_call_limit: int = 2
     repeated_error_limit: int = 2

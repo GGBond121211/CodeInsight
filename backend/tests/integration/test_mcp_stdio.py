@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from codeinsight.agent.tool_loop import ToolCall
@@ -10,10 +11,23 @@ def test_real_mcp_stdio_discovers_tools_and_executes_through_executor():
         tools = client.list_tools()
         names = {str(item["name"]) for item in tools}
         result = client.call_tool(ToolCall("read-1", "read_file", {"path": "src/shop/models.py"}))
-    assert len(names) == 12
+    assert len(names) == 8
     assert "search_repository" in names
     assert result.ok
     assert result.data["path"] == "src/shop/models.py"
+
+
+def test_concurrent_stdio_calls_keep_their_responses(tmp_path):
+    for name in ("first.py", "second.py"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    with StdioMCPClient(tmp_path) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        calls = [
+            ToolCall(name, "read_file", {"path": name})
+            for name in ("first.py", "second.py")
+        ]
+        results = list(pool.map(client.call_tool, calls))
+    assert all(result.ok for result in results)
+    assert [result.data["text"] for result in results] == ["first.py", "second.py"]
 
 
 def test_real_mcp_stdio_rejects_escape_and_write_without_capabilities():
@@ -28,7 +42,7 @@ def test_real_mcp_stdio_rejects_escape_and_write_without_capabilities():
         )
     assert not outside.ok and outside.error_code == "PERMISSION"
     assert not write.ok
-    assert write.data["status"] == "manual_required"
+    assert write.error_code == "VALIDATION"
 
 
 def test_real_mcp_resources_prompts_and_server_failure_are_explainable():

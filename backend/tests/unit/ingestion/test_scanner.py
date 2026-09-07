@@ -6,7 +6,7 @@ import pytest
 
 from codeinsight.domain.errors import RepositoryScanError
 from codeinsight.domain.source import ScanResult, SourceFile
-from codeinsight.ingestion.scanner import REASON_READ_ERROR, scan_repository
+from codeinsight.ingestion.scanner import REASON_READ_ERROR, REASON_UNSAFE_PATH, scan_repository
 
 
 def _write(repo: Path, relative: str, text: str) -> None:
@@ -103,3 +103,26 @@ def test_root_errors_are_reported(tmp_path: Path) -> None:
     plain_file.write_text("x", encoding="utf-8")
     with pytest.raises(RepositoryScanError):
         scan_repository(plain_file)
+
+
+def test_symlinked_files_and_directories_are_not_read(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("secret = True\n", encoding="utf-8")
+    try:
+        (repo / "linked.py").symlink_to(outside)
+        (repo / "linked-dir").symlink_to(tmp_path, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("当前 Windows 账户没有创建符号链接的权限")
+        raise
+    _write(repo, "safe.py", "safe = True\n")
+
+    result = scan_repository(repo)
+
+    assert [item.relative_path for item in result.files] == ["safe.py"]
+    assert [(item.relative_path, item.reason) for item in result.skipped] == [
+        ("linked-dir", REASON_UNSAFE_PATH),
+        ("linked.py", REASON_UNSAFE_PATH)
+    ]

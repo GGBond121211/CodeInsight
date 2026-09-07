@@ -243,3 +243,68 @@ class ChangeEventResponse(BaseModel):
     event_type: str
     occurred_at_epoch_ms: int
     payload: dict[str, str]
+
+
+class ChatSessionRequest(BaseModel):
+    repository_root: str = Field(min_length=1)
+    session_id: str | None = None
+
+    @field_validator("repository_root", "session_id")
+    @classmethod
+    def strip_session_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("不能为空")
+        return stripped
+
+
+class ChatSessionResponse(BaseModel):
+    session_id: str
+    repo_id: str
+    index_version: str
+    status: str = "READY"
+    summary: str | None
+    compacted_through_sequence: int
+    active_goal: dict[str, object] | None
+    recent_turns: list[dict[str, object]]
+    cache_hit: bool
+    cache_fallback: bool
+
+
+class ChatTurnRequest(BaseModel):
+    session_id: str | None = None
+    repository_root: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    client_turn_id: str | None = None
+    limit: int = Field(default=5, ge=1, le=20)
+    validation_profile: str = "python_compile"
+    show_debug_reasoning: bool = False
+
+    @field_validator(
+        "session_id", "repository_root", "message", "client_turn_id", "validation_profile"
+    )
+    @classmethod
+    def strip_turn_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("不能为空")
+        return stripped
+
+
+class ChatTurnResponse(BaseModel):
+    turn_id: str
+    session_id: str
+    run_id: str
+    task_type: str
+    status: str
+    user_message: str
+    assistant_message: str | None
+    result: dict[str, object] | None
+    error: str | None
+    reasoning_available: bool
+    created_at_epoch_ms: int
+    updated_at_epoch_ms: int

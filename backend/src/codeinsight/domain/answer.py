@@ -25,6 +25,8 @@ class ModelCompletion:
     input_tokens: int | None
     output_tokens: int | None
     estimated_input_tokens: int | None = None
+    # 供应商显式返回的 reasoning 字段，只供本地调试实时通道使用。
+    reasoning_content: str | None = None
 
 
 @dataclass(frozen=True)

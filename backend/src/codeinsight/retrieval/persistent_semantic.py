@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -29,6 +30,11 @@ def default_semantic_cache_root() -> Path:
         return Path(os.environ["LOCALAPPDATA"]) / "CodeInsight" / "semantic-indexes"
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     return base / "codeinsight" / "semantic-indexes"
+
+
+def _fallback_semantic_cache_root() -> Path:
+    """默认缓存目录不可写时使用当前用户临时目录。"""
+    return Path(tempfile.gettempdir()) / "CodeInsight" / "semantic-indexes"
 
 
 def embedding_model_id(embed: EmbeddingFunction) -> str | None:
@@ -96,9 +102,22 @@ def _read_manifest(path: Path) -> dict[str, Any] | None:
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    serialized = json.dumps(payload, ensure_ascii=False) + "\n"
+    for _ in range(32):
+        # Keep the staging name short enough for a deeply nested Windows temp
+        # path while retaining exclusive creation for concurrent writers.
+        temporary = path.with_name(f".{uuid.uuid4().hex[:16]}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8") as stream:
+                stream.write(serialized)
+        except FileExistsError:
+            continue
+        try:
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return
+    raise FileExistsError("无法为语义索引分配唯一临时文件")
 
 
 def _embed_chunks(
@@ -124,6 +143,8 @@ def build_persistent_semantic_index(
 ) -> SemanticIndex:
     """加载未变化的向量，只为内容发生变化的文件生成 Embedding。"""
     root_path = Path(root).resolve()
+    configured_cache_root = os.environ.get("CODEINSIGHT_SEMANTIC_CACHE_DIR")
+    using_default_cache_root = cache_root is None and not configured_cache_root
     storage_root = Path(cache_root) if cache_root is not None else default_semantic_cache_root()
     path = _cache_path(
         root_path,
@@ -208,7 +229,18 @@ def build_persistent_semantic_index(
         "chunking_version": CHUNKING_VERSION,
         "files": files_payload,
     }
-    _write_manifest(path, manifest_payload)
+    try:
+        _write_manifest(path, manifest_payload)
+    except PermissionError:
+        if not using_default_cache_root:
+            raise
+        fallback_path = _cache_path(
+            root_path,
+            model=model,
+            chunk_max_lines=chunk_max_lines,
+            cache_root=_fallback_semantic_cache_root(),
+        )
+        _write_manifest(fallback_path, manifest_payload)
     vectors = tuple(ordered_vectors)
     def reuse_vectors(_texts: Sequence[str]) -> EmbeddingBatch:
         return EmbeddingBatch(model, vectors, 0)

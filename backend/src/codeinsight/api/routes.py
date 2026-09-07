@@ -8,11 +8,6 @@ from fastapi.responses import StreamingResponse
 
 from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.api.schemas import (
-    AgentAnswerRequest,
-    AgentAnswerResponse,
-    AgentEventResponse,
-    AnswerRequest,
-    AnswerResponse,
     AutoAnswerRequest,
     AutoAnswerResponse,
     AutoEventResponse,
@@ -30,17 +25,11 @@ from codeinsight.api.schemas import (
     HealthResponse,
     QueryPlanResponse,
     QueryPlanSubQuestionResponse,
-    SearchHitResponse,
-    SearchRequest,
-    SearchResponse,
     TokenUsageResponse,
 )
-from codeinsight.application.agent_answer_repository import agent_answer_repository
-from codeinsight.application.answer_repository import answer_repository
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.change_service import ChangeRequestError, ChangeService
 from codeinsight.application.query_router import QueryRouterResult, route_question
-from codeinsight.application.search_repository import search_repository
 from codeinsight.domain.answer import AutoAnswer, AutoAnswerEvent, SubQuestionAnswer
 from codeinsight.domain.errors import (
     ModelCallError,
@@ -54,14 +43,6 @@ from codeinsight.infrastructure.reranker import OpenAITextReranker, Reranker
 ModelFactory = Callable[[], OpenAIChatModel]
 EmbeddingFactory = Callable[[], OpenAIEmbeddingModel]
 RerankerFactory = Callable[[], Reranker]
-
-
-def _first_line(text: str) -> str:
-    for line in text.splitlines():
-        stripped_line = line.strip()
-        if stripped_line:
-            return stripped_line
-    return ""
 
 
 def _citation_responses(citations):
@@ -197,127 +178,6 @@ def create_router(
     def health() -> HealthResponse:
         return HealthResponse()
 
-    # 已停用的产品入口：保留实现以便将来明确恢复，但不注册 POST /api/v1/search。
-    # @router.post("/search", response_model=SearchResponse)
-    def search(request: SearchRequest) -> SearchResponse:
-        try:
-            embedding_model = embedding_factory() if request.retrieval_mode == "hybrid" else None
-            reranker = reranker_factory() if request.retrieval_mode == "hybrid" else None
-            results = search_repository(
-                request.repository_root,
-                request.question,
-                limit=request.limit,
-                retrieval_mode=request.retrieval_mode,
-                semantic_embed=embedding_model.embed if embedding_model else None,
-                reranker=reranker,
-            )
-        except ModelConfigurationError as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (ValueError, OSError) as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-        search_hits: list[SearchHitResponse] = []
-        for item in results:
-            search_hits.append(
-                SearchHitResponse(
-                    rank=item.rank,
-                    score=item.score,
-                    relative_path=item.chunk.relative_path,
-                    start_line=item.chunk.start_line,
-                    end_line=item.chunk.end_line,
-                    excerpt=_first_line(item.chunk.text),
-                    symbol_path=item.chunk.symbol_path,
-                    retrieval_reason=item.retrieval_reason,
-                )
-            )
-        return SearchResponse(
-            retrieval_mode=request.retrieval_mode,
-            results=search_hits,
-        )
-
-    # 已停用的产品入口：Auto Answer 内部仍复用 answer_repository。
-    # @router.post("/answer", response_model=AnswerResponse)
-    def answer(request: AnswerRequest) -> AnswerResponse:
-        try:
-            model = model_factory()
-            embedding_model = embedding_factory() if request.retrieval_mode == "hybrid" else None
-            reranker = reranker_factory() if request.retrieval_mode == "hybrid" else None
-            result = answer_repository(
-                request.repository_root,
-                request.question,
-                generate=model.generate,
-                limit=request.limit,
-                retrieval_mode=request.retrieval_mode,
-                semantic_embed=embedding_model.embed if embedding_model else None,
-                reranker=reranker,
-            )
-        except ModelConfigurationError as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (ModelCallError, ModelResponseError) as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
-        except (ValueError, OSError) as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-
-        return AnswerResponse(
-            outcome=result.outcome,
-            answer=result.answer,
-            citations=_citation_responses(result.citations),
-            retrieval_mode=result.retrieval_mode,
-            model=result.model,
-            prompt_version=result.prompt_version,
-            usage=TokenUsageResponse(
-                input_tokens=result.input_tokens or 0,
-                output_tokens=result.output_tokens or 0,
-            ),
-        )
-
-    # 已停用的产品入口：Auto Answer 内部仍复用 Agent 工作流。
-    # @router.post("/agent/answer", response_model=AgentAnswerResponse)
-    def agent_answer(request: AgentAnswerRequest) -> AgentAnswerResponse:
-        try:
-            model = model_factory()
-            embedding_model = embedding_factory() if request.retrieval_mode == "hybrid" else None
-            reranker = reranker_factory() if request.retrieval_mode == "hybrid" else None
-            agent_result = agent_answer_repository(
-                request.repository_root,
-                request.question,
-                complete=model.complete,
-                limit=request.limit,
-                retrieval_mode=request.retrieval_mode,
-                semantic_embed=embedding_model.embed if embedding_model else None,
-                reranker=reranker,
-            )
-        except ModelConfigurationError as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (ModelCallError, ModelResponseError) as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
-        except (ValueError, OSError) as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-
-        result = agent_result.result
-        agent_events: list[AgentEventResponse] = []
-        for event in agent_result.events:
-            agent_events.append(
-                AgentEventResponse(
-                    sequence=event.sequence,
-                    step=event.step,
-                    summary=event.summary,
-                )
-            )
-        return AgentAnswerResponse(
-            outcome=result.outcome,
-            answer=result.answer,
-            citations=_citation_responses(result.citations),
-            retrieval_mode=result.retrieval_mode,
-            model=result.model,
-            prompt_version=result.prompt_version,
-            usage=TokenUsageResponse(
-                input_tokens=agent_result.input_tokens,
-                output_tokens=agent_result.output_tokens,
-            ),
-            revisions=agent_result.revisions,
-            events=agent_events,
-        )
-
     @router.post("/auto/answer", response_model=AutoAnswerResponse)
     def auto_answer(request: AutoAnswerRequest) -> AutoAnswerResponse:
         try:
@@ -429,6 +289,10 @@ def create_change_router(change_service: ChangeService | None = None) -> APIRout
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (ChangeRequestError, ValueError, OSError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(
+                status_code=503, detail="执行异常，请查询变更结果；未确认状态不得自动重放"
+            ) from error
         return ChangeResultResponse(**result.as_dict())
 
     @router.post("/change/rollback", response_model=ChangeResultResponse)
@@ -439,6 +303,10 @@ def create_change_router(change_service: ChangeService | None = None) -> APIRout
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (ChangeRequestError, ValueError, OSError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(
+                status_code=503, detail="回滚未确认完成，请查询变更结果并人工核对工作区"
+            ) from error
         return ChangeResultResponse(**result.as_dict())
 
     @router.post("/change/{run_id}/cancel", response_model=ChangeCancelResponse)
@@ -448,6 +316,16 @@ def create_change_router(change_service: ChangeService | None = None) -> APIRout
         except ChangeRequestError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         return ChangeCancelResponse(status=status, run_id=run_id, immediate=immediate)
+
+    @router.get("/change/{run_id}/patches/{patch_id}", response_model=ChangeResultResponse)
+    def change_result(run_id: str, patch_id: str) -> ChangeResultResponse:
+        try:
+            result = changes.get_result(run_id, patch_id)
+        except ChangeRequestError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        if result is None:
+            raise HTTPException(status_code=404, detail="变更结果尚未生成")
+        return ChangeResultResponse(**result.as_dict())
 
     @router.get("/change/{run_id}/events")
     def change_events(

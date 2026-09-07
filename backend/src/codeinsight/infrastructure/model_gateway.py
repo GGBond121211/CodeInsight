@@ -18,6 +18,7 @@ from openai import OpenAI
 from codeinsight.agent.tool_loop import ToolModelResponse
 from codeinsight.application.context_budget import estimate_tokens
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
+from codeinsight.domain.errors import ModelConfigurationError
 from codeinsight.domain.trace import MODEL_CALLED, MODEL_RESULT, RunEvent
 from codeinsight.infrastructure.event_log import InMemoryEventLog
 from codeinsight.infrastructure.gateway_errors import (
@@ -45,6 +46,11 @@ from codeinsight.infrastructure.provider_adapters import (
 )
 from codeinsight.infrastructure.request_fingerprint import request_fingerprints
 
+DEFAULT_MAX_OUTPUT_TOKENS = 40_960
+DEFAULT_CONTEXT_INPUT_TOKENS = 70_000
+MIN_CONFIGURED_OUTPUT_TOKENS = 256
+MAX_CONFIGURED_OUTPUT_TOKENS = 100_000
+
 
 @dataclass(frozen=True)
 class CacheContext:
@@ -70,6 +76,8 @@ class GatewayRequest:
     response_format: Mapping[str, object] | None = None
     cache_context: CacheContext | None = None
     run_id: str | None = None
+    # 聊天 Run 可把 Gateway 生命周期事件送入自己的实时事件流。
+    event_log: object | None = None
 
     def __post_init__(self) -> None:
         if not self.request_id or not self.tenant_id or not self.user_id:
@@ -145,6 +153,7 @@ class GatewayResponse:
     request_fingerprint: str = ""
     stable_prefix_fingerprint: str = ""
     semantic_cache_hit: bool = False
+    reasoning_content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -405,6 +414,8 @@ class ModelGateway:
                                     "model": profile.model_id,
                                     "outcome": "error",
                                     "error_class": error.code,
+                                    "error_detail": _public_error_detail(error),
+                                    "finish_reason": response.finish_reason,
                                 },
                             )
                         else:
@@ -448,6 +459,7 @@ class ModelGateway:
                             "cache_miss_tokens": str(response.effective_cache_miss_tokens),
                             "cache_hit_ratio": f"{response.cache_hit_ratio:.6f}",
                             "usage_source": response.usage_source,
+                            "finish_reason": response.finish_reason,
                             "request_fingerprint": response_cost.request_fingerprint,
                             "stable_prefix_fingerprint": response_cost.stable_prefix_fingerprint,
                         },
@@ -467,6 +479,7 @@ class ModelGateway:
                         cache_miss_tokens=response.effective_cache_miss_tokens,
                         request_fingerprint=fingerprints.request,
                         stable_prefix_fingerprint=fingerprints.stable_prefix,
+                        reasoning_content=response.reasoning_content,
                     )
                     if response.model == candidates[0]:
                         self.semantic_cache.set(primary_cache_key, result)
@@ -501,6 +514,7 @@ class ModelGateway:
                 "scene": request.scene,
                 "model": profile.model_id,
                 "fallback_reason": fallback_reason or "none",
+                "max_output_tokens": str(request.reserved_output_tokens),
                 "request_fingerprint": fingerprints.request,
                 "stable_prefix_fingerprint": fingerprints.stable_prefix,
             },
@@ -543,6 +557,7 @@ class ModelGateway:
                     "model": profile.model_id,
                     "outcome": "error",
                     "error_class": error.code,
+                    "error_detail": _public_error_detail(error),
                 },
             )
             trace = AttemptTrace(
@@ -625,8 +640,9 @@ class ModelGateway:
 
     def _emit(self, request: GatewayRequest, event_type: str, payload: dict[str, str]) -> None:
         run_id = request.run_id or request.request_id
-        sequence = self.event_log.next_sequence(run_id)
-        self.event_log.append(
+        event_log = request.event_log or self.event_log
+        sequence = event_log.next_sequence(run_id)
+        event_log.append(
             RunEvent(
                 event_id=f"{run_id}:{sequence}",
                 run_id=run_id,
@@ -661,6 +677,9 @@ class ModelGateway:
         cache_miss_tokens = sum(_cost_cache_miss(record) for record in records)
         output_tokens = sum(record.output_tokens for record in records)
         total_stars = sum((record.total_stars for record in records), Decimal(0))
+        unknown_usage_count = sum(
+            record.usage_source in {"unknown", "unavailable"} for record in records
+        )
         return {
             "requests": requests_total,
             "provider_attempts": len(records),
@@ -669,11 +688,18 @@ class ModelGateway:
             "input_tokens": input_tokens,
             "cache_read_tokens": cache_read_tokens,
             "cache_miss_tokens": cache_miss_tokens,
+            "cache_write_tokens": None,
             "output_tokens": output_tokens,
             "cache_hit_ratio": (
                 cache_read_tokens / input_tokens if input_tokens else 0.0
             ),
             "estimated_cost_stars": str(total_stars),
+            "unknown_usage_count": unknown_usage_count,
+            "usage_coverage": (
+                (requests_total - unknown_usage_count) / requests_total
+                if requests_total
+                else 0.0
+            ),
         }
 
     @staticmethod
@@ -682,8 +708,12 @@ class ModelGateway:
             raise InvalidResponseGatewayError("工具路线返回了空响应")
         if request.response_format is not None:
             try:
-                parsed = json.loads(response.content or "")
-            except json.JSONDecodeError:
+                parsed = _decode_json_object(response.content)
+            except ValueError:
+                if response.finish_reason == "length":
+                    raise InvalidResponseGatewayError(
+                        "结构化输出因达到 max_tokens 被截断"
+                    ) from None
                 raise InvalidResponseGatewayError("结构化输出不是有效 JSON") from None
             if not isinstance(parsed, dict):
                 raise InvalidResponseGatewayError("结构化输出必须是 JSON object")
@@ -766,17 +796,147 @@ def _cost_cache_miss(record: CostRecord) -> int:
     return record.cache_miss_tokens or max(0, record.input_tokens - record.cached_tokens)
 
 
+def usage_record_as_dict(record: CostRecord) -> dict[str, object]:
+    """序列化低敏 attempt 元数据；不返回 prompt、工具参数或模型正文。"""
+
+    cache_miss_tokens = _cost_cache_miss(record)
+    return {
+        "recorded_at_epoch_ms": record.recorded_at_epoch_ms or None,
+        "request_id": record.request_id,
+        "attempt_id": record.attempt_id,
+        "scene": record.scene,
+        "prompt_version": record.prompt_version,
+        "provider": record.provider,
+        "model_tier": record.model_tier,
+        "model": record.model,
+        "status": "error" if record.error_class else "ok",
+        "input_tokens": record.input_tokens,
+        "cache_write_tokens": None,
+        "cache_read_tokens": record.cached_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
+        "output_tokens": record.output_tokens,
+        "cache_hit_ratio": (
+            record.cached_tokens / record.input_tokens if record.input_tokens else 0.0
+        ),
+        "estimated_cost_stars": str(record.total_stars),
+        "latency_milliseconds": record.latency_milliseconds,
+        "fallback_reason": record.fallback_reason,
+        "error_class": record.error_class,
+        "usage_source": record.usage_source,
+        "request_fingerprint": record.request_fingerprint or None,
+        "stable_prefix_fingerprint": record.stable_prefix_fingerprint or None,
+    }
+
+
+def _decode_json_object(content: str | None) -> object:
+    """解析结构化响应，并与业务层兼容代码围栏和外围说明。"""
+    candidate = (content or "").strip()
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("结构化响应不是 JSON") from None
+        try:
+            return json.loads(candidate[start : end + 1])
+        except json.JSONDecodeError:
+            raise ValueError("结构化响应不是 JSON") from None
+
+
+def _public_error_detail(error: GatewayError) -> str:
+    """返回可进入实时事件的低敏错误细节；不透传供应商原始响应。"""
+    known_details = {
+        "工具路线返回了空响应": "tool_response_empty",
+        "tool_call 缺少 function": "tool_call_missing_function",
+        "tool_call arguments 不是 JSON": "tool_call_arguments_invalid_json",
+        "tool_call arguments 必须是 object": "tool_call_arguments_not_object",
+        "结构化输出不是有效 JSON": "structured_output_invalid_json",
+        "结构化输出因达到 max_tokens 被截断": "structured_output_truncated",
+        "结构化输出必须是 JSON object": "structured_output_not_object",
+    }
+    return known_details.get(str(error), error.code.lower())
+
+
+def configured_max_output_tokens() -> int:
+    """读取真实 Provider 的输出上限；默认值覆盖 reasoning + 最终 JSON。"""
+    raw = os.environ.get("CODEINSIGHT_MAX_OUTPUT_TOKENS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_OUTPUT_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ModelConfigurationError(
+            "CODEINSIGHT_MAX_OUTPUT_TOKENS 必须是整数"
+        ) from None
+    if not MIN_CONFIGURED_OUTPUT_TOKENS <= value <= MAX_CONFIGURED_OUTPUT_TOKENS:
+        raise ModelConfigurationError(
+            "CODEINSIGHT_MAX_OUTPUT_TOKENS 必须在 "
+            f"{MIN_CONFIGURED_OUTPUT_TOKENS} 到 {MAX_CONFIGURED_OUTPUT_TOKENS} 之间"
+        )
+    return value
+
+
+def configured_routes_from_environment(
+    registry: ModelRegistry | None = None,
+) -> dict[str, RouteProfile]:
+    """按当前单一 Provider 端点构造运行时路由。
+
+    价格表里的模型是能力目录，不等于当前 ``CODEINSIGHT_BASE_URL`` 都能调用。
+    因此默认不跨模型自动降级；只有显式配置 ``CODEINSIGHT_FALLBACK_MODELS``
+    才启用候选模型，避免把不属于当前端点的模型误发给上游。
+    """
+    selected = registry or default_model_registry()
+    raw_fallbacks = os.environ.get("CODEINSIGHT_FALLBACK_MODELS", "").strip()
+    fallback_model_ids: list[str] = []
+    if raw_fallbacks:
+        for model_id in raw_fallbacks.split(","):
+            normalized = model_id.strip()
+            if not normalized or normalized in fallback_model_ids:
+                continue
+            try:
+                selected.require(normalized)
+            except KeyError:
+                raise ModelConfigurationError(
+                    f"CODEINSIGHT_FALLBACK_MODELS 包含未登记模型：{normalized}"
+                ) from None
+            fallback_model_ids.append(normalized)
+
+    defaults = default_routes(selected)
+    return {
+        scene: replace(
+            route,
+            fallback_model_ids=tuple(
+                model_id
+                for model_id in fallback_model_ids
+                if model_id != route.primary_model_id
+            ),
+        )
+        for scene, route in defaults.items()
+    }
+
+
 @lru_cache(maxsize=1)
 def default_gateway_from_environment() -> ModelGateway:
     """进程内共享状态；熔断、配额、缓存不能每个 HTTP 请求重新创建。"""
     if os.environ.get("CODEINSIGHT_GATEWAY_FAKE_MODE") == "1":
         from codeinsight.infrastructure.provider_adapters import StaticFakeProviderAdapter
 
-        return ModelGateway(provider=StaticFakeProviderAdapter())
+        registry = default_model_registry()
+        return ModelGateway(
+            provider=StaticFakeProviderAdapter(),
+            registry=registry,
+            routes=configured_routes_from_environment(registry),
+        )
     api_key = os.environ.get("CODEINSIGHT_API_KEY", "").strip()
     if not api_key:
-        from codeinsight.domain.errors import ModelConfigurationError
-
         raise ModelConfigurationError("必须配置 CODEINSIGHT_API_KEY")
     base_url = os.environ.get("CODEINSIGHT_BASE_URL", "").strip() or None
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0, max_retries=0)
@@ -798,8 +958,13 @@ def default_gateway_from_environment() -> ModelGateway:
         session_factory = create_session_factory(engine)
         event_log = MySqlEventLog(session_factory)
         cost_store = MySqlGatewayCostStore(session_factory)
+    registry = default_model_registry()
     return ModelGateway(
-        provider=OpenAIProviderAdapter(client), event_log=event_log, cost_store=cost_store
+        provider=OpenAIProviderAdapter(client),
+        registry=registry,
+        routes=configured_routes_from_environment(registry),
+        event_log=event_log,
+        cost_store=cost_store,
     )
 
 
@@ -816,7 +981,16 @@ class GatewayChatModel:
     def from_environment(cls, *, context_assembler=None) -> GatewayChatModel:
         return cls(default_gateway_from_environment(), context_assembler=context_assembler)
 
-    def complete(self, system_prompt: str, user_prompt: str) -> ModelCompletion:
+    def complete(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        run_id: str | None = None,
+        event_log=None,
+        cache_context: CacheContext | None = None,
+    ) -> ModelCompletion:
+        output_budget = configured_max_output_tokens()
         request_user_prompt = user_prompt
         estimated = estimate_tokens(system_prompt + user_prompt)
         if self._context_assembler is not None:
@@ -829,6 +1003,8 @@ class GatewayChatModel:
                     user_code_task=user_prompt,
                     model_version=self.model,
                     strategy_version="context-assembler-v1",
+                    max_tokens=DEFAULT_CONTEXT_INPUT_TOKENS + output_budget,
+                    reserved_output_tokens=output_budget,
                 )
             )
             request_user_prompt = assembly.user_text
@@ -845,9 +1021,12 @@ class GatewayChatModel:
                     {"role": "user", "content": request_user_prompt},
                 ),
                 estimated,
-                1000,
+                output_budget,
                 frozenset({"text"}),
                 response_format={"type": "json_object"},
+                run_id=run_id,
+                event_log=event_log,
+                cache_context=cache_context,
             )
         )
         return ModelCompletion(
@@ -856,12 +1035,27 @@ class GatewayChatModel:
             response.input_tokens,
             response.output_tokens,
             estimated,
+            response.reasoning_content,
         )
 
-    def generate(self, system_prompt: str, user_prompt: str) -> ModelAnswer:
+    def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        run_id: str | None = None,
+        event_log=None,
+        cache_context: CacheContext | None = None,
+    ) -> ModelAnswer:
         from codeinsight.infrastructure.openai_chat import parse_model_answer
 
-        result = self.complete(system_prompt, user_prompt)
+        result = self.complete(
+            system_prompt,
+            user_prompt,
+            run_id=run_id,
+            event_log=event_log,
+            cache_context=cache_context,
+        )
         return parse_model_answer(
             result.content,
             model=result.model,
@@ -873,7 +1067,12 @@ class GatewayChatModel:
         self,
         messages: tuple[Mapping[str, object], ...] | list[Mapping[str, object]],
         tools: tuple[Mapping[str, object], ...] | list[Mapping[str, object]],
+        *,
+        run_id: str | None = None,
+        event_log=None,
+        cache_context: CacheContext | None = None,
     ) -> ToolModelResponse:
+        output_budget = configured_max_output_tokens()
         response = self.gateway.complete(
             GatewayRequest(
                 uuid.uuid4().hex,
@@ -883,9 +1082,12 @@ class GatewayChatModel:
                 "tool-loop-v1",
                 tuple(messages),
                 estimate_tokens(json.dumps(messages, ensure_ascii=False, default=str)),
-                1000,
+                output_budget,
                 frozenset({"text", "tools", "structured_output"}),
                 tuple(tools),
+                run_id=run_id,
+                event_log=event_log,
+                cache_context=cache_context,
             )
         )
         return ToolModelResponse(
@@ -894,6 +1096,7 @@ class GatewayChatModel:
             response.model,
             response.input_tokens,
             response.output_tokens,
+            response.reasoning_content,
         )
 
 

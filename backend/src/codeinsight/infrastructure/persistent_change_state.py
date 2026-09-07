@@ -13,9 +13,10 @@ import threading
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from codeinsight.domain.change import ChangeApproval
-from codeinsight.domain.trace import AuditRecord, IdempotencyKey, RunEvent
+from codeinsight.domain.trace import AuditRecord, RunEvent
 from codeinsight.infrastructure.event_log import EventSequenceError
 from codeinsight.infrastructure.run_store import (
     ApprovalAlreadyConsumedError,
@@ -34,17 +35,44 @@ class JsonObjectStore:
         with self._lock:
             target = self._path(namespace, key)
             target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8"
-            )
-            os.replace(temporary, target)
+            # Multiple API requests can persist the same run concurrently.  A
+            # fixed ``.tmp`` sibling lets those writers delete/replace each
+            # other's staging file on Windows before ``os.replace`` runs.
+            # Keep the temporary name independent of the long target hash:
+            # pytest can place this path near Windows' MAX_PATH boundary when
+            # the repository path is nested.
+            serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            for _ in range(32):
+                temporary = target.with_name(f".{uuid4().hex[:16]}.tmp")
+                try:
+                    with temporary.open("x", encoding="utf-8") as stream:
+                        stream.write(serialized)
+                except FileExistsError:
+                    continue
+                try:
+                    os.replace(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                return
+            raise FileExistsError("无法为持久化状态分配唯一临时文件")
 
     def get(self, namespace: str, key: str) -> dict[str, Any] | None:
-        target = self._path(namespace, key)
-        if not target.is_file():
+        target = next(
+            (
+                candidate
+                for candidate in self._path_candidates(namespace, key)
+                if candidate.is_file()
+            ),
+            None,
+        )
+        if target is None:
             return None
         return json.loads(target.read_text(encoding="utf-8"))
+
+    def delete(self, namespace: str, key: str) -> None:
+        for target in self._path_candidates(namespace, key):
+            if target.is_file():
+                target.unlink()
 
     def list(self, namespace: str) -> tuple[dict[str, Any], ...]:
         directory = self.base_dir / namespace
@@ -56,8 +84,14 @@ class JsonObjectStore:
         )
 
     def _path(self, namespace: str, key: str) -> Path:
-        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
         return self.base_dir / namespace / f"{digest}.json"
+
+    def _path_candidates(self, namespace: str, key: str) -> tuple[Path, ...]:
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        compact = self.base_dir / namespace / f"{digest[:24]}.json"
+        legacy = self.base_dir / namespace / f"{digest}.json"
+        return (compact, legacy) if compact != legacy else (compact,)
 
 
 class PersistentApprovalStore:
@@ -75,7 +109,8 @@ class PersistentApprovalStore:
 
     def get(self, token: str) -> ChangeApproval | None:
         key = self._key(token)
-        payload = self._objects.get("active", key) or self._objects.get("consumed", key)
+        # 消耗已落盘但 active 未删除时，不能让旧审批重新生效。
+        payload = self._objects.get("consumed", key) or self._objects.get("active", key)
         if payload is None:
             return None
         payload["token"] = token
@@ -96,32 +131,12 @@ class PersistentApprovalStore:
             payload = asdict(consumed)
             payload["token"] = key
             self._objects.put("consumed", key, payload)
-            active = self._objects._path("active", key)
-            if active.exists():
-                active.unlink()
+            self._objects.delete("active", key)
             return consumed
 
     @staticmethod
     def _key(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-class PersistentIdempotencyStore:
-    def __init__(self, base_dir: str | Path) -> None:
-        self._objects = JsonObjectStore(Path(base_dir) / "idempotency")
-        self._lock = threading.RLock()
-
-    def register(self, key: IdempotencyKey, *, result_ref: str) -> bool:
-        composite = f"{key.scope}\0{key.key}"
-        with self._lock:
-            if self._objects.get("entries", composite) is not None:
-                return False
-            self._objects.put("entries", composite, {"result_ref": result_ref})
-            return True
-
-    def lookup(self, key: IdempotencyKey) -> str | None:
-        found = self._objects.get("entries", f"{key.scope}\0{key.key}")
-        return str(found["result_ref"]) if found else None
 
 
 class PersistentEventLog:

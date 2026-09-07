@@ -26,6 +26,10 @@ CLAUDE.md
 
 # Private local project history
 docs/*.md
+!docs/CAPABILITIES.md
+!docs/DEMO.md
+!docs/EVALUATION_SUMMARY.md
+!docs/RELEASE_*.md
 # 外部阅读笔记，含求职语境，与 docs/*.md 同属私有
 docs/knowledge/
 

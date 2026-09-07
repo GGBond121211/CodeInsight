@@ -1,4 +1,4 @@
-"""向量后端的最小契约，以及可回退的本地 exact 实现。"""
+"""向量后端的最小契约和显式选择的本地 exact 实现。"""
 
 from __future__ import annotations
 
@@ -46,98 +46,8 @@ class VectorStore(Protocol):
     def health(self) -> bool: ...
 
 
-class FallbackVectorStore:
-    """显式的主后端/回退后端选择器，并保留本次选择原因。
-
-    只有调用方明确组合两个后端时才启用回退；普通 ``VectorStore`` 不会
-    静默改变后端。写入、查询和删除都遵循同一选择结果，便于上层把
-    ``last_backend`` 与 ``last_reason`` 写入 Trace。
-    """
-
-    def __init__(
-        self,
-        primary: VectorStore,
-        fallback: VectorStore,
-        *,
-        primary_name: str = "qdrant_hnsw",
-        fallback_name: str = "local_json",
-    ) -> None:
-        self.primary = primary
-        self.fallback = fallback
-        self.primary_name = primary_name
-        self.fallback_name = fallback_name
-        self.last_backend = primary_name
-        self.last_reason: str | None = None
-
-    def _use_fallback(self, reason: str) -> VectorStore:
-        self.last_backend = self.fallback_name
-        self.last_reason = reason
-        return self.fallback
-
-    def _use_primary(self) -> VectorStore:
-        self.last_backend = self.primary_name
-        self.last_reason = None
-        return self.primary
-
-    def _selected(self) -> VectorStore:
-        try:
-            if self.primary.health():
-                return self._use_primary()
-            return self._use_fallback("primary health check returned false")
-        except Exception as error:
-            return self._use_fallback(f"primary health check failed: {type(error).__name__}")
-
-    def upsert(self, points: Iterable[VectorPoint]) -> None:
-        values = tuple(points)
-        store = self._selected()
-        try:
-            store.upsert(values)
-        except Exception as error:
-            if store is self.fallback:
-                raise
-            self._use_fallback(f"primary upsert failed: {type(error).__name__}").upsert(values)
-
-    def search(
-        self,
-        vector: Sequence[float],
-        *,
-        limit: int = 5,
-        query_filter: Mapping[str, object] | None = None,
-    ) -> tuple[VectorSearchHit, ...]:
-        store = self._selected()
-        try:
-            return store.search(vector, limit=limit, query_filter=query_filter)
-        except Exception as error:
-            if store is self.fallback:
-                raise
-            return self._use_fallback(f"primary search failed: {type(error).__name__}").search(
-                vector,
-                limit=limit,
-                query_filter=query_filter,
-            )
-
-    def delete(self, point_ids: Iterable[str]) -> None:
-        ids = tuple(point_ids)
-        store = self._selected()
-        try:
-            store.delete(ids)
-        except Exception as error:
-            if store is self.fallback:
-                raise
-            self._use_fallback(f"primary delete failed: {type(error).__name__}").delete(ids)
-
-    def health(self) -> bool:
-        store = self._selected()
-        try:
-            return store.health()
-        except Exception:
-            if store is self.fallback:
-                return False
-            return self._use_fallback("primary health check failed during health").health()
-
-
 class LocalJsonVectorStore:
-    """使用 JSON 文件保存向量并执行精确 cosine 搜索的回退后端。"""
+    """使用 JSON 文件保存向量并执行精确 cosine 搜索的独立后端。"""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)

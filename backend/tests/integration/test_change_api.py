@@ -45,6 +45,8 @@ def test_preview_approve_apply_and_rollback_are_separate_steps(tmp_path: Path) -
     )
     assert preview.status_code == 200
     preview_payload = preview.json()
+    result_url = f"/api/v2/change/run-api-1/patches/{preview_payload['patch_id']}"
+    assert client.get(result_url).status_code == 404
     assert preview_payload["status"] == "preview_ready"
     assert source_file.read_text(encoding="utf-8") == "value = 1\n"
 
@@ -65,6 +67,7 @@ def test_preview_approve_apply_and_rollback_are_separate_steps(tmp_path: Path) -
     )
     assert applied.status_code == 200
     assert applied.json()["status"] == "COMPLETED"
+    assert client.get(result_url).json() == applied.json()
     assert source_file.read_text(encoding="utf-8") == "value = 1\n"
 
     rolled_back = client.post(
@@ -73,6 +76,7 @@ def test_preview_approve_apply_and_rollback_are_separate_steps(tmp_path: Path) -
     )
     assert rolled_back.status_code == 200
     assert rolled_back.json()["status"] == "ROLLED_BACK"
+    assert client.get(result_url).json()["status"] == "ROLLED_BACK"
 
     events = client.get("/api/v2/change/run-api-1/events")
     assert events.status_code == 200

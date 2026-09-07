@@ -15,6 +15,7 @@ from codeinsight.domain.trace import (
     VERDICT_PARTIAL,
     ReconcileResult,
 )
+from codeinsight.ingestion.path_policy import safe_path, safe_relative_path
 
 MAX_PATCH_BYTES = 512_000
 MAX_TOUCHED_FILES = 10
@@ -278,34 +279,6 @@ def _fingerprint_map(values: Mapping[str, str]) -> str:
         digest.update(fingerprint.encode("ascii"))
         digest.update(b"\0")
     return digest.hexdigest()
-
-
-def safe_relative_path(value: str) -> str:
-    candidate = Path(value)
-    if candidate.is_absolute() or ".." in candidate.parts:
-        raise PermissionError("路径必须位于 workspace 根目录内")
-    if not candidate.parts or any(part in {".git", ".hg", ".svn"} for part in candidate.parts):
-        raise PermissionError("版本控制目录不属于允许范围")
-    basename = candidate.name.lower()
-    if basename in {".env", ".env.local", ".env.production", "id_rsa", "id_dsa"}:
-        raise PermissionError("敏感文件不允许读写")
-    if basename.startswith(".env.") or basename.endswith((".pem", ".key", ".p12", ".pfx")):
-        raise PermissionError("敏感文件不允许读写")
-    normalized = candidate.as_posix()
-    if not normalized or normalized == ".":
-        raise ValueError("路径不能为空")
-    return normalized
-
-
-def safe_path(root: Path, relative: str) -> Path:
-    target = root / relative
-    try:
-        target.resolve().relative_to(root)
-    except ValueError as error:
-        raise PermissionError("路径越界") from error
-    if target.exists() and target.is_symlink():
-        raise PermissionError("不允许通过符号链接访问文件")
-    return target
 
 
 def fingerprint_text(value: str) -> str:

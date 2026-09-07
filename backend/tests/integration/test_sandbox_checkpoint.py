@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from codeinsight.application.change_service import ChangeRequestError, ChangeService
-from codeinsight.infrastructure.sandbox import SandboxResult
+from codeinsight.infrastructure.sandbox import SandboxPreflightResult, SandboxResult
 from codeinsight.infrastructure.workspace import WorkspaceManager
 
 
@@ -19,6 +19,36 @@ class FailingSandbox:
         return SandboxResult(
             profile, ("python -m compileall -q .",), False, "CHECK_FAILED", "syntax error"
         )
+
+
+class UnavailableSandbox:
+    def preflight(self, profile):
+        return SandboxPreflightResult(
+            profile, False, "SANDBOX_PERMISSION_DENIED", "docker_engine: Access is denied"
+        )
+
+    def run(self, profile, workspace_path):
+        raise AssertionError("unavailable Sandbox must be rejected before run")
+
+
+class RetryableSandbox:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def preflight(self, profile):
+        return SandboxPreflightResult(profile, True)
+
+    def run(self, profile, workspace_path):
+        self.calls += 1
+        if self.calls == 1:
+            return SandboxResult(
+                profile,
+                ("python -m compileall -q .",),
+                False,
+                "SANDBOX_PERMISSION_DENIED",
+                "docker_engine: Access is denied",
+            )
+        return SandboxResult(profile, ("python -m compileall -q .",), True)
 
 
 def _repo(tmp_path: Path) -> tuple[Path, Path]:
@@ -92,6 +122,70 @@ def test_wrong_approval_and_baseline_change_cannot_apply(tmp_path: Path) -> None
     source.write_text("value = 99\n", encoding="utf-8")
     with pytest.raises((ChangeRequestError, RuntimeError), match="指纹|基线"):
         service.apply("run-safe", preview.patch_id, token)
+
+
+def test_unavailable_sandbox_is_rejected_before_approval_is_consumed(tmp_path: Path) -> None:
+    repo, source = _repo(tmp_path)
+    service = ChangeService(
+        workspace_manager=WorkspaceManager(tmp_path / "managed"), sandbox=UnavailableSandbox()
+    )
+    preview = service.preview(
+        repo,
+        run_id="run-preflight",
+        path="app.py",
+        new_content="value = 2\n",
+        validation_profile="python_compile",
+    )
+    token = service.approve("run-preflight", preview.patch_id)
+
+    with pytest.raises(ChangeRequestError, match="SANDBOX_PERMISSION_DENIED"):
+        service.apply("run-preflight", preview.patch_id, token)
+
+    approval = service.approvals.get(token)
+    assert approval is not None
+    assert approval.is_consumed is False
+    assert source.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_retry_validation_reuses_applied_patch_without_generating_a_new_one(
+    tmp_path: Path,
+) -> None:
+    repo, source = _repo(tmp_path)
+    sandbox = RetryableSandbox()
+    service = ChangeService(
+        workspace_manager=WorkspaceManager(tmp_path / "managed"), sandbox=sandbox
+    )
+    preview = service.preview(
+        repo,
+        run_id="run-retry-validation",
+        path="app.py",
+        new_content="value = 2\n",
+        validation_profile="python_compile",
+    )
+    token = service.approve("run-retry-validation", preview.patch_id)
+    first = service.apply("run-retry-validation", preview.patch_id, token)
+    assert first.status == "REVIEW_REQUIRED"
+
+    retried = service.retry_validation(
+        "run-retry-validation", preview.patch_id, event_run_id="chat-retry"
+    )
+
+    assert retried.status == "COMPLETED"
+    assert sandbox.calls == 2
+    assert source.read_text(encoding="utf-8") == "value = 1\n"
+    managed = service.workspaces.get("run-retry-validation")
+    assert managed is not None
+    assert (
+        (Path(managed.run.workspace_path) / "app.py").read_text(encoding="utf-8")
+        == "value = 2\n"
+    )
+    event_types = [event.event_type for event in service.events_after("chat-retry")]
+    assert event_types == [
+        "reconcile_performed",
+        "validation_started",
+        "validation_finished",
+        "run_finished",
+    ]
 
 
 def test_path_and_profile_are_allowlisted(tmp_path: Path) -> None:

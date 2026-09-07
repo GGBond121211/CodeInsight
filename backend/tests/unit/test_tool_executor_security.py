@@ -32,7 +32,7 @@ def test_executor_keeps_read_and_write_inside_repository(tmp_path: Path):
     assert not escaped_patch.ok and escaped_patch.error_code == "PERMISSION"
     assert proposed.ok
     assert not blocked_apply.ok
-    assert blocked_apply.data["applied"] is False
+    assert blocked_apply.error_code == "VALIDATION"
     assert source.read_text(encoding="utf-8") == "value = 1\n"
 
 

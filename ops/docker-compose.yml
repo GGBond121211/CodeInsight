@@ -5,7 +5,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: codeinsight-api:2.0.1-local
+    image: codeinsight-api:2.0.2-local
     restart: unless-stopped
     ports:
       - "127.0.0.1:18000:8000"
@@ -31,7 +31,7 @@ services:
         condition: service_healthy
 
   gateway-a:
-    image: codeinsight-api:2.0.1-local
+    image: codeinsight-api:2.0.2-local
     restart: unless-stopped
     environment:
       CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
@@ -43,7 +43,7 @@ services:
       retries: 12
 
   gateway-b:
-    image: codeinsight-api:2.0.1-local
+    image: codeinsight-api:2.0.2-local
     restart: unless-stopped
     environment:
       CODEINSIGHT_GATEWAY_FAKE_MODE: "1"
@@ -68,7 +68,7 @@ services:
         condition: service_healthy
 
   worker:
-    image: codeinsight-api:2.0.1-local
+    image: codeinsight-api:2.0.2-local
     restart: unless-stopped
     env_file:
       - .env.example

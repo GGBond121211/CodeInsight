@@ -48,12 +48,23 @@ CHECKPOINT_CREATED = "checkpoint_created"
 PATCH_APPLIED = "patch_applied"
 VALIDATION_STARTED = "validation_started"
 VALIDATION_FINISHED = "validation_finished"
+VALIDATION_PREFLIGHT = "validation_preflight"
+PATCH_REJECTED = "patch_rejected"
 REPAIR_ATTEMPTED = "repair_attempted"
 ROLLBACK_PERFORMED = "rollback_performed"
 STATE_TRANSITIONED = "state_transitioned"
 CANCEL_REQUESTED = "cancel_requested"
 RECONCILE_PERFORMED = "reconcile_performed"
 RUN_FINISHED = "run_finished"
+TURN_ACCEPTED = "turn_accepted"
+SESSION_LOADED = "session_loaded"
+INTENT_CLASSIFIED = "intent_classified"
+CONTEXT_ASSEMBLED = "context_assembled"
+CONTEXT_COMPACTED = "context_compacted"
+RETRIEVAL_STARTED = "retrieval_started"
+RETRIEVAL_FINISHED = "retrieval_finished"
+MODEL_GENERATING = "model_generating"
+ANSWER_READY = "answer_ready"
 
 SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
     {
@@ -78,12 +89,23 @@ SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
         PATCH_APPLIED,
         VALIDATION_STARTED,
         VALIDATION_FINISHED,
+        VALIDATION_PREFLIGHT,
+        PATCH_REJECTED,
         REPAIR_ATTEMPTED,
         ROLLBACK_PERFORMED,
         STATE_TRANSITIONED,
         CANCEL_REQUESTED,
         RECONCILE_PERFORMED,
         RUN_FINISHED,
+        TURN_ACCEPTED,
+        SESSION_LOADED,
+        INTENT_CLASSIFIED,
+        CONTEXT_ASSEMBLED,
+        CONTEXT_COMPACTED,
+        RETRIEVAL_STARTED,
+        RETRIEVAL_FINISHED,
+        MODEL_GENERATING,
+        ANSWER_READY,
     }
 )
 

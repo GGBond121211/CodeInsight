@@ -79,6 +79,10 @@ def test_exception_during_validation_rolls_back_entire_change_set(tmp_path: Path
     workspace = Path(service.workspaces.get("run-atomic").run.workspace_path)  # type: ignore[union-attr]
     assert (workspace / "a.py").read_text(encoding="utf-8") == "a = 1\n"
     assert not (workspace / "new.py").exists()
+    restored = service.get_result("run-atomic", preview.patch_id)
+    assert restored is not None
+    assert restored.status == "ROLLED_BACK"
+    assert restored.reason == "执行异常，已回滚：RuntimeError"
 
 
 def test_service_restart_recovers_persistent_change_state(tmp_path: Path) -> None:

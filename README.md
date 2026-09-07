@@ -9,14 +9,13 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 ```text
 用户问题 → QueryPlan → 代码检索 → 独立证据 → 回答生成 → 文件与行号引用
 ```
-当前正式发布版本为 `2.0.1`，对外仍只保留 Auto Answer 一个产品入口。Gateway 的用量、缓存与 Tool Loop 生命周期通过独立的本地观测端点提供，不改变回答接口的证据边界。
+当前正式发布版本为 `2.0.2`，对外提供 Auto Answer、统一多轮对话、代码变更闭环和本地用量观测能力。Gateway 的用量、缓存与 Tool Loop 生命周期通过独立的本地观测端点提供，不改变回答接口的证据边界。
 
 ## 2.0 当前发布边界
 
-`2.0.1` 是正式 Release，不是 pre-release。它补齐了 Provider 原生 cache hit/miss 用量、请求指纹、低敏 Gateway 用量查询、Tool Loop 生命周期事件和 Session/Context 的确定性压缩。完整 Embedding/Provider A/B、真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验统一延期到 `2.1+`；这些边界不会因为版本号升级而被写成已完成能力。
+`2.0.2` 是正式 Release，不是 pre-release。它汇总了 v2.0.1 之后已经在本地完成的 dashboard、统一对话、上下文续聊、代码变更门禁、Sandbox 校验、模型/缓存观测和相关测试修复。真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验仍不在本版本承诺内。
 
-详细验收矩阵见 [`docs/RELEASE_2_0_ACCEPTANCE.md`](docs/RELEASE_2_0_ACCEPTANCE.md)，当前事实入口见 [`docs/STATUS.md`](docs/STATUS.md)。
-本次 2.0.1 的变更和明确边界见 [`docs/RELEASE_2_0_1.md`](docs/RELEASE_2_0_1.md)。
+当前公开能力见 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)，最小演示见 [`docs/DEMO.md`](docs/DEMO.md)，验收摘要见 [`docs/EVALUATION_SUMMARY.md`](docs/EVALUATION_SUMMARY.md)。
 
 我目前专注于项目的后端开发，重点是 Python、FastAPI、RAG、检索评测和 LangGraph 工作流。React 前端只用于把后端能力做成一个可以操作的本地演示页面，主要由 Codex 辅助完成；我负责前后端 HTTP API 的边界、接口联调和整体运行流程，不把这个项目当作前端能力展示。
 
@@ -74,11 +73,11 @@ flowchart TD
 - 每个子问题单独维护证据，最后按 QueryPlan 顺序汇总。
 - 同时保留 linear RAG 和有次数上限的 LangGraph Critic-Reviser 路径。
 - 约束模型返回结构化结果，并由应用代码映射引用。
-- 模型调用统一经过本地 Gateway：默认使用 `deepseek-v4-flash`；遇到可恢复故障时，只降级到能力满足且更便宜的已登记模型，并记录每次 attempt 的价格版本、Token 与原因。
+- 聊天模型调用经过本地 Gateway；Embedding 与 Rerank 是独立适配器，不能据此宣称所有模型调用都统一经过 Gateway。
 - 代码变更链路支持 Tool Loop 生成多文件 Patch、显式审批、隔离 workspace、固定 pytest Sandbox、检查失败后最多两次重新审批的有限修复，以及异常整体回滚；原仓库不直接写入。
 - Workspace、Checkpoint、Approval、ValidationRun、事件和结果可在本地进程重启后恢复；这是本地作品集的持久闭环，不等同于多写者数据库或跨区域高可用。
 - 提供 Celery/Redis 固定检查 Worker、公开 Run 事件、OTel span 和 Prometheus 指标端点；Fake Provider 故障测试不作为模型质量结论。
-- 提供 CLI、FastAPI 和 React 页面。
+- 提供 `auto-answer` CLI、FastAPI 和 React 页面；`change-demo` 是无模型的隔离变更契约演示。
 - 提供离线单元测试、集成测试和可复现的评测资产。
 
 ## 本地运行
@@ -89,7 +88,7 @@ flowchart TD
 - [uv](https://docs.astral.sh/uv/)
 - Node.js `22`
 - 一个兼容 OpenAI 接口的聊天模型
-- 一个兼容 OpenAI 接口的 Embedding 模型
+- 一个兼容 OpenAI 接口的 Embedding 模型；如启用默认 Rerank，还需兼容的 Rerank 接口
 
 ### 1. 配置模型
 
@@ -99,6 +98,10 @@ flowchart TD
 $env:CODEINSIGHT_API_KEY="<chat-key>"
 $env:CODEINSIGHT_MODEL="<chat-model>"
 $env:CODEINSIGHT_BASE_URL="<openai-compatible-chat-url>"
+# reasoning 与最终结构化回答共用输出额度，默认 40960；可按 Provider 调整
+# $env:CODEINSIGHT_MAX_OUTPUT_TOKENS="40960"
+# 可选：当前聊天端点确实支持的备用模型；不填则关闭自动降级
+# $env:CODEINSIGHT_FALLBACK_MODELS="<same-provider-model>,<same-provider-model-2>"
 
 $env:CODEINSIGHT_EMBEDDING_API_KEY="<embedding-key>"
 $env:CODEINSIGHT_EMBEDDING_MODEL="<embedding-model>"
@@ -106,6 +109,10 @@ $env:CODEINSIGHT_EMBEDDING_BASE_URL="<openai-compatible-embedding-url>"
 ```
 
 密钥只保存在后端进程的环境变量中，不会传给 React 前端，也不会写入仓库。
+
+修改对话会在模型生成补丁前检查 Docker Sandbox；如果校验环境不可用，页面会直接说明
+阻塞原因。若已批准补丁只是因为 Sandbox 临时故障而进入 `REVIEW_REQUIRED`，同一 Session
+输入“继续”会重新校验已有隔离 workspace，不会重复生成相同补丁。
 
 ### 2. 启动本地依赖
 
@@ -115,7 +122,7 @@ docker compose up -d --wait mysql redis qdrant
 docker compose ps
 ```
 
-其中第一条命令在新机器上执行一次即可；已有本项目卷时 Docker 会提示已存在，可继续执行。Qdrant 由 008 根目录 Compose 统一管理，使用本项目固定的 6335/6336 端口；不要再从 `ops/qdrant/docker-compose.yml` 单独启动。
+其中第一条命令在新机器上执行一次即可；已有本项目卷时 Docker 会提示已存在，可继续执行。Qdrant 由 008 根目录 Compose 统一管理，使用本项目固定的 6335/6336 端口；不要再从 `ops/qdrant/docker-compose.yml` 单独启动。仅运行 Auto Answer 的本地单测和 fake 流程不要求启动这些依赖。
 
 ### Step 9 本地全栈切片
 
@@ -159,7 +166,7 @@ uv run celery -A codeinsight.agent.worker_tasks.celery_app worker --pool=solo --
 
 Gateway 健康检查、模型清单和指标分别位于 `/health`、`/v1/models`、`/metrics`。
 
-Gateway 用量汇总和最近调用明细分别位于 `/v1/usage/summary`、`/v1/usage/calls`。明细只包含模型、路由、Token、缓存、成本、延迟、错误类别和不可逆请求指纹，不返回原始 prompt、工具参数、模型正文或隐藏推理。
+Gateway 用量汇总和最近调用明细分别位于 `/v1/usage/summary`、`/v1/usage/calls`。主 API 也提供 `/api/v1/usage/summary`、`/api/v1/usage/calls`，前端通过它们读取实际承载 Auto Answer 的同一进程记录。明细只包含模型、路由、Token、缓存、成本、延迟、错误类别和不可逆请求指纹，不返回原始 prompt、工具参数、模型正文或隐藏推理。字段来源和 cache write 边界见 [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)。
 
 ### 4. 启动前端
 
@@ -184,10 +191,15 @@ uv run codeinsight auto-answer `
 
 ## HTTP 接口
 
-目前公开两个接口：
+目前公开接口：
 
 - `GET /api/v1/health`
 - `POST /api/v1/auto/answer`
+- `GET /api/v1/usage/summary`
+- `GET /api/v1/usage/calls`
+- `POST /api/v2/chat/sessions`
+- `POST /api/v2/chat/turns`
+- `GET /api/v2/chat/turns/{turn_id}/events`
 
 请求示例：
 
@@ -199,11 +211,13 @@ uv run codeinsight auto-answer `
 }
 ```
 
-响应里会返回 `QueryPlan`、执行路线、逐子问题答案、经过校验的引用、token 用量、Embedding 用量和公开工作流事件，不会返回模型的隐藏推理过程。
+Auto Answer 响应里会返回 `QueryPlan`、执行路线、逐子问题答案、经过校验的引用、token 用量、Embedding 用量和公开工作流事件。统一对话接口支持 SSE 阶段事件；调试请求可以显示供应商明确返回的 reasoning 字段，但该字段不写入持久化事件。
 
-## 评测结果
+变更闭环 API 位于 `/api/v2/change/preview`、`approve`、`apply`、`rollback`，以及按 Run 查询结果和事件的接口。它只写入受管控 workspace；请先运行 `codeinsight change-demo --work-dir <目录>` 查看固定样例。
 
-Master-200 一共有 200 个高难问题，覆盖项目 fixture 以及固定版本的 HTTPX、Click 和 Requests。问题里包含中文、英文、中英混合、歧义、错别字和多意图表达。
+## 历史评测结果
+
+以下数字来自 2026-08-13 的旧检索流水线记录，不代表当前 qwen Rerank 接入后的质量，也没有在本轮重新运行。
 
 把长距离证据标注修正为符合产品 80 行切块边界后，结果如下：
 
@@ -252,7 +266,7 @@ work/                  本地外部评测仓库，不进入 Git
 ```powershell
 cd backend
 uv run ruff check src tests
-uv run pytest --basetemp=.pytest-release-basetemp
+uv run python -m pytest --basetemp=.pytest-release-basetemp
 ```
 
 前端：

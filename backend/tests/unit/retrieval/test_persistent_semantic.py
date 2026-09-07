@@ -1,9 +1,11 @@
 """按文件复用持久化语义索引测试。"""
 
 import json
+from pathlib import Path
 
 from codeinsight.application.search_repository import build_repository_semantic_index
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.retrieval import persistent_semantic
 
 
 class _CountingEmbedder:
@@ -52,6 +54,45 @@ def test_unchanged_repository_reuses_all_persisted_vectors(tmp_path) -> None:
         second_vectors.append(entry.embedding)
     assert first_vectors == second_vectors
     assert first.metadata.index_id == second.metadata.index_id
+
+
+def test_default_cache_permission_uses_user_temp_fallback(monkeypatch, tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "module.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+    default_root = tmp_path / "default-cache"
+    fallback_root = tmp_path / "fallback-cache"
+    embedder = _CountingEmbedder()
+    writes: list[Path] = []
+    original_write = persistent_semantic._write_manifest
+
+    monkeypatch.delenv("CODEINSIGHT_SEMANTIC_CACHE_DIR", raising=False)
+    monkeypatch.setattr(
+        persistent_semantic,
+        "default_semantic_cache_root",
+        lambda: default_root,
+    )
+    monkeypatch.setattr(
+        persistent_semantic,
+        "_fallback_semantic_cache_root",
+        lambda: fallback_root,
+    )
+
+    def deny_default_once(path: Path, payload: dict) -> None:
+        writes.append(path)
+        if len(writes) == 1:
+            raise PermissionError("default cache is not writable")
+        original_write(path, payload)
+
+    monkeypatch.setattr(persistent_semantic, "_write_manifest", deny_default_once)
+
+    index = build_repository_semantic_index(
+        repository, semantic_embed=embedder.embed
+    )
+
+    assert index.entries
+    assert writes[0].is_relative_to(default_root)
+    assert writes[1].is_relative_to(fallback_root)
 
 
 def test_only_changed_file_is_reembedded(tmp_path) -> None:

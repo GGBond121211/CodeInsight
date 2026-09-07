@@ -7,6 +7,7 @@ from codeinsight.infrastructure.model_gateway import (
     CacheContext,
     GatewayRequest,
     ModelGateway,
+    configured_routes_from_environment,
 )
 from codeinsight.infrastructure.otel import Telemetry
 from codeinsight.infrastructure.provider_adapters import (
@@ -22,7 +23,11 @@ class _FakeCompletions:
             model=kwargs["model"],
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content="ok", tool_calls=None),
+                    message=SimpleNamespace(
+                        content="ok",
+                        tool_calls=None,
+                        reasoning_content="provider debug reasoning",
+                    ),
                     finish_reason="stop",
                 )
             ],
@@ -50,6 +55,7 @@ def test_openai_adapter_reads_deepseek_native_cache_usage() -> None:
     assert response.effective_cache_miss_tokens == 30
     assert response.usage_source == "provider_native"
     assert response.cache_hit_ratio == 0.7
+    assert response.reasoning_content == "provider debug reasoning"
 
 
 def _request(**overrides: object) -> GatewayRequest:
@@ -132,3 +138,20 @@ def test_gateway_usage_endpoints_expose_cache_breakdown_without_prompt() -> None
     metrics = client.get("/metrics").text
     assert "codeinsight_gateway_cache_read_tokens_total 70.0" in metrics
     assert "codeinsight_gateway_cache_miss_tokens_total 30.0" in metrics
+
+
+def test_gateway_health_reports_the_runtime_route_configuration(monkeypatch) -> None:
+    monkeypatch.delenv("CODEINSIGHT_FALLBACK_MODELS", raising=False)
+    gateway = ModelGateway(
+        provider=OpenAIProviderAdapter(_FakeClient()),
+        routes=configured_routes_from_environment(),
+    )
+    client = TestClient(create_gateway_app(gateway))
+
+    payload = client.get("/health").json()
+
+    assert payload["status"] == "ok"
+    assert payload["routes"]["explain"] == {
+        "primary": "deepseek-v4-flash",
+        "fallbacks": [],
+    }

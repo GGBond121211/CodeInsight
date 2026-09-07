@@ -9,11 +9,14 @@ from collections.abc import Mapping
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
+from codeinsight.domain.errors import ModelConfigurationError
 from codeinsight.infrastructure.gateway_errors import GatewayError
 from codeinsight.infrastructure.model_gateway import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
     GatewayRequest,
     ModelGateway,
     default_gateway_from_environment,
+    usage_record_as_dict,
 )
 
 
@@ -25,7 +28,7 @@ class GatewayChatRequest(BaseModel):
     user_id: str = "local"
     prompt_version: str = "gateway-api-v1"
     estimated_input_tokens: int = 0
-    reserved_output_tokens: int = 1000
+    reserved_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     tools: list[dict[str, object]] = Field(default_factory=list)
     response_format: dict[str, object] | None = None
     run_id: str | None = None
@@ -33,7 +36,7 @@ class GatewayChatRequest(BaseModel):
 
 def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
     selected = gateway
-    app = FastAPI(title="CodeInsight Model Gateway", version="2.0.1")
+    app = FastAPI(title="CodeInsight Model Gateway", version="2.0.2")
 
     def resolve_gateway() -> ModelGateway:
         nonlocal selected
@@ -42,8 +45,25 @@ def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
         return selected
 
     @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok", "service": "model-gateway"}
+    def health() -> dict[str, object]:
+        try:
+            gateway = resolve_gateway()
+        except ModelConfigurationError as error:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "MODEL_CONFIGURATION", "message": str(error)},
+            ) from error
+        return {
+            "status": "ok",
+            "service": "model-gateway",
+            "routes": {
+                scene: {
+                    "primary": route.primary_model_id,
+                    "fallbacks": list(route.fallback_model_ids),
+                }
+                for scene, route in gateway.routes.items()
+            },
+        }
 
     @app.get("/metrics")
     def metrics() -> Response:
@@ -87,7 +107,7 @@ def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
         records = resolve_gateway().usage_records(limit=limit)
         return {
             "object": "list",
-            "data": [_usage_record(record) for record in records],
+            "data": [usage_record_as_dict(record) for record in records],
         }
 
     @app.post("/v1/chat/completions")
@@ -173,37 +193,6 @@ def create_gateway_app(gateway: ModelGateway | None = None) -> FastAPI:
 
 def _mapping(value: Mapping[str, object]) -> Mapping[str, object]:
     return value
-
-
-def _usage_record(record) -> dict[str, object]:
-    cache_miss_tokens = record.cache_miss_tokens or max(
-        0, record.input_tokens - record.cached_tokens
-    )
-    return {
-        "recorded_at_epoch_ms": record.recorded_at_epoch_ms or None,
-        "request_id": record.request_id,
-        "attempt_id": record.attempt_id,
-        "scene": record.scene,
-        "prompt_version": record.prompt_version,
-        "provider": record.provider,
-        "model_tier": record.model_tier,
-        "model": record.model,
-        "status": "error" if record.error_class else "ok",
-        "input_tokens": record.input_tokens,
-        "cache_read_tokens": record.cached_tokens,
-        "cache_miss_tokens": cache_miss_tokens,
-        "output_tokens": record.output_tokens,
-        "cache_hit_ratio": (
-            record.cached_tokens / record.input_tokens if record.input_tokens else 0.0
-        ),
-        "estimated_cost_stars": str(record.total_stars),
-        "latency_milliseconds": record.latency_milliseconds,
-        "fallback_reason": record.fallback_reason,
-        "error_class": record.error_class,
-        "usage_source": record.usage_source,
-        "request_fingerprint": record.request_fingerprint or None,
-        "stable_prefix_fingerprint": record.stable_prefix_fingerprint or None,
-    }
 
 
 app = create_gateway_app()

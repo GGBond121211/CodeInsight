@@ -1,11 +1,15 @@
 import json
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
+from codeinsight.domain.errors import ModelConfigurationError
 from codeinsight.infrastructure.gateway_errors import (
     AuthenticationGatewayError,
     BackpressureError,
     BudgetExceededError,
+    InvalidResponseGatewayError,
     RateLimitGatewayError,
     TimeoutGatewayError,
     UpstreamGatewayError,
@@ -19,6 +23,8 @@ from codeinsight.infrastructure.model_gateway import (
     InMemoryBudgetLedger,
     ModelGateway,
     TokenBucketRateLimiter,
+    configured_max_output_tokens,
+    configured_routes_from_environment,
     default_gateway_from_environment,
 )
 from codeinsight.infrastructure.model_profiles import default_model_registry, default_routes
@@ -64,8 +70,33 @@ def test_registry_uses_deepseek_as_best_and_cheapest_capable_fallback() -> None:
     assert {"tools", "structured_output"} <= fallback.capabilities
 
 
+def test_environment_routes_disable_automatic_cross_endpoint_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("CODEINSIGHT_FALLBACK_MODELS", raising=False)
+
+    routes = configured_routes_from_environment()
+
+    assert all(route.fallback_model_ids == () for route in routes.values())
+
+
+def test_environment_routes_require_explicit_registered_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("CODEINSIGHT_FALLBACK_MODELS", "gpt-5.4-mini, gpt-5.4-mini")
+
+    routes = configured_routes_from_environment()
+
+    assert all(route.fallback_model_ids == ("gpt-5.4-mini",) for route in routes.values())
+
+
+def test_environment_routes_reject_unknown_fallback_model(monkeypatch) -> None:
+    monkeypatch.setenv("CODEINSIGHT_FALLBACK_MODELS", "model-that-is-not-registered")
+
+    with pytest.raises(ModelConfigurationError, match="未登记模型"):
+        configured_routes_from_environment()
+
+
 def test_default_gateway_is_process_shared_for_circuit_and_cache(monkeypatch) -> None:
     default_gateway_from_environment.cache_clear()
+    monkeypatch.setenv("CODEINSIGHT_GATEWAY_FAKE_MODE", "1")
+    monkeypatch.delenv("CODEINSIGHT_FALLBACK_MODELS", raising=False)
     monkeypatch.setenv("CODEINSIGHT_API_KEY", "fake-key")
     monkeypatch.delenv("CODEINSIGHT_MYSQL_HOST", raising=False)
     monkeypatch.delenv("CODEINSIGHT_MYSQL_USER", raising=False)
@@ -74,8 +105,57 @@ def test_default_gateway_is_process_shared_for_circuit_and_cache(monkeypatch) ->
         first = default_gateway_from_environment()
         second = default_gateway_from_environment()
         assert first is second
+        assert all(route.fallback_model_ids == () for route in first.routes.values())
     finally:
         default_gateway_from_environment.cache_clear()
+
+
+def test_output_budget_defaults_to_reasoning_safe_value_and_is_configurable(monkeypatch) -> None:
+    monkeypatch.delenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", raising=False)
+    assert configured_max_output_tokens() == 40_960
+
+    monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "2048")
+    assert configured_max_output_tokens() == 2_048
+
+    monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "128")
+    with pytest.raises(ModelConfigurationError, match="必须在"):
+        configured_max_output_tokens()
+
+
+def test_model_called_event_exposes_effective_output_budget(monkeypatch) -> None:
+    monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "40960")
+    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    gateway = ModelGateway(provider=provider)
+
+    GatewayChatModel(gateway).complete("system-v1", "hello", run_id="run-budget")
+
+    event = gateway.event_log.read_events("run-budget")[0]
+    assert event.payload["max_output_tokens"] == "40960"
+
+
+def test_gateway_chat_model_expands_context_budget_for_reasoning_and_answer(monkeypatch) -> None:
+    monkeypatch.delenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", raising=False)
+
+    class RecordingAssembler:
+        def __init__(self) -> None:
+            self.request = None
+
+        def assemble(self, request):
+            self.request = request
+            return SimpleNamespace(
+                user_text="assembled prompt",
+                fitted=SimpleNamespace(estimate=SimpleNamespace(input_tokens=12)),
+            )
+
+    assembler = RecordingAssembler()
+    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+
+    GatewayChatModel(ModelGateway(provider=provider), context_assembler=assembler).complete(
+        "system-v1", "hello"
+    )
+
+    assert assembler.request.max_tokens == 70_000 + 40_960
+    assert assembler.request.reserved_output_tokens == 40_960
 
 
 def test_gateway_chat_model_records_content_derived_prompt_version() -> None:
@@ -87,6 +167,34 @@ def test_gateway_chat_model_records_content_derived_prompt_version() -> None:
     assert completion.model == "deepseek-v4-flash"
     assert gateway.cost_records[0].prompt_version.startswith("prompt-sha256-")
     assert gateway.cost_records[0].prompt_version != "runtime-prompt"
+
+
+def test_gateway_chat_model_exposes_provider_reasoning_without_recording_it() -> None:
+    provider = FakeProviderAdapter(
+        {
+            "deepseek-v4-flash": [
+                ProviderResponse(
+                    '{"ok":true}',
+                    (),
+                    "deepseek-v4-flash",
+                    80,
+                    20,
+                    0,
+                    "stop",
+                    reasoning_content="provider debug reasoning",
+                )
+            ]
+        }
+    )
+    gateway = ModelGateway(provider=provider)
+
+    completion = GatewayChatModel(gateway).complete(
+        "system-v1", "hello", run_id="run-reasoning"
+    )
+
+    assert completion.reasoning_content == "provider debug reasoning"
+    events = gateway.event_log.read_events("run-reasoning")
+    assert all("reasoning" not in str(event.payload) for event in events)
 
 
 def test_rate_limit_retries_then_falls_back_and_records_price_version() -> None:
@@ -182,6 +290,52 @@ def test_invalid_json_gets_one_repair_attempt_then_cheaper_fallback() -> None:
 
     assert response.model == "gpt-5.4-mini"
     assert provider.called_models.count("deepseek-v4-flash") == 2
+
+
+def test_gateway_accepts_fenced_structured_json_before_retrying_or_falling_back() -> None:
+    provider = FakeProviderAdapter(
+        {
+            "deepseek-v4-flash": [
+                _success(
+                    "deepseek-v4-flash",
+                    '```json\n{"ok":true}\n```',
+                )
+            ]
+        }
+    )
+    request = _request(response_format={"type": "json_object"})
+
+    response = ModelGateway(provider=provider, max_retries=0).complete(request)
+
+    assert response.model == "deepseek-v4-flash"
+    assert provider.called_models == ["deepseek-v4-flash"]
+
+
+def test_invalid_structured_response_event_contains_safe_diagnostic() -> None:
+    provider = FakeProviderAdapter(
+        {
+            "deepseek-v4-flash": [
+                _success("deepseek-v4-flash", "not-json"),
+                _success("deepseek-v4-flash", "still-not-json"),
+            ]
+        }
+    )
+    routes = default_routes(default_model_registry())
+    routes["change-plan"] = replace(routes["change-plan"], fallback_model_ids=())
+    request = _request(response_format={"type": "json_object"}, run_id="run-invalid-json")
+    gateway = ModelGateway(provider=provider, routes=routes, max_retries=0)
+
+    with pytest.raises(InvalidResponseGatewayError):
+        gateway.complete(request)
+
+    events = gateway.event_log.read_events("run-invalid-json")
+    failed_results = [
+        event
+        for event in events
+        if event.event_type == "model_result" and event.payload["outcome"] == "error"
+    ]
+    assert failed_results[-1].payload["error_detail"] == "structured_output_invalid_json"
+    assert failed_results[-1].payload["finish_reason"] == "stop"
 
 
 @pytest.mark.parametrize("error", [UpstreamGatewayError("500"), TimeoutGatewayError("slow")])

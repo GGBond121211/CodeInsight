@@ -144,7 +144,7 @@ def build_default_registry() -> ToolRegistry:
             False,
             "medium",
             10,
-            "isolated_workspace",
+            "repository",
         )
     )
     registry.register(
@@ -158,35 +158,9 @@ def build_default_registry() -> ToolRegistry:
             False,
             "medium",
             10,
-            "isolated_workspace",
+            "repository",
         )
     )
-    for name, description, risk in (
-        (
-            "create_checkpoint",
-            "创建隔离工作区检查点。当前没有 Step 6 Sandbox 时会受控拒绝。",
-            "high",
-        ),
-        ("apply_patch_isolated", "把已批准补丁应用到隔离工作区。原仓库永不作为默认目标。", "high"),
-        ("run_allowlisted_checks", "在固定 validation profile 的 Sandbox 中执行检查。", "high"),
-        ("rollback_workspace", "回滚隔离工作区并对账结果。", "high"),
-    ):
-        registry.register(
-            ToolSpec(
-                name,
-                description,
-                _object_schema(
-                    {"patch_id": text_path, "approval_token": text_path, "checkpoint_id": text_path}
-                ),
-                False,
-                True,
-                False,
-                True,
-                risk,
-                60,
-                "isolated_workspace",
-            )
-        )
     registry.register(
         ToolSpec(
             "get_run_events",
@@ -207,7 +181,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             "get_diff",
-            "读取隔离工作区的当前 diff；不执行任意命令。",
+            "读取当前仓库的 diff；不执行任意命令。",
             _object_schema({}, ()),
             True,
             False,
@@ -215,7 +189,7 @@ def build_default_registry() -> ToolRegistry:
             False,
             "low",
             10,
-            "isolated_workspace",
+            "repository",
         )
     )
     return registry

@@ -6,7 +6,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -33,9 +33,10 @@ from codeinsight.domain.trace import (
     RECONCILE_PERFORMED,
     ROLLBACK_PERFORMED,
     RUN_FINISHED,
+    VALIDATION_FINISHED,
+    VALIDATION_STARTED,
     VERDICT_APPLIED,
     AuditRecord,
-    IdempotencyKey,
     RunEvent,
 )
 from codeinsight.infrastructure.persistent_change_state import (
@@ -43,7 +44,6 @@ from codeinsight.infrastructure.persistent_change_state import (
     PersistentApprovalStore,
     PersistentAuditLog,
     PersistentEventLog,
-    PersistentIdempotencyStore,
 )
 from codeinsight.infrastructure.redaction import redact_sensitive
 from codeinsight.infrastructure.run_store import (
@@ -52,8 +52,14 @@ from codeinsight.infrastructure.run_store import (
     ApprovalNotFoundError,
     InMemoryApprovalStore,
 )
-from codeinsight.infrastructure.sandbox import DockerSandbox, SandboxResult, SandboxRunner
-from codeinsight.infrastructure.workspace import WorkspaceManager
+from codeinsight.infrastructure.sandbox import (
+    DockerSandbox,
+    SandboxCleanupError,
+    SandboxPreflightResult,
+    SandboxResult,
+    SandboxRunner,
+)
+from codeinsight.infrastructure.workspace import WorkspaceManager, fingerprint_artifact
 
 
 class ChangeRequestError(ValueError):
@@ -118,7 +124,7 @@ class Repairer(Protocol):
 
 
 class ChangeService:
-    """默认使用内存状态，便于本地演示；业务事实不写回源仓库。"""
+    """单进程本地持久变更服务；源仓库只读，不支持多进程共享状态目录。"""
 
     def __init__(
         self,
@@ -127,20 +133,27 @@ class ChangeService:
         sandbox: SandboxRunner | None = None,
         approval_store: InMemoryApprovalStore | None = None,
         state_dir: str | Path | None = None,
+        event_sink: Callable[[RunEvent], None] | None = None,
     ) -> None:
         self.workspaces = workspace_manager or WorkspaceManager()
         self.sandbox = sandbox or DockerSandbox()
         root = Path(state_dir or (self.workspaces.base_dir / ".change-state"))
         self.state = JsonObjectStore(root)
         self.approvals = approval_store or PersistentApprovalStore(root)
-        self.idempotency = PersistentIdempotencyStore(root)
         self.events = PersistentEventLog(root)
         self.audit = PersistentAuditLog(root)
         self._proposals: dict[tuple[str, str], _Proposal] = {}
         self._results: dict[str, ChangeResult] = {}
         self._cancelled: set[str] = set()
         self._lock = threading.RLock()
+        self._event_sinks: list[Callable[[RunEvent], None]] = []
+        if event_sink is not None:
+            self._event_sinks.append(event_sink)
         self._load_state()
+
+    def add_event_sink(self, sink: Callable[[RunEvent], None]) -> None:
+        """增加非持久化的实时镜像；镜像失败不能影响变更事实写入。"""
+        self._event_sinks.append(sink)
 
     def preview(
         self,
@@ -166,9 +179,31 @@ class ChangeService:
         changes: Mapping[str, str | None],
         validation_profile: str = "python_compile",
     ) -> PreviewResult:
-        selected = get_validation_profile(validation_profile)
-        del selected  # 只在这里确认 profile 已登记；执行时再次解析。
+        with self._lock:
+            return self._preview_many(
+                repository_root, run_id=run_id, changes=changes,
+                validation_profile=validation_profile,
+            )
+
+    def _preview_many(
+        self,
+        repository_root: str | Path,
+        *,
+        run_id: str | None,
+        changes: Mapping[str, str | None],
+        validation_profile: str = "python_compile",
+    ) -> PreviewResult:
+        get_validation_profile(validation_profile)
         resolved_run_id = run_id or f"run-{uuid4().hex[:16]}"
+        self._require_known_run(resolved_run_id)
+        managed = self.workspaces.get(resolved_run_id)
+        source_root = Path(repository_root).resolve()
+        if managed is not None:
+            if str(source_root) != managed.run.source_repo_path:
+                if str(source_root) != managed.run.workspace_path:
+                    raise ChangeRequestError("同一 Run 不能绑定不同的源仓库")
+                source_root = Path(managed.run.source_repo_path)
+            repository_root = managed.run.workspace_path
         patch_id = f"patch-{uuid4().hex[:16]}"
         artifact, normalized, bases = build_change_set(
             repository_root,
@@ -190,7 +225,7 @@ class ChangeService:
             artifact,
             normalized,
             bases,
-            str(Path(repository_root).resolve()),
+            str(source_root),
         )
         self._proposals[(resolved_run_id, patch_id)] = proposal
         self._persist_proposal(proposal)
@@ -201,10 +236,26 @@ class ChangeService:
         )
         return preview
 
+    def preflight_validation(self, profile: str) -> SandboxPreflightResult:
+        """在模型生成补丁前确认固定校验环境可用。"""
+        get_validation_profile(profile)
+        checker = getattr(self.sandbox, "preflight", None)
+        if not callable(checker):
+            # 测试替身和外部注入的 Sandbox 仍由其 run() 契约负责校验。
+            return SandboxPreflightResult(profile, True)
+        result = checker(profile)
+        if not isinstance(result, SandboxPreflightResult):
+            raise TypeError("Sandbox preflight 必须返回 SandboxPreflightResult")
+        return result
+
     def approve(self, run_id: str, patch_id: str, *, expires_in_seconds: int = 300) -> str:
+        with self._lock:
+            return self._approve(run_id, patch_id, expires_in_seconds=expires_in_seconds)
+
+    def _approve(self, run_id: str, patch_id: str, *, expires_in_seconds: int) -> str:
         proposal = self._proposal(run_id, patch_id)
         validate_change_set_base(
-            proposal.repository_root, proposal.artifact, proposal.base_fingerprints
+            self._proposal_base(proposal), proposal.artifact, proposal.base_fingerprints
         )
         if not 30 <= expires_in_seconds <= 3600:
             raise ChangeRequestError("审批有效期必须在 30 到 3600 秒之间")
@@ -239,14 +290,19 @@ class ChangeService:
         return token
 
     def apply(self, run_id: str, patch_id: str, approval_token: str) -> ChangeResult:
+        with self._lock:
+            return self._apply(run_id, patch_id, approval_token)
+
+    def _apply(self, run_id: str, patch_id: str, approval_token: str) -> ChangeResult:
         proposal = self._proposal(run_id, patch_id)
         if run_id in self._cancelled:
             raise ChangeRequestError("Run 已收到取消请求，未开始应用")
         previous = self._results.get(f"{run_id}:{patch_id}")
         if previous is not None:
             return previous
+        self._require_validation_environment(proposal.preview.validation_profile)
         validate_change_set_base(
-            proposal.repository_root, proposal.artifact, proposal.base_fingerprints
+            self._proposal_base(proposal), proposal.artifact, proposal.base_fingerprints
         )
         approval = self.approvals.get(approval_token)
         if approval is None:
@@ -258,24 +314,23 @@ class ChangeService:
             or set(proposal.artifact.touched_files) - set(approval.scope)
         ):
             raise ChangeRequestError("审批令牌与当前 Run、diff、基线或范围不匹配")
+        # 在消耗审批和写工作区之前落盘，重启后才能识别中断的执行。
+        self._store_result(self._result(proposal, None, None, "RUNNING", None))
+        managed = None
+        checkpoint = None
         try:
-            self.approvals.consume(approval_token, now_epoch_ms=_now_ms())
-        except (ApprovalNotFoundError, ApprovalAlreadyConsumedError, ApprovalExpiredError) as error:
-            raise ChangeRequestError(str(error)) from error
-
-        key = IdempotencyKey.for_action(
-            goal_id=run_id, action="apply_patch", fingerprint=proposal.artifact.diff_hash
-        )
-        if not self.idempotency.register(key, result_ref=f"{run_id}:{patch_id}"):
-            existing = self._results.get(f"{run_id}:{patch_id}")
-            if existing is not None:
-                return existing
-            raise ChangeRequestError("该补丁正在被另一个请求处理，请稍后读取 Run 状态")
-
-        managed = self.workspaces.create(proposal.repository_root, run_id)
-        checkpoint = self.workspaces.create_checkpoint(run_id)
-        self._emit(run_id, CHECKPOINT_CREATED, {"checkpoint_id": checkpoint.checkpoint_id})
-        try:
+            try:
+                self.approvals.consume(approval_token, now_epoch_ms=_now_ms())
+            except (
+                ApprovalNotFoundError, ApprovalAlreadyConsumedError, ApprovalExpiredError
+            ) as error:
+                raise ChangeRequestError(str(error)) from error
+            managed = self.workspaces.create(proposal.repository_root, run_id)
+            checkpoint = self.workspaces.create_checkpoint(run_id)
+            self._store_result(self._result(
+                proposal, managed.run.workspace_id, checkpoint.checkpoint_id, "RUNNING", None
+            ))
+            self._emit(run_id, CHECKPOINT_CREATED, {"checkpoint_id": checkpoint.checkpoint_id})
             apply_change_set(
                 managed.run.workspace_path,
                 proposal.artifact,
@@ -302,9 +357,25 @@ class ChangeService:
                 )
                 self._store_result(result)
                 return result
+            self._emit(
+                run_id,
+                VALIDATION_STARTED,
+                {"profile": proposal.preview.validation_profile},
+            )
+            expected_tree = fingerprint_artifact(managed.run.workspace_path)
             checked = self.sandbox.run(
                 proposal.preview.validation_profile, managed.run.workspace_path
             )
+            self._emit(
+                run_id,
+                VALIDATION_FINISHED,
+                {
+                    "profile": proposal.preview.validation_profile,
+                    "passed": str(checked.passed).lower(),
+                },
+            )
+            if fingerprint_artifact(managed.run.workspace_path) != expected_tree:
+                raise ChangeRequestError("检查程序修改了批准范围之外或批准后的产物")
             validation = self._validation_payload(checked, run_id)
             self._store_validation(run_id, validation)
             if not checked.passed:
@@ -317,6 +388,7 @@ class ChangeService:
                     validation,
                 )
             else:
+                # 应用后已核对 diff；全树指纹相等说明检查没有改变该产物，无需重复核对。
                 result = self._result(
                     proposal,
                     managed.run.workspace_id,
@@ -328,9 +400,108 @@ class ChangeService:
             self._store_result(result)
             self._emit(run_id, RUN_FINISHED, {"status": result.status})
             return result
-        except Exception:
-            self.workspaces.rollback(run_id, checkpoint.checkpoint_id)
+        except Exception as error:
+            status = "FAILED"
+            reason = f"执行异常：{type(error).__name__}；请重新 preview 和审批"
+            if isinstance(error, SandboxCleanupError):
+                status = "UNKNOWN"
+                reason = "无法确认 Sandbox 已停止；禁止继续写入，需人工核对容器和 workspace"
+            elif checkpoint is not None:
+                try:
+                    self.workspaces.rollback(run_id, checkpoint.checkpoint_id)
+                    status = "ROLLED_BACK"
+                    reason = f"执行异常，已回滚：{type(error).__name__}"
+                except (OSError, RuntimeError):
+                    status = "UNKNOWN"
+                    reason = "执行异常且回滚未确认完成，需要人工核对 workspace"
+            result = self._result(
+                proposal,
+                managed.run.workspace_id if managed else None,
+                checkpoint.checkpoint_id if checkpoint else None,
+                status,
+                reason,
+            )
+            self._store_result(result)
+            self._emit(run_id, RUN_FINISHED, {"status": result.status})
             raise
+
+    def retry_validation(
+        self,
+        run_id: str,
+        patch_id: str,
+        *,
+        event_run_id: str | None = None,
+    ) -> ChangeResult:
+        """重新校验已应用但因基础设施失败而进入 REVIEW_REQUIRED 的补丁。
+
+        该路径不重新生成补丁，也不重复消费审批令牌；它先确认隔离 workspace
+        仍与已批准内容一致，再重新执行同一个固定 profile。这样 Docker 短暂不可用
+        时，用户输入“继续”不会触发重复补丁或再次写入。
+        """
+        proposal = self._proposal(run_id, patch_id)
+        previous = self._results.get(f"{run_id}:{patch_id}")
+        if previous is None or previous.status != "REVIEW_REQUIRED":
+            raise ChangeRequestError("当前补丁没有可重新校验的 REVIEW_REQUIRED 结果")
+        managed = self.workspaces.get(run_id)
+        if managed is None or managed.run.latest_checkpoint is None:
+            raise ChangeRequestError("当前 Run 没有可重新校验的隔离 workspace")
+
+        self._require_validation_environment(proposal.preview.validation_profile)
+        event_id = event_run_id or run_id
+        reconciliation = reconcile_change_set(
+            managed.run.workspace_path,
+            proposal.artifact,
+            proposal.changes,
+            proposal.base_fingerprints,
+            run_id=event_id,
+        )
+        self._emit(event_id, RECONCILE_PERFORMED, {"verdict": reconciliation.verdict})
+        if reconciliation.verdict != VERDICT_APPLIED:
+            raise ChangeRequestError(
+                "当前隔离 workspace 已不再匹配已批准补丁，不能直接重新校验；"
+                "请重新生成并审批新的补丁。"
+            )
+
+        self._emit(
+            event_id,
+            VALIDATION_STARTED,
+            {"profile": proposal.preview.validation_profile, "retry": "true"},
+        )
+        checked = self.sandbox.run(
+            proposal.preview.validation_profile, managed.run.workspace_path
+        )
+        self._emit(
+            event_id,
+            VALIDATION_FINISHED,
+            {
+                "profile": proposal.preview.validation_profile,
+                "passed": str(checked.passed).lower(),
+                "retry": "true",
+            },
+        )
+        validation = self._validation_payload(checked, run_id)
+        self._store_validation(run_id, validation)
+        if checked.passed:
+            result = self._result(
+                proposal,
+                managed.run.workspace_id,
+                managed.run.latest_checkpoint.checkpoint_id,
+                "COMPLETED",
+                None,
+                validation,
+            )
+        else:
+            result = self._result(
+                proposal,
+                managed.run.workspace_id,
+                managed.run.latest_checkpoint.checkpoint_id,
+                "REVIEW_REQUIRED",
+                "固定检查失败，等待有限修复或人工处理",
+                validation,
+            )
+        self._store_result(result)
+        self._emit(event_id, RUN_FINISHED, {"status": result.status, "retry": "true"})
+        return result
 
     def apply_with_repairs(
         self,
@@ -360,8 +531,11 @@ class ChangeService:
             if not repaired:
                 return result
             original = self._proposal(run_id, patch_id)
+            managed = self.workspaces.get(run_id)
+            if managed is None:
+                raise ChangeRequestError("Run 的隔离 workspace 不存在")
             preview = self.preview_many(
-                original.repository_root,
+                managed.run.workspace_path,
                 run_id=run_id,
                 changes=repaired,
                 validation_profile=original.preview.validation_profile,
@@ -377,21 +551,46 @@ class ChangeService:
         return result
 
     def rollback(self, run_id: str, patch_id: str) -> ChangeResult:
+        with self._lock:
+            return self._rollback(run_id, patch_id)
+
+    def _rollback(self, run_id: str, patch_id: str) -> ChangeResult:
         proposal = self._proposal(run_id, patch_id)
         managed = self.workspaces.get(run_id)
-        if managed is None or managed.run.latest_checkpoint is None:
+        previous = self._results.get(f"{run_id}:{patch_id}")
+        checkpoint_id = previous.checkpoint_id if previous else None
+        if managed is None or checkpoint_id is None:
             raise ChangeRequestError("当前 Run 没有可回滚的 checkpoint")
-        checkpoint = managed.run.latest_checkpoint
-        self.workspaces.rollback(run_id, checkpoint.checkpoint_id)
+        self._require_known_run(run_id)
+        if previous.status == "ROLLED_BACK":
+            return previous
+        checkpoints = [item.checkpoint_id for item in managed.run.checkpoints]
+        affected = checkpoints[checkpoints.index(checkpoint_id):]
+        # 恢复早期 checkpoint 会使后续结果一起失效，先记录进行中状态。
+        for old in tuple(self._results.values()):
+            if old.run_id == run_id and old.checkpoint_id in affected:
+                self._store_result(replace(old, status="RUNNING", reason="正在回滚 checkpoint"))
+        try:
+            self.workspaces.rollback(run_id, checkpoint_id)
+        except (OSError, RuntimeError):
+            for old in tuple(self._results.values()):
+                if old.run_id == run_id and old.checkpoint_id in affected:
+                    self._store_result(replace(old, status="UNKNOWN", reason="回滚未确认完成"))
+            raise
+        for old in tuple(self._results.values()):
+            if old.run_id == run_id and old.checkpoint_id in affected:
+                self._store_result(
+                    replace(old, status="ROLLED_BACK", reason="已恢复更早的 checkpoint")
+                )
         result = self._result(
             proposal,
             managed.run.workspace_id,
-            checkpoint.checkpoint_id,
+            checkpoint_id,
             "ROLLED_BACK",
             "已恢复到 checkpoint",
         )
         self._store_result(result)
-        self._emit(run_id, ROLLBACK_PERFORMED, {"checkpoint_id": checkpoint.checkpoint_id})
+        self._emit(run_id, ROLLBACK_PERFORMED, {"checkpoint_id": checkpoint_id})
         self.audit.record(
             AuditRecord(
                 audit_id=f"audit-{uuid4().hex[:16]}",
@@ -401,7 +600,7 @@ class ChangeService:
                 occurred_at_epoch_ms=_now_ms(),
                 subject=patch_id,
                 outcome="rolled_back",
-                details={"checkpoint_id": checkpoint.checkpoint_id},
+                details={"checkpoint_id": checkpoint_id},
             )
         )
         return result
@@ -421,11 +620,36 @@ class ChangeService:
     def events_after(self, run_id: str, after_sequence: int = 0) -> tuple[RunEvent, ...]:
         return self.events.read_events(run_id, after_sequence=after_sequence)
 
+    def get_result(self, run_id: str, patch_id: str) -> ChangeResult | None:
+        self._proposal(run_id, patch_id)
+        return self._results.get(f"{run_id}:{patch_id}")
+
+    def _require_known_run(self, run_id: str) -> None:
+        if any(
+            item.run_id == run_id and item.status == "UNKNOWN"
+            for item in self._results.values()
+        ):
+            raise ChangeRequestError("Run 有未确认状态，必须人工核对后使用新 Run")
+
+    def _proposal_base(self, proposal: _Proposal) -> str:
+        self._require_known_run(proposal.preview.run_id)
+        managed = self.workspaces.get(proposal.preview.run_id)
+        return managed.run.workspace_path if managed else proposal.repository_root
+
     def _proposal(self, run_id: str, patch_id: str) -> _Proposal:
         try:
             return self._proposals[(run_id, patch_id)]
         except KeyError as error:
             raise ChangeRequestError("Patch 提案不存在或不属于当前 Run") from error
+
+    def _require_validation_environment(self, profile: str) -> None:
+        preflight = self.preflight_validation(profile)
+        if not preflight.available:
+            detail = preflight.message_excerpt or "Sandbox 不可用"
+            raise ChangeRequestError(
+                "固定校验环境不可用："
+                f"{preflight.error_class or 'SANDBOX_UNAVAILABLE'}；{detail}"
+            )
 
     def _persist_proposal(self, proposal: _Proposal) -> None:
         self.state.put(
@@ -451,8 +675,8 @@ class ChangeService:
         )
 
     def _store_result(self, result: ChangeResult) -> None:
-        self._results[f"{result.run_id}:{result.patch_id}"] = result
         self.state.put("results", f"{result.run_id}:{result.patch_id}", result.as_dict())
+        self._results[f"{result.run_id}:{result.patch_id}"] = result
 
     def _store_validation(self, run_id: str, payload: dict[str, object]) -> None:
         digest = None
@@ -512,6 +736,9 @@ class ChangeService:
             self._proposals[(preview.run_id, preview.patch_id)] = proposal
         for raw in self.state.list("results"):
             result = ChangeResult(**raw)
+            if result.status == "RUNNING":
+                result = replace(result, status="UNKNOWN", reason="上次执行中断，禁止自动重放")
+                self.state.put("results", f"{result.run_id}:{result.patch_id}", result.as_dict())
             self._results[f"{result.run_id}:{result.patch_id}"] = result
         for raw in self.state.list("cancelled"):
             if raw.get("cancelled"):
@@ -520,8 +747,8 @@ class ChangeService:
     def _result(
         self,
         proposal: _Proposal,
-        workspace_id: str,
-        checkpoint_id: str,
+        workspace_id: str | None,
+        checkpoint_id: str | None,
         status: str,
         reason: str | None,
         validation: dict[str, object] | None = None,
@@ -573,6 +800,12 @@ class ChangeService:
             payload=payload,
         )
         self.events.append(event)
+        for sink in tuple(self._event_sinks):
+            try:
+                sink(event)
+            except Exception:
+                # 实时 UI 是旁路能力，不能让它的连接故障破坏变更事实。
+                pass
         if event_type == PATCH_APPLIED:
             self.audit.record(
                 AuditRecord(

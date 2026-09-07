@@ -27,7 +27,7 @@ class Telemetry:
     """OTel 负责链路语义，内存记录和 Prometheus 让测试及本地演示可见。"""
 
     def __init__(self) -> None:
-        self._tracer = trace.get_tracer("codeinsight", "2.0.1")
+        self._tracer = trace.get_tracer("codeinsight", "2.0.2")
         self._records: list[SpanRecord] = []
         self._lock = RLock()
         self.registry = CollectorRegistry()

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import TextIO
 
@@ -19,14 +21,20 @@ class StdioMCPClient:
         *,
         python_executable: str | None = None,
         server_module: str = "codeinsight.infrastructure.mcp_server",
+        timeout_seconds: float = 30.0,
     ) -> None:
         self.repository_root = str(Path(repository_root).resolve())
         self.python_executable = python_executable or sys.executable
         self.server_module = server_module
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self.timeout_seconds = timeout_seconds
         self._process: subprocess.Popen[str] | None = None
         self._next_id = 1
+        self._request_lock = threading.Lock()
         self._stdin: TextIO | None = None
         self._stdout: TextIO | None = None
+        self._responses: queue.Queue[str | None] = queue.Queue()
 
     def __enter__(self) -> StdioMCPClient:
         self.start()
@@ -42,23 +50,33 @@ class StdioMCPClient:
             [self.python_executable, "-m", self.server_module, "--root", self.repository_root],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             cwd=str(Path(__file__).resolve().parents[3]),
         )
         self._stdin = self._process.stdin
         self._stdout = self._process.stdout
-        initialized = self._request(
-            "initialize", {"clientInfo": {"name": "codeinsight-host", "version": "step5"}}
-        )
-        if "error" in initialized:
-            raise RuntimeError("MCP initialize 失败")
-        self._notify("notifications/initialized", {})
+        self._responses = queue.Queue()
+        threading.Thread(
+            target=_read_responses, args=(self._stdout, self._responses), daemon=True
+        ).start()
+        try:
+            initialized = self._request(
+                "initialize", {"clientInfo": {"name": "codeinsight-host", "version": "step5"}}
+            )
+            if "error" in initialized:
+                raise RuntimeError("MCP initialize 失败")
+            self._notify("notifications/initialized", {})
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         process = self._process
         self._process = None
+        self._stdin = None
+        self._stdout = None
         if process is None:
             return
         try:
@@ -68,8 +86,9 @@ class StdioMCPClient:
             process.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired):
             process.kill()
-        self._stdin = None
-        self._stdout = None
+            process.wait(timeout=2)
+        if process.stdout:
+            process.stdout.close()
 
     def list_tools(self) -> tuple[dict[str, object], ...]:
         response = self._request("tools/list", {})
@@ -90,11 +109,15 @@ class StdioMCPClient:
             return ToolResult.failure(call.id, call.name, "UNKNOWN", "MCP Server 返回协议错误")
         result = response.get("result", {})
         content = result.get("content", []) if isinstance(result, dict) else []
+        if not isinstance(content, list):
+            return ToolResult.failure(call.id, call.name, "UNKNOWN", "MCP content 格式无效")
         text = content[0].get("text", "") if content and isinstance(content[0], dict) else ""
         try:
             payload = json.loads(text)
         except (json.JSONDecodeError, TypeError):
             return ToolResult.failure(call.id, call.name, "UNKNOWN", "MCP ToolResult 不是有效 JSON")
+        if not isinstance(payload, dict) or not isinstance(payload.get("data", {}), dict):
+            return ToolResult.failure(call.id, call.name, "UNKNOWN", "MCP ToolResult 格式无效")
         if payload.get("ok"):
             return ToolResult.success(
                 call.id,
@@ -103,6 +126,8 @@ class StdioMCPClient:
                 state_fingerprint=payload.get("state_fingerprint"),
             )
         error = payload.get("error", {})
+        if not isinstance(error, dict):
+            return ToolResult.failure(call.id, call.name, "UNKNOWN", "MCP error 格式无效")
         return ToolResult.failure(
             call.id,
             call.name,
@@ -145,24 +170,45 @@ class StdioMCPClient:
         self._write({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _request(self, method: str, params: dict[str, object]) -> dict[str, object]:
-        with get_telemetry().span("mcp", method):
-            request_id = self._next_id
-            self._next_id += 1
-            self._write(
-                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-            )
-            if self._stdout is None:
-                raise RuntimeError("MCP Client 未启动")
-            line = self._stdout.readline()
-            if not line:
-                raise RuntimeError("MCP Server 已退出")
-            response = json.loads(line)
-            if not isinstance(response, dict):
-                raise RuntimeError("MCP 响应不是 object")
-            return response
+        with self._request_lock:
+            with get_telemetry().span("mcp", method):
+                request_id = self._next_id
+                self._next_id += 1
+                try:
+                    self._write(
+                        {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+                    )
+                    if self._stdout is None:
+                        raise RuntimeError("MCP Client 未启动")
+                    line = self._responses.get(timeout=self.timeout_seconds)
+                    if not line:
+                        raise RuntimeError("MCP Server 已退出")
+                    response = json.loads(line)
+                    if not isinstance(response, dict):
+                        raise RuntimeError("MCP 响应不是 object")
+                    if response.get("id") != request_id:
+                        raise RuntimeError("MCP 响应 ID 与请求不匹配")
+                    return response
+                except queue.Empty as error:
+                    self.close()
+                    raise RuntimeError("MCP 响应超时，连接已关闭") from error
+                except (OSError, RuntimeError, ValueError):
+                    self.close()
+                    raise
 
     def _write(self, payload: dict[str, object]) -> None:
         if self._stdin is None:
             raise RuntimeError("MCP Client 未启动")
         self._stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
         self._stdin.flush()
+
+
+def _read_responses(stream: TextIO, responses: queue.Queue[str | None]) -> None:
+    """每个进程一个读取线程，不因单次请求超时不断创建线程。"""
+    try:
+        for line in stream:
+            responses.put(line)
+    except (OSError, ValueError):
+        pass
+    finally:
+        responses.put(None)

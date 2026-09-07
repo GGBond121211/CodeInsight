@@ -179,16 +179,27 @@ class OpenAIChatModel:
         except OpenAIError as error:
             raise ModelCallError("模型请求失败") from error
 
-        content = response.choices[0].message.content
+        message = response.choices[0].message
+        content = message.content
         if not content:
             raise ModelResponseError("模型返回内容为空")
         usage = response.usage
+        reasoning_content = next(
+            (
+                getattr(message, name)
+                for name in ("reasoning_content", "thinking")
+                if isinstance(getattr(message, name, None), str)
+                and getattr(message, name).strip()
+            ),
+            None,
+        )
         return ModelCompletion(
             content=content,
             model=self.model,
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
             estimated_input_tokens=estimated_input_tokens,
+            reasoning_content=reasoning_content,
         )
 
     def generate(self, system_prompt: str, user_prompt: str) -> ModelAnswer:
@@ -247,4 +258,13 @@ class OpenAIChatModel:
             model=self.model,
             input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
             output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
+            reasoning_content=next(
+                (
+                    getattr(message, name)
+                    for name in ("reasoning_content", "thinking")
+                    if isinstance(getattr(message, name, None), str)
+                    and getattr(message, name).strip()
+                ),
+                None,
+            ),
         )

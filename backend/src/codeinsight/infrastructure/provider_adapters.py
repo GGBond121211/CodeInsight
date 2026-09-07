@@ -51,6 +51,7 @@ class ProviderResponse:
     finish_reason: str
     cache_miss_tokens: int = 0
     usage_source: str = "unknown"
+    reasoning_content: str | None = None
 
     def __post_init__(self) -> None:
         if min(
@@ -137,6 +138,7 @@ class OpenAIProviderAdapter:
         usage = response.usage
         input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         cached_tokens, cache_miss_tokens, usage_source = _cache_usage(usage, input_tokens)
+        reasoning_content = _reasoning_content(message)
         return ProviderResponse(
             content=getattr(message, "content", None),
             tool_calls=tuple(tool_calls),
@@ -147,6 +149,7 @@ class OpenAIProviderAdapter:
             finish_reason=str(getattr(choice, "finish_reason", "unknown")),
             cache_miss_tokens=cache_miss_tokens,
             usage_source=usage_source,
+            reasoning_content=reasoning_content,
         )
 
 
@@ -180,6 +183,7 @@ class StaticFakeProviderAdapter:
             output_tokens=4,
             cached_input_tokens=0,
             finish_reason="stop",
+            usage_source="synthetic",
         )
 
 
@@ -217,3 +221,12 @@ def _cache_usage(usage: object | None, input_tokens: int) -> tuple[int, int, str
         miss = max(0, input_tokens - hit)
         source = f"{source}_normalized"
     return hit, miss, source
+
+
+def _reasoning_content(message: object) -> str | None:
+    """读取兼容供应商显式返回的 reasoning 字段，不从普通文本猜测。"""
+    for name in ("reasoning_content", "thinking"):
+        value = getattr(message, name, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None

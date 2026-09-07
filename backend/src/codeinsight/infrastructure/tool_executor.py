@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,19 +17,8 @@ from codeinsight.agent.tool_loop import ToolCall, ToolResult
 from codeinsight.application.search_repository import search_repository
 from codeinsight.infrastructure.event_log import InMemoryEventLog
 from codeinsight.infrastructure.tool_registry import ToolRegistry, build_default_registry
+from codeinsight.ingestion.path_policy import safe_path, safe_relative_path
 from codeinsight.retrieval.repository_map import build_repository_map
-
-SENSITIVE_BASENAMES = frozenset({".env", ".env.local", ".env.production", "id_rsa", "id_dsa"})
-SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
-
-
-@dataclass(frozen=True)
-class ExecutorCapabilities:
-    """Step 5 的能力开关；默认全是 False，避免误把预览当执行。"""
-
-    checkpoint: bool = False
-    sandbox: bool = False
-    approval: bool = False
 
 
 class ToolExecutor:
@@ -41,7 +29,6 @@ class ToolExecutor:
         registry: ToolRegistry | None = None,
         run_id: str = "local-run",
         event_log: InMemoryEventLog | None = None,
-        capabilities: ExecutorCapabilities | None = None,
     ) -> None:
         root = Path(repository_root).resolve()
         if not root.is_dir():
@@ -50,7 +37,6 @@ class ToolExecutor:
         self.registry = registry or build_default_registry()
         self.run_id = run_id
         self.event_log = event_log
-        self.capabilities = capabilities or ExecutorCapabilities()
         self._patches: dict[str, dict[str, object]] = {}
 
     def execute(self, call: ToolCall) -> ToolResult:
@@ -77,7 +63,7 @@ class ToolExecutor:
                 return self._run_events(call)
             if call.name == "get_diff":
                 return self._get_diff(call)
-            return self._blocked_write(call)
+            return ToolResult.failure(call.id, call.name, "VALIDATION", "工具没有执行实现")
         except FileNotFoundError:
             return ToolResult.failure(call.id, call.name, "NOT_FOUND", "目标不存在")
         except TimeoutError:
@@ -224,55 +210,11 @@ class ToolExecutor:
             state_fingerprint=_fingerprint(completed.stdout),
         )
 
-    def _blocked_write(self, call: ToolCall) -> ToolResult:
-        missing: list[str] = []
-        if not self.capabilities.approval:
-            missing.append("approval")
-        if not self.capabilities.checkpoint:
-            missing.append("checkpoint")
-        if not self.capabilities.sandbox:
-            missing.append("sandbox")
-        code = "PERMISSION" if call.name == "apply_patch_isolated" else "VALIDATION"
-        return ToolResult.failure(
-            call.id,
-            call.name,
-            code,
-            "修改类工具未执行：缺少 " + ", ".join(missing) + "；Step 6 才提供完整能力",
-            data={"status": "manual_required", "missing": missing, "applied": False},
-        )
-
     def _safe_relative_path(self, value: str) -> str:
-        candidate = Path(value)
-        if candidate.is_absolute() or ".." in candidate.parts:
-            raise PermissionError("路径必须位于仓库根目录内")
-        normalized = candidate.as_posix()
-        if not normalized or normalized == ".":
-            raise ValueError("路径不能为空")
-        if any(part in {".git", ".hg", ".svn"} for part in candidate.parts):
-            raise PermissionError("版本控制目录不属于工具允许范围")
-        basename = candidate.name.lower()
-        if (
-            basename in SENSITIVE_BASENAMES
-            or basename.startswith(".env.")
-            or basename.endswith(SENSITIVE_SUFFIXES)
-        ):
-            raise PermissionError("敏感文件不允许由工具读取或修改")
-        return normalized
+        return safe_relative_path(value)
 
     def _safe_path(self, relative: str) -> Path:
-        path = self.root / relative
-        resolved_parent = path.parent.resolve()
-        try:
-            resolved_parent.relative_to(self.root)
-        except ValueError as error:
-            raise PermissionError("符号链接或父目录越界") from error
-        if path.exists() and path.resolve() != path:
-            raise PermissionError("符号链接目标不在允许范围内")
-        try:
-            path.resolve().relative_to(self.root)
-        except ValueError as error:
-            raise PermissionError("路径越界") from error
-        return path
+        return safe_path(self.root, relative)
 
     @staticmethod
     def _validate_arguments(schema: dict[str, object], arguments: dict[str, object]) -> str | None:
