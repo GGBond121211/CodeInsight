@@ -54,7 +54,11 @@ class FakeReranker:
 
 
 def _wait_for_terminal(client: TestClient, turn_id: str) -> dict:
-    for _ in range(100):
+    # The chat worker is intentionally asynchronous; GitHub-hosted runners can
+    # take longer than the local fast path while starting the next session turn.
+    # Keep polling bounded, but do not turn normal runner scheduling into a
+    # false product failure.
+    for _ in range(500):
         payload = client.get(f"/api/v2/chat/turns/{turn_id}").json()
         if payload["status"] in {"COMPLETED", "FAILED", "WAITING_APPROVAL"}:
             return payload
