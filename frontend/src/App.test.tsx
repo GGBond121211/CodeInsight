@@ -161,6 +161,48 @@ it('普通聊天只展示 assistant_message，不显示 CODE ANSWER 卡片', asy
   expect(screen.getByText('普通对话 · 查看模型与用量')).toBeInTheDocument()
 })
 
+it('业务外话题自然引导回 CodeInsight，并展示未调用模型', async () => {
+  const redirectTurn: ChatTurnResponse = {
+    ...completedTurn,
+    task_type: 'scope_redirect',
+    user_message: '我喜欢打篮球',
+    assistant_message: '收到，我理解你是在分享一个日常话题。',
+    result: {
+      kind: 'scope_redirect',
+      outcome: 'redirected',
+      route: 'scope_redirect',
+      reason: 'out_of_scope',
+      model_called: false,
+      prompt_version: 'scope-redirect-v1',
+    },
+  }
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...redirectTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(getChatTurn).mockResolvedValue(redirectTurn)
+
+  const user = userEvent.setup()
+  render(<App />)
+  const composer = screen.getByPlaceholderText('例如：刚才的 checkout 校验在哪里？或者：把这个校验提取成独立函数。')
+  await user.clear(composer)
+  await user.type(composer, '我喜欢打篮球')
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(await screen.findByText('收到，我理解你是在分享一个日常话题。')).toBeInTheDocument()
+  expect(screen.getByText('SCOPE REDIRECT')).toBeInTheDocument()
+  expect(screen.getByText('本轮未调用模型，也未访问仓库；已保留当前 Session 上下文。')).toBeInTheDocument()
+})
+
 it('失败后仍保留模型失败原因和实时事件', async () => {
   const failedTurn: ChatTurnResponse = {
     ...completedTurn,

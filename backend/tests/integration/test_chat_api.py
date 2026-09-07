@@ -213,6 +213,61 @@ def test_general_chat_uses_text_route_without_repository_retrieval(
     assert "event: answer_ready" in events.text
 
 
+def test_scope_redirect_is_natural_but_does_not_call_model() -> None:
+    model = FakeChatModel()
+    model_factory_calls = 0
+
+    def model_factory():
+        nonlocal model_factory_calls
+        model_factory_calls += 1
+        return model
+
+    class ExplodingEmbedding:
+        def __init__(self) -> None:
+            raise AssertionError("范围引导不应创建 embedding 模型")
+
+    client = TestClient(
+        create_app(
+            model_factory,
+            ExplodingEmbedding,
+            reranker_factory=FakeReranker,
+        )  # type: ignore[arg-type]
+    )
+    session_id = client.post(
+        "/api/v2/chat/sessions", json={"repository_root": str(FIXTURE_ROOT)}
+    ).json()["session_id"]
+
+    accepted = client.post(
+        "/api/v2/chat/turns",
+        json={
+            "session_id": session_id,
+            "repository_root": str(FIXTURE_ROOT),
+            "message": "我喜欢打篮球",
+        },
+    )
+    result = _wait_for_terminal(client, accepted.json()["turn_id"])
+
+    assert result["status"] == "COMPLETED"
+    assert result["task_type"] == "scope_redirect"
+    assert result["result"] == {
+        "kind": "scope_redirect",
+        "outcome": "redirected",
+        "route": "scope_redirect",
+        "reason": "out_of_scope",
+        "model_called": False,
+        "prompt_version": "scope-redirect-v1",
+    }
+    assert "CodeInsight" in result["assistant_message"]
+    assert "workflow.py" in result["assistant_message"]
+    assert model_factory_calls == 0
+    assert not model.text_prompts
+    assert not model.prompts
+
+    events = client.get(f"/api/v2/chat/turns/{result['turn_id']}/events")
+    assert '"kind": "scope_redirect"' in events.text
+    assert '"model_called": "false"' in events.text
+
+
 def test_ambiguous_chat_turn_returns_clarification_without_model_call() -> None:
     model = FakeChatModel()
 

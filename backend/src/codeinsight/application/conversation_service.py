@@ -25,6 +25,10 @@ from codeinsight.application.conversation_router import (
     classify_chat_task,
 )
 from codeinsight.application.query_router import QueryRouterResult, route_question
+from codeinsight.application.scope_redirect import (
+    SCOPE_REDIRECT_VERSION,
+    build_scope_redirect_message,
+)
 from codeinsight.application.session_service import SessionContext, SessionService
 from codeinsight.domain.agent import AgentRepositoryAnswer
 from codeinsight.domain.answer import AutoAnswer, AutoAnswerEvent, SubQuestionAnswer
@@ -424,28 +428,34 @@ class ConversationService:
                     "active_goal": str(context.active_goal is not None).lower(),
                 },
             )
-            bound_model = _RunBoundModel(
-                self._model_factory(),
-                history=_render_session_context(
-                    context, exclude_sequence=current_user_sequence
-                ),
-                turn_id=turn.turn_id,
-                runtime=self.runtime,
-                show_debug_reasoning=show_debug_reasoning,
-                repo_id=turn_input.repo_id,
-                repo_fingerprint=turn_input.repo_fingerprint,
-                contains_workspace_state=(
-                    turn_input.contains_workspace_state or classification.task_type == "change"
-                ),
-            )
-            if goal_type == "change":
-                execution = self._execute_change(turn, turn_input, bound_model)
-            elif goal_type == "general_chat":
-                execution = self._execute_general_chat(turn, bound_model)
-            elif goal_type == "clarify":
-                execution = self._execute_clarify(turn)
+            if goal_type == "scope_redirect":
+                execution = self._execute_scope_redirect(
+                    turn, has_active_code_goal=context.active_goal is not None
+                )
             else:
-                execution = self._execute_explain(turn, turn_input, bound_model)
+                bound_model = _RunBoundModel(
+                    self._model_factory(),
+                    history=_render_session_context(
+                        context, exclude_sequence=current_user_sequence
+                    ),
+                    turn_id=turn.turn_id,
+                    runtime=self.runtime,
+                    show_debug_reasoning=show_debug_reasoning,
+                    repo_id=turn_input.repo_id,
+                    repo_fingerprint=turn_input.repo_fingerprint,
+                    contains_workspace_state=(
+                        turn_input.contains_workspace_state
+                        or classification.task_type == "change"
+                    ),
+                )
+                if goal_type == "change":
+                    execution = self._execute_change(turn, turn_input, bound_model)
+                elif goal_type == "general_chat":
+                    execution = self._execute_general_chat(turn, bound_model)
+                elif goal_type == "clarify":
+                    execution = self._execute_clarify(turn)
+                else:
+                    execution = self._execute_explain(turn, turn_input, bound_model)
             assistant = execution.assistant_message
             if assistant:
                 self.session_service.append_turn(
@@ -544,6 +554,31 @@ class ConversationService:
                 "kind": "clarify",
                 "outcome": "clarification_required",
                 "route": "clarify",
+            },
+        )
+
+    def _execute_scope_redirect(
+        self, turn: ChatTurn, *, has_active_code_goal: bool
+    ) -> ChatExecution:
+        """自然承接业务外闲聊，但不调用模型、检索仓库或创建新 Goal。"""
+        message = build_scope_redirect_message(
+            has_active_code_goal=has_active_code_goal,
+        )
+        self.runtime.emit(
+            turn.run_id,
+            ANSWER_READY,
+            {"kind": "scope_redirect", "model_called": "false"},
+        )
+        return ChatExecution(
+            status=CHAT_COMPLETED,
+            assistant_message=message,
+            result={
+                "kind": "scope_redirect",
+                "outcome": "redirected",
+                "route": "scope_redirect",
+                "reason": "out_of_scope",
+                "model_called": False,
+                "prompt_version": SCOPE_REDIRECT_VERSION,
             },
         )
 
@@ -1047,7 +1082,7 @@ def _session_payload(context: SessionContext) -> dict[str, object]:
 
 
 def _goal_action(task_type: str, active_goal) -> str:
-    if task_type in {"general_chat", "clarify"}:
+    if task_type in {"general_chat", "scope_redirect", "clarify"}:
         return "preserve"
     if active_goal is None:
         return "create"

@@ -1,7 +1,8 @@
 """统一对话的确定性入口分类器。
 
 分类器只决定业务编排入口，不替代仓库查询 Router：普通寒暄走自然语言回答，
-代码问题走只读理解，明确写意图走受审批保护的修改流程，无法判断的短句先澄清。
+业务外闲聊走自然范围引导，代码问题走只读理解，明确写意图走受审批保护的修改流程，
+无法判断的短句先澄清。
 规则优先保证高风险修改不会因为模型误判而越过门禁；后续若引入专门意图模型，
 只需替换这个纯函数并保留同一输出契约。
 """
@@ -45,9 +46,14 @@ _AMBIGUOUS_REQUEST = re.compile(
     re.IGNORECASE,
 )
 _RESUME_WORDS = re.compile(r"(继续|刚才|上一轮|再看看|再看一下|接着)", re.IGNORECASE)
+_GENERAL_CHAT_TOKEN = (
+    r"(?:你好|您好|嗨|哈喽|hello|hi|hey|谢谢(?:你)?|感谢|辛苦了|早上好|晚上好|"
+    r"你是谁|你(?:能|可以)做什么|在吗|好的|明白了|收到|再见)"
+)
 _GENERAL_CHAT = re.compile(
-    r"(你好|您好|嗨|哈喽|hello|hi|hey|谢谢|感谢|辛苦了|早上好|晚上好|"
-    r"你是谁|你能做什么|在吗|好的|明白了|收到|再见)",
+    rf"^\s*{_GENERAL_CHAT_TOKEN}"
+    rf"(?:[\s，,、。！？!?；;]+{_GENERAL_CHAT_TOKEN})*"
+    r"[\s，,、。！？!?；;]*$",
     re.IGNORECASE,
 )
 
@@ -78,7 +84,8 @@ def classify_chat_task(
         return ChatTaskClassification("explain", 0.85, "code_anchor")
     if has_active_code_goal and _RESUME_WORDS.search(normalized):
         return ChatTaskClassification("explain", 0.78, "active_code_goal_reference")
-    if _GENERAL_CHAT.search(normalized):
+    if _GENERAL_CHAT.fullmatch(normalized):
         return ChatTaskClassification("general_chat", 0.98, "smalltalk_or_capability")
-    # 没有代码锚点的自然语言默认仍是普通对话；只有明显无法指代目标的短句才澄清。
-    return ChatTaskClassification("general_chat", 0.75, "natural_language_without_code_anchor")
+    # CodeInsight 不是开放域聊天产品。无法证明与代码业务相关的自然语言，
+    # 进入范围引导而不是交给模型自由展开，避免模型把 Session 带到无关话题。
+    return ChatTaskClassification("scope_redirect", 0.90, "out_of_scope_natural_language")

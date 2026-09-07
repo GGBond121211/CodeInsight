@@ -26,7 +26,9 @@ SUPPORTED_CHAT_STATUSES = frozenset(
     }
 )
 TERMINAL_CHAT_STATUSES = frozenset({CHAT_COMPLETED, CHAT_FAILED, CHAT_CANCELLED})
-SUPPORTED_CHAT_TASK_TYPES = frozenset({"general_chat", "clarify", "explain", "change"})
+SUPPORTED_CHAT_TASK_TYPES = frozenset(
+    {"general_chat", "scope_redirect", "clarify", "explain", "change"}
+)
 
 
 @dataclass(frozen=True)

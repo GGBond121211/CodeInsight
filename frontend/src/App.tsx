@@ -16,7 +16,7 @@ interface ChatMessage {
   turnId: string
   role: 'user' | 'assistant'
   content: string
-  taskType?: 'general_chat' | 'clarify' | 'explain' | 'change'
+  taskType?: 'general_chat' | 'scope_redirect' | 'clarify' | 'explain' | 'change'
   result?: Record<string, unknown> | null
 }
 
@@ -79,6 +79,9 @@ function eventLabel(event: ChatEvent): string {
       return `正在调用降级模型 ${model} · ${reason}`
     }
     return `正在调用模型 ${model}`
+  }
+  if (event.event_type === 'intent_classified' && event.payload.task_type === 'scope_redirect') {
+    return '当前话题与代码业务无关，正在自然引导回 CodeInsight'
   }
   if (event.event_type === 'model_generating' && event.payload.status === 'started') {
     return `模型正在生成 ${event.payload.route === 'general_chat' ? '普通对话' : '代码回答'}`
@@ -210,6 +213,17 @@ function ChatResult({
             {(Number(observability.cache_hit_ratio || 0) * 100).toFixed(1)}%
           </span>
         </details>
+      </div>
+    )
+  }
+  if (kind === 'scope_redirect') {
+    return (
+      <div className="chat-result chat-meta-result">
+        <div className="chat-result-heading">
+          <span className="result-tag">SCOPE REDIRECT</span>
+          <strong>回到 CodeInsight</strong>
+        </div>
+        <span className="result-meta">本轮未调用模型，也未访问仓库；已保留当前 Session 上下文。</span>
       </div>
     )
   }

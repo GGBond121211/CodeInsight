@@ -24,6 +24,7 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 | 任务类型 | 处理方式 | 用户可见结果 |
 | --- | --- | --- |
 | `general_chat` | Session 上下文 + 普通文本 Prompt + Gateway | 一份自然语言 `assistant_message` |
+| `scope_redirect` | 确定性范围引导，不调用模型、不访问仓库 | 自然承接后引导回代码任务 |
 | `explain` | Query Router + BM25/semantic/Rerank + 证据回答 | 一份代码解释，引用和用量在详情中 |
 | `change` | Tool Loop + diff 预览 + approval + 隔离校验 | 修改结果或等待审批，不越过既有门禁 |
 | `clarify` | 返回可执行的澄清问题 | 不扫描仓库、不调用修改工具 |
@@ -78,6 +79,7 @@ Conversation 的业务编排位于同一 API 入口之后：
 ```text
 用户消息 → Session 恢复 → 意图分类
                      ├─ general_chat → 普通文本模型 → assistant_message
+                     ├─ scope_redirect → 范围引导模板 → assistant_message
                      ├─ clarify     → 澄清回答
                      ├─ explain     → Query Router → 检索/证据 → assistant_message
                      └─ change      → Tool Loop → diff/approval/Sandbox
@@ -101,7 +103,7 @@ Conversation 的业务编排位于同一 API 入口之后：
 - Workspace、Checkpoint、Approval、ValidationRun、事件和结果可在本地进程重启后恢复；这是本地作品集的持久闭环，不等同于多写者数据库或跨区域高可用。
 - 提供 Celery/Redis 固定检查 Worker、公开 Run 事件、OTel span 和 Prometheus 指标端点；Fake Provider 故障测试不作为模型质量结论。
 - 提供 `auto-answer` CLI、FastAPI 和 React Conversation 页面；同一 Session 可交错普通聊天、代码理解和修改，`clarify` 不会强行进入代码检索。
-- Conversation 前端只展示一份 `assistant_message`；代码引用、模型/降级链、缓存、usage、事件和 reasoning 位于可展开的运行详情中。
+- Conversation 前端只展示一份 `assistant_message`；代码引用、模型/降级链、缓存、usage、事件和 reasoning 位于可展开的运行详情中。业务外闲聊进入 `scope_redirect`，保留 Session 但不调用模型或仓库工具。
 - 提供 `change-demo` 无模型的隔离变更契约演示。
 - 提供离线单元测试、集成测试和可复现的评测资产。
 

@@ -8,7 +8,17 @@ def test_smalltalk_uses_general_chat_route(message: str) -> None:
     result = classify_chat_task(message)
 
     assert result.task_type == "general_chat"
-    assert result.rule in {"smalltalk_or_capability", "natural_language_without_code_anchor"}
+    assert result.rule == "smalltalk_or_capability"
+
+
+@pytest.mark.parametrize(
+    "message", ["我喜欢打篮球", "今天天气不错", "我最喜欢科比", "谢谢你，我喜欢打篮球"]
+)
+def test_out_of_scope_natural_language_uses_scope_redirect(message: str) -> None:
+    result = classify_chat_task(message)
+
+    assert result.task_type == "scope_redirect"
+    assert result.rule == "out_of_scope_natural_language"
 
 
 def test_code_anchor_wins_over_greeting() -> None:
