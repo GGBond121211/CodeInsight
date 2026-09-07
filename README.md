@@ -144,6 +144,8 @@ docker compose -f ops/docker-compose.yml ps
 
 工作流文件位于 `.github/workflows/ci.yml` 和 `.github/workflows/cd.yml`。
 
+版本分支、主工作树和临时 worktree 的生命周期规则见 [`CONTRIBUTING.md`](CONTRIBUTING.md) 的“分支与工作树生命周期”。
+
 ### 3. 启动后端
 
 ```powershell
