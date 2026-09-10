@@ -46,6 +46,13 @@ packages = ["src/codeinsight"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 2026-09-10 起 explain 只走只读 MCP Tool Loop，旧的 LangGraph 代码理解路线
+# （agent/workflow.py:run_citation_agent）进入冻结状态：源码保留，但不再有
+# 任何运行入口调用它。它的单元/集成测试同样退役 —— 继续跑这些用例等于
+# 让弃用路线留在默认回归里，会掩盖「它还活着」的错觉。
+# 需要复核历史实现时显式打开：pytest -m legacy
+markers = ["legacy: 已冻结的历史实现，默认不运行"]
+addopts = "-m 'not legacy'"
 
 [tool.ruff]
 target-version = "py312"

@@ -1,7 +1,14 @@
+import pytest
+
 from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.domain.answer import ModelCompletion
 from codeinsight.domain.retrieval import RankedChunk
 from codeinsight.domain.source import SourceChunk
+
+# 2026-09-10：explain 已统一走只读 Tool Loop，本文件覆盖的是冻结的 LangGraph
+# 实现。默认不运行（见 backend/pyproject.toml 的 addopts），复核历史实现时用
+# pytest -m legacy。
+pytestmark = pytest.mark.legacy
 
 
 class CompletionSequence:

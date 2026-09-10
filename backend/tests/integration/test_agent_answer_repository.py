@@ -1,9 +1,15 @@
 from pathlib import Path
 
+import pytest
+
 from codeinsight.application.agent_answer_repository import agent_answer_repository
 from codeinsight.domain.answer import ModelCompletion
 from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
+
+# 2026-09-10：agent_answer_repository 是冻结路线（LangGraph）的适配层，
+# 默认不运行本文件；复核历史实现时用 pytest -m legacy。
+pytestmark = pytest.mark.legacy
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"

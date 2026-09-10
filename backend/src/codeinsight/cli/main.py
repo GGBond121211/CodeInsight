@@ -6,8 +6,11 @@ import argparse
 import sys
 from dataclasses import replace
 
-from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.application.auto_answer_repository import auto_answer_repository
+from codeinsight.application.code_understanding_route import (
+    run_code_understanding_answer,
+    to_auto_answer,
+)
 from codeinsight.application.context_assembler import ContextAssembler
 from codeinsight.application.query_router import route_question
 from codeinsight.domain.errors import (
@@ -79,18 +82,14 @@ def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) 
             else None
         )
         if router_result.plan.execution_route == "agent":
-            agent_result = run_citation_agent(
-                repo,
-                question,
-                complete=model.complete,
-                limit=limit,
-                retrieval_mode="auto",
-                semantic_embed=embedding_model.embed if embedding_model else None,
-                reranker=reranker,
-                query_plan=router_result.plan,
+            # 2026-09-10 起 explain 只有这一条路径；旧的 LangGraph 路线已封闭。
+            loop_result = run_code_understanding_answer(
+                repo, question, model=model
             )
-            result = agent_result.result
-            events = agent_result.events
+            result = to_auto_answer(
+                loop_result, router_result, model_name=getattr(model, "model", None)
+            )
+            events = result.events
         else:
             auto_result = auto_answer_repository(
                 repo,

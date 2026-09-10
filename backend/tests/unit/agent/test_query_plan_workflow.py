@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.domain.answer import ModelCompletion
 from codeinsight.domain.query_plan import QueryPlan, SubQuestion
@@ -9,6 +11,11 @@ from codeinsight.domain.retrieval import RankedChunk
 from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.domain.source import SourceChunk
 from codeinsight.infrastructure.reranker import RerankResult
+
+# 2026-09-10：explain 已统一走只读 Tool Loop，本文件覆盖的是冻结的 LangGraph
+# 实现。默认不运行（见 backend/pyproject.toml 的 addopts），复核历史实现时用
+# pytest -m legacy。
+pytestmark = pytest.mark.legacy
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"

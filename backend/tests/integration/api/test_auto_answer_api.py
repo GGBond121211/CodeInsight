@@ -6,13 +6,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from codeinsight.api.app import create_app
-from codeinsight.domain.agent import AgentEvent, AgentRepositoryAnswer
 from codeinsight.domain.answer import (
-    AnswerCitation,
     ModelAnswer,
     ModelCompletion,
-    RepositoryAnswer,
-    SubQuestionAnswer,
 )
 from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
@@ -136,7 +132,97 @@ def test_auto_answer_invalid_router_output_uses_linear_hybrid_fallback() -> None
     assert model.answer_calls == 1
 
 
-def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) -> None:
+class _AgentRouteModel:
+    """agent 路线用的脚本模型：第一轮检索，第二轮给最终答案。"""
+
+    def __init__(self, router_content: str) -> None:
+        self.router_content = router_content
+        self.model = "fake-agent-route"
+        self.tool_rounds = 0
+
+    def complete(self, _system: str, _user: str) -> ModelCompletion:
+        return ModelCompletion(self.router_content, "fake-router", 7, 3)
+
+    def generate(self, _system: str, _user: str) -> ModelAnswer:
+        raise AssertionError("agent 路线不应调用 generate")
+
+    def complete_with_tools(self, _messages, _tools):
+        from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
+
+        self.tool_rounds += 1
+        if self.tool_rounds == 1:
+            return ToolModelResponse(
+                None,
+                (
+                    ToolCall(
+                        "call-1",
+                        "search_repository",
+                        {"question": "How is input validated?"},
+                    ),
+                ),
+                self.model,
+                20,
+                5,
+            )
+        return ToolModelResponse(
+            '{"outcome":"answered","answer":"Validation happens in checkout.",'
+            '"citations":["E1","E2"]}',
+            (),
+            self.model,
+            30,
+            10,
+        )
+
+
+class _AgentRouteClient:
+    """按项目契约返回两条命中，让证据评估判定为 sufficient。"""
+
+    def __init__(self, root: str) -> None:
+        self.root = root
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def list_tools(self):
+        from codeinsight.infrastructure.tool_registry import build_default_registry
+
+        return build_default_registry().list_tools()
+
+    def call_tool(self, call):
+        from codeinsight.agent.tool_loop import ToolResult
+
+        if call.name == "search_repository":
+            return ToolResult.success(
+                call.id,
+                call.name,
+                {
+                    "results": [
+                        {
+                            "relative_path": "src/shop/checkout.py",
+                            "start_line": 1,
+                            "end_line": 30,
+                            "text": "def validate(): pass",
+                            "rank": 1,
+                        },
+                        {
+                            "relative_path": "src/shop/pricing.py",
+                            "start_line": 1,
+                            "end_line": 20,
+                            "text": "def price(): pass",
+                            "rank": 2,
+                        },
+                    ],
+                    "untrusted": True,
+                },
+            )
+        return ToolResult.success(call.id, call.name, {"ok": True})
+
+
+def test_agent_route_runs_the_readonly_tool_loop() -> None:
+    """2026-09-10 起 agent 路线走只读 Tool Loop，不再走旧 LangGraph。"""
     router_payload = json.dumps(
         {
             "language": "en",
@@ -157,51 +243,14 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
             "confidence": 0.95,
         }
     )
-    model = _FakeAutoModel(router_payload)
-    validation = SubQuestionAnswer(
-        "How is input validated?",
-        "implementation",
-        "hybrid",
-        "answered",
-        "Validation answer.",
-        (AnswerCitation("E1", "src/validation.py", 1, 4),),
-    )
-    pricing = SubQuestionAnswer(
-        "How is price computed?",
-        "data_flow",
-        "hybrid",
-        "insufficient_evidence",
-        "Pricing evidence is insufficient.",
-        (),
-    )
-    combined = RepositoryAnswer(
-        "partially_answered",
-        "1. How is input validated?\nValidation answer.\n\n"
-        "2. How is price computed?\nPricing evidence is insufficient.",
-        validation.citations,
-        "auto",
-        "fake-agent",
-        "citation-agent-v3",
-        30,
-        10,
-    )
-    def fake_run_citation_agent(*_args, **_kwargs):
-        return AgentRepositoryAnswer(
-            combined,
-            0,
-            (AgentEvent(1, "finalize", "Combined independent answers."),),
-            30,
-            10,
-            4,
-            (validation, pricing),
-        )
-
-    monkeypatch.setattr(
-        "codeinsight.api.routes.run_citation_agent",
-        fake_run_citation_agent,
-    )
+    model = _AgentRouteModel(router_payload)
     client = TestClient(
-        create_app(_model_factory(model), _FakeEmbedding, reranker_factory=_FakeReranker)
+        create_app(
+            _model_factory(model),
+            _FakeEmbedding,
+            reranker_factory=_FakeReranker,
+            mcp_client_factory=_AgentRouteClient,
+        )
     )  # type: ignore[arg-type]
 
     response = client.post(
@@ -214,18 +263,12 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["outcome"] == "partially_answered"
-    outcomes = []
-    answers = []
-    for item in payload["subquestions"]:
-        outcomes.append(item["outcome"])
-        answers.append(item["answer"])
-    assert outcomes == [
-        "answered",
-        "insufficient_evidence",
-    ]
-    assert answers == [
-        "Validation answer.",
-        "Pricing evidence is insufficient.",
-    ]
-    assert payload["subquestions"][1]["citations"] == []
+    assert payload["outcome"] == "answered"
+    assert payload["citations"][0]["relative_path"] == "src/shop/checkout.py"
+    # 证据编号由应用分配，模型只返回编号。
+    assert payload["citations"][0]["evidence_id"] == "E1"
+    # 每个 Router 子问题都得到一条映射，但内容来自同一次只读运行。
+    assert len(payload["subquestions"]) == 2
+    assert {item["outcome"] for item in payload["subquestions"]} == {"answered"}
+    assert payload["usage"]["input_tokens"] == 20 + 30
+    assert model.tool_rounds == 2

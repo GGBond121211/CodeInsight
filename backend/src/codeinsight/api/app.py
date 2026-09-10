@@ -9,6 +9,7 @@ from codeinsight.api.chat_routes import create_chat_router
 from codeinsight.api.routes import create_change_router, create_router
 from codeinsight.api.usage_routes import create_usage_router
 from codeinsight.application.change_service import ChangeService
+from codeinsight.application.code_understanding_route import MCPClientFactory
 from codeinsight.application.context_assembler import ContextAssembler
 from codeinsight.application.conversation_service import ConversationService
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
@@ -29,6 +30,7 @@ def create_app(
     reranker_factory: Callable[[], Reranker] = OpenAITextReranker.from_environment,
     usage_gateway_factory: Callable[[], ModelGateway] = default_gateway_from_environment,
     conversation_service: ConversationService | None = None,
+    mcp_client_factory: MCPClientFactory | None = None,
 ) -> FastAPI:
     """组装本地 HTTP 应用，导入时不读取模型配置。"""
     application = FastAPI(
@@ -65,10 +67,18 @@ def create_app(
         embedding_factory,
         reranker_factory=reranker_factory,
         change_service=selected_change_service,
+        mcp_client_factory=mcp_client_factory,
     )
     application.state.codeinsight_conversation = selected_conversation_service
 
-    application.include_router(create_router(model_factory, embedding_factory, reranker_factory))
+    application.include_router(
+        create_router(
+            model_factory,
+            embedding_factory,
+            reranker_factory,
+            mcp_client_factory=mcp_client_factory,
+        )
+    )
     application.include_router(create_usage_router(usage_gateway_factory))
     application.include_router(create_change_router(selected_change_service))
     application.include_router(create_chat_router(selected_conversation_service))

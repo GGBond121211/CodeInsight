@@ -6,7 +6,6 @@ from dataclasses import replace
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.api.schemas import (
     AutoAnswerRequest,
     AutoAnswerResponse,
@@ -29,6 +28,11 @@ from codeinsight.api.schemas import (
 )
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.change_service import ChangeRequestError, ChangeService
+from codeinsight.application.code_understanding_route import (
+    MCPClientFactory,
+    run_code_understanding_answer,
+    to_auto_answer,
+)
 from codeinsight.application.query_router import QueryRouterResult, route_question
 from codeinsight.domain.answer import AutoAnswer, AutoAnswerEvent, SubQuestionAnswer
 from codeinsight.domain.errors import (
@@ -170,6 +174,7 @@ def create_router(
     model_factory: ModelFactory,
     embedding_factory: EmbeddingFactory = OpenAIEmbeddingModel.from_environment,
     reranker_factory: RerankerFactory = OpenAITextReranker.from_environment,
+    mcp_client_factory: MCPClientFactory | None = None,
 ) -> APIRouter:
     """创建带有可注入模型组合边界的 API Router。"""
     router = APIRouter(prefix="/api/v1")
@@ -206,17 +211,16 @@ def create_router(
                 else None
             )
             if router_result.plan.execution_route == "agent":
-                agent_result = run_citation_agent(
+                # 2026-09-10 起 explain 只有这一条路径；旧的 LangGraph 路线已封闭。
+                loop_result = run_code_understanding_answer(
                     request.repository_root,
                     request.question,
-                    complete=model.complete,
-                    limit=request.limit,
-                    retrieval_mode="auto",
-                    semantic_embed=embedding_model.embed if embedding_model else None,
-                    reranker=reranker,
-                    query_plan=router_result.plan,
+                    model=model,
+                    mcp_client_factory=mcp_client_factory,
                 )
-                result = _auto_from_agent(router_result, agent_result)
+                result = to_auto_answer(
+                    loop_result, router_result, model_name=getattr(model, "model", None)
+                )
             else:
                 result = auto_answer_repository(
                     request.repository_root,
