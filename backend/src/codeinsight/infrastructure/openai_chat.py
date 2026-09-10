@@ -22,6 +22,7 @@ from codeinsight.domain.errors import (
     ModelConfigurationError,
     ModelResponseError,
 )
+from codeinsight.infrastructure.chat_endpoint import configured_chat_base_url
 
 if TYPE_CHECKING:
     from codeinsight.application.context_assembler import ContextAssembler
@@ -131,11 +132,11 @@ class OpenAIChatModel:
         source = os.environ if environ is None else environ
         api_key = source.get("CODEINSIGHT_API_KEY")
         model = source.get("CODEINSIGHT_MODEL")
-        base_url = source.get("CODEINSIGHT_BASE_URL")
         if not api_key:
             raise ModelConfigurationError("必须配置 CODEINSIGHT_API_KEY")
         if not model:
             raise ModelConfigurationError("必须配置 CODEINSIGHT_MODEL")
+        base_url = configured_chat_base_url(source)
         client = OpenAI(
             api_key=api_key,
             base_url=base_url or None,

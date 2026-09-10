@@ -20,6 +20,7 @@ from codeinsight.application.context_budget import estimate_tokens
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
 from codeinsight.domain.errors import ModelConfigurationError
 from codeinsight.domain.trace import MODEL_CALLED, MODEL_RESULT, RunEvent
+from codeinsight.infrastructure.chat_endpoint import configured_chat_base_url
 from codeinsight.infrastructure.event_log import InMemoryEventLog
 from codeinsight.infrastructure.gateway_errors import (
     BackpressureError,
@@ -50,6 +51,10 @@ DEFAULT_MAX_OUTPUT_TOKENS = 40_960
 DEFAULT_CONTEXT_INPUT_TOKENS = 70_000
 MIN_CONFIGURED_OUTPUT_TOKENS = 256
 MAX_CONFIGURED_OUTPUT_TOKENS = 100_000
+# 2.1.0 多轮会话的单次输出预算已扩大；组合预算和短时令牌桶必须同步扩大，
+# 否则一个正常的 4~12 轮 Session 会在模型实际返回前被旧的 200k 门禁拦截。
+DEFAULT_TENANT_TOKEN_LIMIT = 2_000_000
+DEFAULT_RATE_LIMIT_CAPACITY = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -173,7 +178,7 @@ class _Reservation:
 class InMemoryBudgetLedger:
     """estimate -> reserve -> actual -> reconcile 的可执行定义。"""
 
-    def __init__(self, *, default_limit: int = 200_000) -> None:
+    def __init__(self, *, default_limit: int = DEFAULT_TENANT_TOKEN_LIMIT) -> None:
         self.default_limit = default_limit
         self._used: dict[str, int] = {}
         self._reserved: dict[str, _Reservation] = {}
@@ -218,7 +223,7 @@ class TokenBucketRateLimiter:
     def __init__(
         self,
         *,
-        capacity: int = 200_000,
+        capacity: int = DEFAULT_RATE_LIMIT_CAPACITY,
         refill_tokens_per_second: float = 10_000,
         clock=time.monotonic,
     ) -> None:
@@ -938,7 +943,7 @@ def default_gateway_from_environment() -> ModelGateway:
     api_key = os.environ.get("CODEINSIGHT_API_KEY", "").strip()
     if not api_key:
         raise ModelConfigurationError("必须配置 CODEINSIGHT_API_KEY")
-    base_url = os.environ.get("CODEINSIGHT_BASE_URL", "").strip() or None
+    base_url = configured_chat_base_url()
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0, max_retries=0)
     event_log = None
     cost_store = None

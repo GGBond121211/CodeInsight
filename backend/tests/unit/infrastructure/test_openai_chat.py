@@ -100,16 +100,34 @@ def test_missing_configuration_raises(environment: dict[str, str], message: str)
         OpenAIChatModel.from_environment(environment)
 
 
-def test_environment_accepts_optional_base_url() -> None:
+def test_environment_uses_project_gateway_base_url(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_openai(**kwargs):
+        captured.update(kwargs)
+        return _fake_client(FakeCompletions())
+
+    monkeypatch.setattr("codeinsight.infrastructure.openai_chat.OpenAI", fake_openai)
     model = OpenAIChatModel.from_environment(
         {
             "CODEINSIGHT_API_KEY": "test-key",
             "CODEINSIGHT_MODEL": "test-model",
-            "CODEINSIGHT_BASE_URL": "https://example.test/v1",
         }
     )
 
     assert model.model == "test-model"
+    assert captured["base_url"] == "https://api.frontier-intelligence.tech/v1"
+
+
+def test_environment_rejects_non_project_chat_endpoint() -> None:
+    with pytest.raises(ModelConfigurationError, match="api.frontier-intelligence.tech/v1"):
+        OpenAIChatModel.from_environment(
+            {
+                "CODEINSIGHT_API_KEY": "test-key",
+                "CODEINSIGHT_MODEL": "test-model",
+                "CODEINSIGHT_BASE_URL": "https://api.deepseek.com/v1",
+            }
+        )
 
 
 def test_generate_maps_messages_and_usage() -> None:

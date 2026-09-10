@@ -21,7 +21,14 @@ class ChatTaskClassification:
 
 
 _CHANGE_WORDS = re.compile(
-    r"(修改|改成|改为|修复|增加|新增|删除|移除|实现|重构|替换|应用补丁|apply|change|fix|add|remove|implement|refactor)",
+    r"(修改|改成|改为|修复|修好|改掉|解决|增加|新增|删除|移除|实现|重构|替换|应用补丁|"
+    r"apply|change|fix|add|remove|implement|refactor)",
+    re.IGNORECASE,
+)
+# “实现”既可能是写代码的动词，也可能只是“函数的实现”这一只读名词。
+# 后者不能因为命中同一个词就跳过代码理解入口。
+_IMPLEMENTATION_NOUN = re.compile(
+    r"(?:的|中|里|里面的)\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*)?实现(?:\s|$|[，。！？!?；;])",
     re.IGNORECASE,
 )
 _QUESTION_WORDS = re.compile(
@@ -37,6 +44,15 @@ _CODE_ANCHORS = re.compile(
     re.IGNORECASE,
 )
 _CODE_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_])")
+_ACTIVE_CODE_FOLLOWUP = re.compile(
+    r"(?:\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]*\b|"
+    r"payload|record|records|receipt|checkout|fulfillment|planned|ledger|"
+    r"price|pricing|tax|discount|quantity|sku|scope|owner|lookup|standard|"
+    r"admin|customer|workflow|storage|destination|service[_ ]level|"
+    r"字段|参数|记录|流程|调用|入口|实现|函数|方法|文件|代码|中间|哪一步|"
+    r"具体|默认|接到|产生|写入|覆盖|对比|总结)",
+    re.IGNORECASE,
+)
 _AMBIGUOUS_REQUEST = re.compile(
     r"^(?:(?:那|那就|然后|所以)?\s*)?"
     r"(?:这个|那个|它|刚才(?:那个|的)?|上一轮|继续|再看看|再看一下|还有吗|"
@@ -56,6 +72,12 @@ _GENERAL_CHAT = re.compile(
     r"[\s，,、。！？!?；;]*$",
     re.IGNORECASE,
 )
+_GENERAL_CHAT_CODE_RETURN = re.compile(
+    r"^\s*(?:谢谢|感谢|thanks|thank\s+you)"
+    r"(?:[\s，,、。！？!?；;]+(?:接下来)?(?:先)?回到代码)?"
+    r"[\s，,、。！？!?；;]*$",
+    re.IGNORECASE,
+)
 
 
 def classify_chat_task(
@@ -72,7 +94,10 @@ def classify_chat_task(
     normalized = message.strip()
     has_code_anchor = bool(_CODE_ANCHORS.search(normalized))
     has_write_target = has_code_anchor or bool(_CODE_IDENTIFIER.search(normalized))
-    if _CHANGE_WORDS.search(normalized) and not _QUESTION_WORDS.search(normalized):
+    has_write_word = bool(_CHANGE_WORDS.search(normalized))
+    if has_write_word and _IMPLEMENTATION_NOUN.search(normalized):
+        has_write_word = False
+    if has_write_word and not _QUESTION_WORDS.search(normalized):
         if has_write_target or has_active_code_goal:
             return ChatTaskClassification("change", 0.90, "explicit_write_intent")
         return ChatTaskClassification("clarify", 0.55, "write_without_code_anchor")
@@ -80,8 +105,12 @@ def classify_chat_task(
         if has_active_code_goal:
             return ChatTaskClassification("explain", 0.80, "active_code_goal_reference")
         return ChatTaskClassification("clarify", 0.60, "ambiguous_reference")
+    if _GENERAL_CHAT_CODE_RETURN.fullmatch(normalized):
+        return ChatTaskClassification("general_chat", 0.98, "smalltalk_or_capability")
     if has_code_anchor:
         return ChatTaskClassification("explain", 0.85, "code_anchor")
+    if has_active_code_goal and _ACTIVE_CODE_FOLLOWUP.search(normalized):
+        return ChatTaskClassification("explain", 0.78, "active_code_goal_follow_up")
     if has_active_code_goal and _RESUME_WORDS.search(normalized):
         return ChatTaskClassification("explain", 0.78, "active_code_goal_reference")
     if _GENERAL_CHAT.fullmatch(normalized):
