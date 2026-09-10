@@ -32,7 +32,7 @@ class FakeChatModel:
             content = (
                 '{"language":"zh","normalized_question":"checkout 如何校验输入？",'
                 '"subquestions":[{"question":"checkout 如何校验输入？",'
-                '"intent":"symbol_lookup","retrieval_mode":"bm25"}],'
+                '"intent":"symbol_lookup","retrieval_mode":"hybrid"}],'
                 '"execution_route":"linear","confidence":0.95}'
             )
             return ModelCompletion(content, self.model, 12, 4, reasoning_content="正在判断查询路线")
@@ -392,7 +392,7 @@ class FakeChangeModel:
             content = (
                 '{"language":"zh","normalized_question":"检查派送线路函数",'
                 '"subquestions":[{"question":"检查派送线路函数",'
-                '"intent":"implementation","retrieval_mode":"bm25"}],'
+                '"intent":"implementation","retrieval_mode":"hybrid"}],'
                 '"execution_route":"linear","confidence":0.95}'
             )
         else:

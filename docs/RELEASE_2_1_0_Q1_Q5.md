@@ -7,17 +7,16 @@
 
 | 计划 | 本次实现 | 当前证据边界 |
 | --- | --- | --- |
-| Q1 Dense/Sparse 替换 BM25 | EmbeddingBatch 可表达 Provider Dense + Sparse；Sparse 坐标/权重、批次顺序和响应格式受校验；Qdrant 使用 `dense`/`sparse` Named Vectors；正常 `hybrid` 路径用两路召回、RRF 和 qwen Rerank；没有 Sparse 时受控失败 | Fake Provider 契约和本地 Qdrant 契约已测；目标 Provider 是否真的返回 Sparse 仍需真实最小请求确认，不能由模型名推断 |
-| Q2 Qdrant-only 向量存储 | 默认应用组装不再调用 LocalJsonVectorStore 或 persistent semantic JSON；Qdrant collection 支持 staging、point/payload/fingerprint/schema 校验、active 小型 manifest、publish 和 rollback；Local JSON 仅作为历史/离线对照 | 进程内 Qdrant 只用于开发/测试；生产需显式 `CODEINSIGHT_QDRANT_URL`，重启恢复、真实集群迁移和旧缓存 backfill 尚未作为本切片的生产验收 |
+| Q1 Provider Dense/Sparse 检索 | EmbeddingBatch 可表达 Provider Dense + Sparse；Sparse 坐标/权重、批次顺序和响应格式受校验；Qdrant 使用 `dense`/`sparse` Named Vectors；正常 `hybrid` 路径用两路召回、RRF 和 qwen Rerank；没有 Sparse 时受控失败 | Fake Provider 契约和本地 Qdrant 契约已测；目标 Provider 是否真的返回 Sparse 仍需真实最小请求确认，不能由模型名推断 |
+| Q2 Qdrant-only 向量存储 | Qdrant collection 支持 staging、point/payload/fingerprint/schema 校验，以及 active/previous alias 的 publish 和 rollback；运行时不写本地向量 JSON | 进程内 Qdrant 只用于开发/测试；生产需显式 `CODEINSIGHT_QDRANT_URL`，重启恢复、真实集群迁移和旧数据迁移尚未作为本切片的生产验收 |
 | Q3 RRF / Top-K | `rrf_k=60`；Dense 粗召回 40；Sparse 粗召回 40；融合候选上限 100；默认最终 Top-K 10 | 参数已进入代码和登记配置；尚无质量 A/B，不声称 10 是最优 |
 | Q4 RepositoryMap MCP | 保留 `get_repository_map`，增加目录/符号筛选、files/symbols/imports 选择、上限、序列化预算和 cursor；cursor 绑定 repo、源码指纹、地图版本和筛选条件；Executor 生命周期内缓存并在源码变化后失效 | 只提供轻量 Python AST 文件/符号/import 导航；地图标记 `untrusted=true`、`purpose=navigation_only`，必须回到 `read_file` 或搜索形成 Evidence |
 | Q5 LSP / SCIP MCP | 新增 `lsp_definition` 与 `scip_references` 两个只读工具；LSP 使用固定 server registry 和单次进程超时；SCIP 读取固定 `.codeinsight/scip/index.json` 导出并校验仓库指纹、版本和分页；能力缺失返回结构化状态 | 当前机器是否安装 Pyright/TypeScript server、是否有有效 SCIP 导出由运行环境决定；未配置时返回 `NOT_CONFIGURED`/`INDEX_NOT_FOUND`，不宣称已支持 |
 
 ## 关键边界
 
-- Q1 删除的是默认运行路径中的 BM25 依赖，不删除 `bm25.py`、历史评测数据或历史 exact
-  对照。`lexical`/`bm25` 只能由显式历史调用使用，正常 Router、Auto Answer 和 MCP 搜索
-  走 Dense/Sparse。
+- Q1 已移除 BM25/lexical 检索实现、路由值、测试入口和评测运行器；正常 Router、Auto
+  Answer 和 MCP 搜索只走 Dense/Sparse。历史结果文件仍仅作为不可执行的演进证据保留。
 - Qdrant payload 保存 `repoId`、`indexVersion`、`path`、行号、source fingerprint、
   chunk version、embedding model 和 vector schema。查询同时过滤当前仓库、当前索引版本和
   `visibility=active`；源码正文仍从绑定仓库读取。
@@ -43,7 +42,6 @@
 ## 未在本切片中宣称完成的事项
 
 1. 目标 Embedding Provider 的真实 Sparse 返回、usage 和端到端质量尚未重新取证。
-2. Qdrant 真实服务重启、旧 local JSON backfill、生产 alias/控制表和 rollback 演练尚未形成
-   发布级证据。
+2. Qdrant 真实服务重启、旧数据迁移、生产 alias/控制表和 rollback 演练尚未形成发布级证据。
 3. 本机 LSP server 安装/版本与 SCIP index 生成器未登记为已验证能力。
 4. 2.1.0 的检索质量、延迟、Token 和成本没有用本切片的契约测试替代正式评测。

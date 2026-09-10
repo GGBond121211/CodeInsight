@@ -51,10 +51,10 @@ def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() ->
         language="mixed",
         normalized_question="Explain validation and pricing.",
         subquestions=(
-            SubQuestion("How does checkout validate input?", "implementation", "bm25"),
-            SubQuestion("How does checkout compute the total?", "data_flow", "bm25"),
+            SubQuestion("How does checkout validate input?", "implementation", "hybrid"),
+            SubQuestion("How does checkout compute the total?", "data_flow", "hybrid"),
         ),
-        retrieval_modes=("bm25",),
+        retrieval_modes=("hybrid",),
         execution_route="agent",
         confidence=0.9,
     )
@@ -89,8 +89,8 @@ def test_query_plan_agent_retrieves_each_subquestion_and_deduplicates_state() ->
     )
 
     assert calls == [
-        ("How does checkout validate input?", "bm25"),
-        ("How does checkout compute the total?", "bm25"),
+        ("How does checkout validate input?", "hybrid"),
+        ("How does checkout compute the total?", "hybrid"),
     ]
     assert result.result.retrieval_mode == "auto"
     assert result.result.outcome == "partially_answered"
@@ -117,10 +117,10 @@ def test_query_plan_critic_revises_only_failed_subquestion() -> None:
         language="en",
         normalized_question="Explain validation and pricing.",
         subquestions=(
-            SubQuestion("How is input validated?", "implementation", "bm25"),
-            SubQuestion("How is price computed?", "data_flow", "bm25"),
+            SubQuestion("How is input validated?", "implementation", "hybrid"),
+            SubQuestion("How is price computed?", "data_flow", "hybrid"),
         ),
-        retrieval_modes=("bm25",),
+        retrieval_modes=("hybrid",),
         execution_route="agent",
         confidence=0.9,
     )

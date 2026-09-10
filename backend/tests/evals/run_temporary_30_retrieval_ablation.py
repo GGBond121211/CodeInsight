@@ -13,8 +13,9 @@ from codeinsight.application.search_repository import (
     search_repository,
 )
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
+from codeinsight.infrastructure.reranker import OpenAITextReranker
 from codeinsight.retrieval.hybrid import fuse_ranked_chunks, rerank_ranked_chunks
-from codeinsight.retrieval.semantic import search_chunks_semantic
+from codeinsight.retrieval.semantic import search_chunks_dense
 
 try:
     from .temporary_30_ablation import (
@@ -41,7 +42,7 @@ except ImportError:  # Direct script execution.
         write_json_new,
     )
 
-SPARSE_MODES = ("bm25",)
+SPARSE_MODES = ("sparse",)
 SOURCE_LIMIT = 20
 FINAL_LIMIT = 5
 
@@ -177,6 +178,7 @@ def evaluate_subquestion(
     *,
     semantic_index,
     embed,
+    reranker,
 ) -> dict:
     question = subquestion["question"]
     sources = {}
@@ -186,17 +188,19 @@ def evaluate_subquestion(
             question,
             limit=SOURCE_LIMIT,
             retrieval_mode=mode,
+            semantic_embed=embed,
+            semantic_index=semantic_index,
         )
-    sources["semantic"] = search_chunks_semantic(
+    sources["dense"] = search_chunks_dense(
         question, semantic_index, embed, limit=SOURCE_LIMIT
     )
     groups = {
-        "A0": (subquestion["primary_sparse_mode"],),
+        "A0": ("sparse",),
         "A1": SPARSE_MODES,
         "A2": SPARSE_MODES,
-        "A3": ("semantic",),
-        "A4": (*SPARSE_MODES, "semantic"),
-        "A5": (*SPARSE_MODES, "semantic"),
+        "A3": ("dense",),
+        "A4": (*SPARSE_MODES, "dense"),
+        "A5": (*SPARSE_MODES, "dense"),
     }
     results = {}
     for group, source_names in groups.items():
@@ -219,7 +223,12 @@ def evaluate_subquestion(
         else:
             fused = fuse_ranked_chunks(group_sources, limit=SOURCE_LIMIT)
             final = (
-                rerank_ranked_chunks(question, group_sources, limit=FINAL_LIMIT)
+                rerank_ranked_chunks(
+                    question,
+                    group_sources,
+                    reranker=reranker,
+                    limit=FINAL_LIMIT,
+                )
                 if group in {"A2", "A5"}
                 else tuple(fused[:FINAL_LIMIT])
             )
@@ -291,13 +300,17 @@ def build_retrieval_payload(split: str, embed) -> dict:
     cases = selected_cases(split)
     started = perf_counter()
     semantic_index = build_repository_semantic_index(FIXTURE_ROOT, semantic_embed=embed)
+    reranker = OpenAITextReranker.from_environment()
     rows = []
     errors = []
     for case in cases:
         for subquestion in case["subquestions"]:
             try:
                 result = evaluate_subquestion(
-                    subquestion, semantic_index=semantic_index, embed=embed
+                    subquestion,
+                    semantic_index=semantic_index,
+                    embed=embed,
+                    reranker=reranker,
                 )
                 result.update(
                     {

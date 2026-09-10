@@ -43,7 +43,6 @@ from codeinsight.prompts.citation_review import (
     parse_citation_review,
 )
 from codeinsight.prompts.code_answer import build_answer_prompt
-from codeinsight.retrieval.persistent_semantic import embedding_model_id
 
 CompleteModel = Callable[[str, str], ModelCompletion]
 SearchRepository = Callable[..., tuple[RankedChunk, ...]]
@@ -322,7 +321,6 @@ def run_citation_agent(
         semantic_index = build_repository_semantic_index(
             repository_root,
             semantic_embed=retrieval_embed,
-            semantic_model=embedding_model_id(semantic_embed),
             require_sparse=True,
         )
         semantic_store = prepare_runtime_vector_store(repository_root, semantic_index)

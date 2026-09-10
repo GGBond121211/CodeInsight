@@ -36,12 +36,9 @@ defaults:
   chunking:
     production_profile: fixed-80-00
     structural_v1: retained_as_untested_candidate
-  bm25:
-    k1: 1.2
-    b: 0.75
   fusion:
     rrf_k: 60
-    semantic_weight: 0.8
+    sparse_weight: 1.0
     semantic_min_score: 0.2
   rerank:
     enabled: true

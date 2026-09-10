@@ -14,6 +14,7 @@ from codeinsight.evaluation.answer_metrics import (
     answer_failure_types,
     evaluate_answer_results,
 )
+from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.openai_chat import OpenAIChatModel
 from codeinsight.prompts.code_answer import PROMPT_VERSION
 
@@ -85,7 +86,7 @@ def build_evaluation_payload(
 
     payload = {
         "prompt_version": prompt_version,
-        "retrieval_mode": "bm25",
+        "retrieval_mode": "hybrid",
         "model": model,
         "case_count": len(cases),
         "metrics": asdict(metrics),
@@ -104,6 +105,7 @@ def main() -> int:
     """Run all focused answer cases against the configured live model."""
     cases = load_answer_cases()
     model = OpenAIChatModel.from_environment()
+    embedding_model = OpenAIEmbeddingModel.from_environment()
     results: dict[str, RepositoryAnswer | None] = {}
     errors: dict[str, str] = {}
     elapsed_milliseconds: dict[str, int] = {}
@@ -115,7 +117,8 @@ def main() -> int:
                 FIXTURE_ROOT,
                 case["input"]["question"],
                 generate=model.generate,
-                retrieval_mode="bm25",
+                retrieval_mode="hybrid",
+                semantic_embed=embedding_model.embed,
                 limit=5,
             )
         except (ModelCallError, ModelResponseError, OSError, ValueError) as error:

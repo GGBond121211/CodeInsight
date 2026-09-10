@@ -16,7 +16,7 @@ class FakeModel:
         return ModelCompletion(
             '{"language":"en","normalized_question":"Where is checkout?",'
             '"subquestions":[{"question":"Where is checkout?","intent":"symbol_lookup",'
-            '"retrieval_mode":"bm25"}],"execution_route":"linear","confidence":0.9}',
+            '"retrieval_mode":"hybrid"}],"execution_route":"linear","confidence":0.9}',
             "fake-router",
             5,
             2,

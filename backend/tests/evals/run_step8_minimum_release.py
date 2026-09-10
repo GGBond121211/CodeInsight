@@ -13,11 +13,11 @@ from codeinsight.domain.retrieval import RankedChunk
 from codeinsight.domain.semantic import EmbeddingBatch, SemanticIndex
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.reranker import OpenAITextReranker
+from codeinsight.ingestion.chunker import chunk_scan_result
 from codeinsight.ingestion.scanner import scan_repository
-from codeinsight.retrieval.bm25 import search_chunks_bm25
 from codeinsight.retrieval.hybrid import fuse_ranked_chunks, rerank_ranked_chunks
-from codeinsight.retrieval.persistent_semantic import build_persistent_semantic_index
-from codeinsight.retrieval.semantic import search_chunks_semantic
+from codeinsight.retrieval.semantic import build_semantic_index, search_chunks_dense
+from codeinsight.retrieval.sparse import search_chunks_sparse
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_ROOT.parent
@@ -34,13 +34,13 @@ REPOSITORIES = {
 }
 
 FUSION_PROFILES = (
-    {"id": "rrf-k-20", "rrf_k": 20, "semantic_weight": 0.8, "min_score": 0.20},
-    {"id": "baseline", "rrf_k": 60, "semantic_weight": 0.8, "min_score": 0.20},
-    {"id": "rrf-k-100", "rrf_k": 100, "semantic_weight": 0.8, "min_score": 0.20},
-    {"id": "semantic-weight-0.5", "rrf_k": 60, "semantic_weight": 0.5, "min_score": 0.20},
-    {"id": "semantic-weight-1.0", "rrf_k": 60, "semantic_weight": 1.0, "min_score": 0.20},
-    {"id": "min-score-0.0", "rrf_k": 60, "semantic_weight": 0.8, "min_score": 0.0},
-    {"id": "min-score-0.35", "rrf_k": 60, "semantic_weight": 0.8, "min_score": 0.35},
+    {"id": "rrf-k-20", "rrf_k": 20, "sparse_weight": 1.0, "min_score": 0.20},
+    {"id": "baseline", "rrf_k": 60, "sparse_weight": 1.0, "min_score": 0.20},
+    {"id": "rrf-k-100", "rrf_k": 100, "sparse_weight": 1.0, "min_score": 0.20},
+    {"id": "sparse-weight-0.5", "rrf_k": 60, "sparse_weight": 0.5, "min_score": 0.20},
+    {"id": "sparse-weight-1.0", "rrf_k": 60, "sparse_weight": 1.0, "min_score": 0.20},
+    {"id": "min-score-0.0", "rrf_k": 60, "sparse_weight": 1.0, "min_score": 0.0},
+    {"id": "min-score-0.35", "rrf_k": 60, "sparse_weight": 1.0, "min_score": 0.35},
 )
 
 
@@ -114,13 +114,9 @@ def _build_indexes(
         root = REPOSITORIES[repository_id]
         if not root.is_dir():
             raise FileNotFoundError(f"缺少冻结仓库：{root}")
-        indexes[repository_id] = build_persistent_semantic_index(
-            root,
-            scan_repository(root),
-            embed.embed,
-            model=embed.model,
-            chunk_max_lines=80,
-        )
+        scan_result = scan_repository(root)
+        chunks = chunk_scan_result(scan_result, max_lines=80)
+        indexes[repository_id] = build_semantic_index(chunks, embed.embed)
         print(
             json.dumps(
                 {
@@ -138,14 +134,14 @@ def _fusion_row(
     case: dict[str, Any],
     profile: dict[str, Any],
     *,
-    bm25: Sequence[RankedChunk],
-    semantic: Sequence[RankedChunk],
+    dense: Sequence[RankedChunk],
+    sparse: Sequence[RankedChunk],
 ) -> dict[str, Any]:
     fused = fuse_ranked_chunks(
-        (("bm25", bm25), ("semantic", semantic)),
+        (("dense", dense), ("sparse", sparse)),
         limit=HYBRID_CANDIDATE_LIMIT,
         rrf_k=profile["rrf_k"],
-        source_weights={"bm25": 1.0, "semantic": profile["semantic_weight"]},
+        source_weights={"dense": 1.0, "sparse": profile["sparse_weight"]},
     )
     expected = _expected_evidence(case)
     return {
@@ -154,7 +150,7 @@ def _fusion_row(
         "category": case["category"],
         "profile": profile["id"],
         "rrf_k": profile["rrf_k"],
-        "semantic_weight": profile["semantic_weight"],
+        "sparse_weight": profile["sparse_weight"],
         "semantic_min_score": profile["min_score"],
         "candidate_count": len(fused),
         "candidate_recall_at_10": _recall(fused[:10], expected),
@@ -186,19 +182,17 @@ def run() -> dict[str, Any]:
             if charged_tokens >= HARD_STOP_TOKENS:
                 raise RuntimeError("Step 8 pilot 达到 9,000,000 Token 硬停止线")
             question = case["input"]["question"]
-            bm25 = search_chunks_bm25(
+            dense = search_chunks_dense(
                 question,
-                tuple(
-                    item.chunk
-                    for item in indexes[case["repository_id"]].entries
-                ),
+                indexes[case["repository_id"]],
+                embedding.embed,
                 limit=HYBRID_CANDIDATE_LIMIT,
             )
-            semantic_by_score: dict[float, tuple[RankedChunk, ...]] = {}
+            sparse_by_score: dict[float, tuple[RankedChunk, ...]] = {}
             for profile in FUSION_PROFILES:
                 min_score = profile["min_score"]
-                if min_score not in semantic_by_score:
-                    semantic_by_score[min_score] = search_chunks_semantic(
+                if min_score not in sparse_by_score:
+                    sparse_by_score[min_score] = search_chunks_sparse(
                         question,
                         indexes[case["repository_id"]],
                         embedding.embed,
@@ -209,8 +203,8 @@ def run() -> dict[str, Any]:
                 row = _fusion_row(
                     case,
                     profile,
-                    bm25=bm25,
-                    semantic=semantic_by_score[min_score],
+                    dense=dense,
+                    sparse=sparse_by_score[min_score],
                 )
                 fusion_rows.append(row)
                 fusion_file.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -218,14 +212,14 @@ def run() -> dict[str, Any]:
             result = rerank_ranked_chunks(
                 question,
                 (
-                    ("bm25", bm25),
-                    ("semantic", semantic_by_score[0.20]),
+                    ("dense", dense),
+                    ("sparse", sparse_by_score[0.20]),
                 ),
                 reranker=reranker,
                 limit=10,
                 candidate_limit=HYBRID_CANDIDATE_LIMIT,
                 rrf_k=60,
-                source_weights={"bm25": 1.0, "semantic": 0.8},
+                source_weights={"dense": 1.0, "sparse": 1.0},
             )
             telemetry = reranker.last_call
             if telemetry is None:

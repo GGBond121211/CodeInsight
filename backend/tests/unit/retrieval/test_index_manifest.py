@@ -1,44 +1,31 @@
-"""IndexManifest 和发布回滚测试。"""
+"""Qdrant 索引身份值对象测试。"""
 
 import pytest
 
-from codeinsight.retrieval.index_manifest import IndexManifest, IndexPublisher
+from codeinsight.retrieval.index_manifest import IndexManifest
 
 
-def _manifest(version: str) -> IndexManifest:
+def _manifest(backend: str = "qdrant") -> IndexManifest:
     return IndexManifest.create(
-        index_version=version,
+        index_version="v1",
         repo_id="demo",
-        backend="local_json",
-        collection=f"collection-{version}",
+        backend=backend,
+        collection="collection-v1",
         embedding_model="embedding-a",
         dimension=2,
         distance="cosine",
         chunk_version="fixed-lines-v1",
-        source_hash=f"hash-{version}",
+        source_hash="hash-v1",
     )
 
 
-def test_stage_publish_and_rollback_keep_active_index_isolated(tmp_path) -> None:
-    publisher = IndexPublisher(tmp_path / "indexes")
-    first = _manifest("v1")
-    second = _manifest("v2")
+def test_manifest_is_an_in_memory_qdrant_identity() -> None:
+    manifest = _manifest()
 
-    publisher.stage(first)
-    publisher.publish("v1")
-    publisher.stage(second)
-    assert publisher.active().index_version == "v1"
-    publisher.publish("v2")
-    assert publisher.active().index_version == "v2"
-    assert publisher.rollback().index_version == "v1"
+    assert manifest.backend == "qdrant"
+    assert manifest.collection == "collection-v1"
 
 
-def test_invalid_staging_is_rejected_without_touching_active(tmp_path) -> None:
-    publisher = IndexPublisher(tmp_path / "indexes")
-    publisher.stage(_manifest("v1"))
-    publisher.publish("v1")
-    (publisher.staging / "bad.json").write_text("not-json", encoding="utf-8")
-
-    with pytest.raises(ValueError):
-        publisher.publish("bad")
-    assert publisher.active().index_version == "v1"
+def test_manifest_requires_qdrant_backend() -> None:
+    with pytest.raises(ValueError, match="只支持 Qdrant"):
+        _manifest("file")

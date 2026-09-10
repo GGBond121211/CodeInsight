@@ -35,11 +35,11 @@ def test_required_text_rejects_blank_values(field: str) -> None:
         AnswerRequest(**values)
 
 
-def test_bm25_and_source_context_are_part_of_internal_contract() -> None:
+def test_hybrid_retrieval_and_source_context_are_part_of_internal_contract() -> None:
     request = SearchRequest(
         repository_root="repo",
         question="question",
-        retrieval_mode="bm25",
+        retrieval_mode="hybrid",
     )
     hit = SearchHitResponse(
         rank=1,
@@ -52,12 +52,12 @@ def test_bm25_and_source_context_are_part_of_internal_contract() -> None:
         retrieval_reason="direct_match",
     )
 
-    assert request.retrieval_mode == "bm25"
+    assert request.retrieval_mode == "hybrid"
     assert hit.symbol_path == "Service.run"
     assert hit.retrieval_reason == "direct_match"
 
 
-@pytest.mark.parametrize("removed_mode", ["ast-bm25", "graph-bm25"])
+@pytest.mark.parametrize("removed_mode", ["keyword", "unsupported"])
 def test_removed_retrieval_modes_are_rejected(removed_mode: str) -> None:
     with pytest.raises(ValidationError):
         SearchRequest(repository_root="repo", question="question", retrieval_mode=removed_mode)

@@ -21,7 +21,6 @@ experiment_tiers:
     verification: "重跑必须逐位相同"
     applies_to:
       - chunk 行数与 overlap
-      - BM25 k1 / b（历史对照）
       - RRF K 与来源权重
       - semantic min_score
       - Top-K 与候选上限
@@ -232,12 +231,11 @@ queue:
     status: pending
 
   - id: EXP-006
-    name: "向量后端对照 local_json vs Qdrant HNSW"
+    name: "Qdrant HNSW 参数契约"
     tier: deterministic
     trials: 1
     schedule: "Step 4 / Step 8"
     variables:
-      backend: [local_json_exact, qdrant_hnsw]
       hnsw_m: [8, 16, 32]
       hnsw_ef_construction: [64, 128, 256]
       hnsw_ef_search: [32, 64, 128]
@@ -248,9 +246,8 @@ queue:
       cost: [p95_latency_ms, memory_mb, index_build_seconds]
     status: baseline_completed_parameter_scan_pending
     result: >-
-      EXP-006 2026-09-04：fixed-80/0 下 local_json exact 与 Qdrant/HNSW 的
-      Evidence Recall、Complete Coverage、MRR、Citation Validity 完全一致；
-      Qdrant baseline 为 M=16 / efConstruction=128 / efSearch=64。
+      EXP-006 2026-09-04：Qdrant/HNSW baseline 为 M=16 /
+      efConstruction=128 / efSearch=64；历史后端对照仅作为演进记录。
 
   - id: EXP-007
     name: "规模基准 ×1 vs ×10"

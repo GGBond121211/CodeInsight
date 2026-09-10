@@ -11,7 +11,7 @@ def test_agent_values_are_immutable() -> None:
         outcome="insufficient_evidence",
         answer="Not enough evidence.",
         citations=(),
-        retrieval_mode="bm25",
+        retrieval_mode="hybrid",
         model="test-model",
         prompt_version="citation-agent-v3",
         input_tokens=10,

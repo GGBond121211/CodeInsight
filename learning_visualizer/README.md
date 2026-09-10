@@ -29,7 +29,7 @@ http://127.0.0.1:4173
 ## 当前内容
 
 - 一次请求主链：从 `App.submit()`、`autoAnswerRepository()`、`postJson()`、`fetch()`，一直展示到后端 `auto_answer()`、Router、检索、回答和引用校验。
-- 检索放大：展示 `search_chunks_bm25()`、`search_chunks_semantic()`、`rerank_ranked_chunks()`、`_rerank()` 和 `_code_relevance()` 的调用关系。
+- 检索放大：展示 Provider `search_chunks_dense()`、`search_chunks_sparse()`、Qdrant、RRF 和 `rerank_ranked_chunks()` 的调用关系。
 - Agent 循环：展示 `run_citation_agent()`、`retrieve()`、`draft()`、`review()`、`route_review()`、`revise()` 和 `finalize_revised()` 的调用与回环。
 - 节点第一行使用真实函数名；点击节点可以查看仓库相对路径、内部调用、下一步函数、输入、输出和失败方式。
 - 实线箭头表示函数调用；虚线箭头表示 HTTP 边界、返回值或数据传递；橙色虚线表示 Agent 回环。

@@ -24,9 +24,12 @@ from codeinsight.domain.source import SourceChunk
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.ingestion.chunker import chunk_scan_result
 from codeinsight.ingestion.scanner import scan_repository
-from codeinsight.retrieval.bm25 import search_chunks_bm25
-from codeinsight.retrieval.hybrid import rerank_ranked_chunks
-from codeinsight.retrieval.semantic import build_semantic_index, search_chunks_semantic
+from codeinsight.retrieval.hybrid import fuse_ranked_chunks
+from codeinsight.retrieval.semantic import (
+    build_semantic_index,
+    search_chunks_dense,
+)
+from codeinsight.retrieval.sparse import search_chunks_sparse
 from codeinsight.retrieval.vector_store import VectorStore
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -222,8 +225,7 @@ def _search_case(
     query_latencies: list[float] = []
     for query in queries:
         started = time.perf_counter()
-        bm25 = search_chunks_bm25(query, chunks, limit=SOURCE_LIMIT)
-        semantic = search_chunks_semantic(
+        dense = search_chunks_dense(
             query,
             index,
             tracker.embed,
@@ -232,10 +234,20 @@ def _search_case(
             vector_store=semantic_store,
             query_filter=semantic_query_filter,
         )
-        reranked = rerank_ranked_chunks(
+        sparse = search_chunks_sparse(
             query,
-            (("bm25", bm25), ("semantic", semantic)),
+            index,
+            tracker.embed,
+            limit=SOURCE_LIMIT,
+            min_score=0.0,
+            vector_store=semantic_store,
+            query_filter=semantic_query_filter,
+        )
+        reranked = fuse_ranked_chunks(
+            (("dense", dense), ("sparse", sparse)),
             limit=FINAL_LIMIT,
+            rrf_k=60,
+            source_weights={"dense": 1.0, "sparse": 1.0},
         )
         query_latencies.append(time.perf_counter() - started)
         for result in reranked:
@@ -507,13 +519,13 @@ def run(
             "chat_calls": 0,
         },
         "fixed_pipeline": {
-            "retriever": "BM25 + semantic",
+            "retriever": "Provider Dense + Provider Sparse",
             "semantic_min_score": SEMANTIC_MIN_SCORE,
             "source_limit": SOURCE_LIMIT,
             "final_limit": FINAL_LIMIT,
             "embedding_model": model.model,
             "rrf_k": 60,
-            "source_weights": {"bm25": 1.0, "semantic": 0.8},
+            "source_weights": {"dense": 1.0, "sparse": 1.0},
         },
         "profiles": profiles,
         "notes": [

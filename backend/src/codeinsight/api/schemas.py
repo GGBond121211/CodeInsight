@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-RetrievalMode = Literal["lexical", "bm25", "hybrid", "dense", "sparse"]
+RetrievalMode = Literal["hybrid", "dense", "sparse"]
 RetrievalReason = Literal[
     "direct_match",
     "semantic_match",

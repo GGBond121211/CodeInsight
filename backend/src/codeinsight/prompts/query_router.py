@@ -21,7 +21,7 @@ SYSTEM_PROMPT = """你是一个面向代码仓库理解助手的查询规划器�
   subquestion。
 - 在判断是否存在多个独立交付物前，先完整理解并规范化用户请求。每个可执行的 subquestion
   都将 retrieval_mode 设置为 hybrid。application 层会将其展开为 Provider Dense 与 Provider Sparse
-  两路，不使用 BM25 作为正常运行时 Sparse。
+  两路。
 - 默认使用 linear。只有当用户明确提出多个独立交付物，并且合并请求需要跨文件顺序/分支比较，
   或存在异常高的引用风险时，才选择 agent。错别字、多语言表达、语义改写或单个跨文件追踪
   本身都不足以触发 Agent；应选择最合适的检索器并使用 linear 回答。不确定时选择 linear。

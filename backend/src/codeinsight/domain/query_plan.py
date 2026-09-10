@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 SUPPORTED_RETRIEVAL_MODES = frozenset(
     {
-        "lexical",
-        "bm25",
         "hybrid",
         "dense",
         "sparse",

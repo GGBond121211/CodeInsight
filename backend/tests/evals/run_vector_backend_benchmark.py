@@ -1,8 +1,9 @@
-"""Compare local exact cosine with Qdrant/HNSW on the frozen query set.
+"""Benchmark the Qdrant vector backend on the frozen query set.
 
 The runner makes real Embedding calls only with ``--confirm-run`` and never
 calls a Chat model. The same fixed chunks and query Embeddings are sent to
-both backends, so the comparison isolates backend behavior.
+Qdrant, so the benchmark measures the active vector backend without a local
+file-storage fallback.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from codeinsight.retrieval.index_pipeline import (
 )
 from codeinsight.retrieval.qdrant_store import QdrantVectorStore
 from codeinsight.retrieval.semantic import build_semantic_index
-from codeinsight.retrieval.vector_store import LocalJsonVectorStore, VectorStore
+from codeinsight.retrieval.vector_store import VectorStore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CASES_PATH = Path(__file__).with_name("master_200_cases.json")
@@ -97,10 +98,8 @@ def _index_for_repo(root: Path, tracker: UsageTracker):
     return scan_result, chunks, index, time.perf_counter() - started
 
 
-def _store_for_backend(
-    backend: str,
+def _store_for_qdrant(
     *,
-    output_root: Path,
     repo_id: str,
     index,
     scan_result,
@@ -116,26 +115,6 @@ def _store_for_backend(
         source_fingerprints=fingerprints,
         chunk_version="fixed-lines-v1",
     )
-    if backend == "local_json":
-        store = LocalJsonVectorStore(output_root / "local" / f"{repo_id}.json")
-        started = time.perf_counter()
-        publish_semantic_index(
-            index,
-            store,
-            repo_id=repo_id,
-            source_fingerprints=fingerprints,
-            chunk_version="fixed-lines-v1",
-        )
-        return store, {
-            "backend": "local_json",
-            "collection": str(store.path),
-            "publish_seconds": time.perf_counter() - started,
-            "point_count": len(points),
-            "fallback_reason": None,
-        }
-
-    if backend != "qdrant_hnsw":
-        raise ValueError(f"不支持的向量后端：{backend}")
     client = QdrantClient(url=qdrant_url, timeout=5)
     collection = f"codeinsight_exp002_{repo_id}_{uuid.uuid4().hex[:8]}"
     store = QdrantVectorStore(
@@ -155,7 +134,7 @@ def _store_for_backend(
         chunk_version="fixed-lines-v1",
     )
     return store, {
-        "backend": "qdrant_hnsw",
+        "backend": "qdrant",
         "collection": collection,
         "publish_seconds": time.perf_counter() - started,
         "point_count": len(points),
@@ -172,7 +151,7 @@ def run(*, output_root: Path, qdrant_url: str) -> dict[str, Any]:
     query_cache: dict[str, EmbeddingBatch] = {}
     profiles: list[dict[str, Any]] = []
 
-    for backend in ("local_json", "qdrant_hnsw"):
+    for backend in ("qdrant",):
         tracker = UsageTracker(model, query_cache=query_cache)
         rows: list[dict[str, Any]] = []
         query_latencies: list[float] = []
@@ -186,9 +165,7 @@ def run(*, output_root: Path, qdrant_url: str) -> dict[str, Any]:
                 )
                 for source in scan_result.files
             }
-            store, store_stats = _store_for_backend(
-                backend,
-                output_root=output_root,
+            store, store_stats = _store_for_qdrant(
                 repo_id=repo_id,
                 index=index,
                 scan_result=scan_result,
@@ -235,11 +212,7 @@ def run(*, output_root: Path, qdrant_url: str) -> dict[str, Any]:
         profiles.append(
             {
                 "backend": backend,
-                "hnsw": (
-                    {"m": 16, "ef_construction": 128, "ef_search": 64}
-                    if backend == "qdrant_hnsw"
-                    else None
-                ),
+                "hnsw": {"m": 16, "ef_construction": 128, "ef_search": 64},
                 "metrics": metrics,
                 "repositories": repository_stats,
                 "query_count": len(query_latencies),
@@ -269,7 +242,7 @@ def run(*, output_root: Path, qdrant_url: str) -> dict[str, Any]:
         },
         "profiles": profiles,
         "notes": [
-            "Both backends use the same fixed chunks and cached query Embeddings.",
+            "Qdrant uses fixed chunks and cached query Embeddings.",
             "Evidence is reconstructed from the SemanticIndex, never from untrusted payload text.",
             "Qdrant parameters are one measured baseline, not a tuned optimum.",
         ],
@@ -291,7 +264,7 @@ def main() -> int:
             json.dumps(
                 {
                     "experiment_id": "EXP-006",
-                    "profiles": ["local_json", "qdrant_hnsw"],
+                    "profiles": ["qdrant"],
                     "chunk_profile": "fixed-80-00",
                     "chat_calls": 0,
                     "embedding_calls": "real provider calls on --confirm-run",

@@ -38,12 +38,6 @@ _INTENT_ALIASES = {
     "dataflow": "data_flow",
     "business_logic": "implementation",
 }
-_RETRIEVAL_ALIASES = {
-    "bm25": "hybrid",
-    "semantic": "dense",
-}
-
-
 @dataclass(frozen=True)
 class QueryRouterResult:
     plan: QueryPlan
@@ -140,7 +134,7 @@ def parse_query_plan(original_question: str, content: str) -> QueryPlan:
         if intent not in SUPPORTED_INTENTS:
             raise ModelResponseError("Router 子问题的 intent 不受支持")
         retrieval_mode = _require_string(raw, "retrieval_mode")
-        retrieval_mode = _RETRIEVAL_ALIASES.get(retrieval_mode.lower(), retrieval_mode.lower())
+        retrieval_mode = retrieval_mode.lower()
         if retrieval_mode not in ROUTER_RETRIEVAL_MODES:
             raise ModelResponseError("Router 子问题的 retrieval_mode 不受支持")
         subquestions.append(SubQuestion(question, intent, retrieval_mode))

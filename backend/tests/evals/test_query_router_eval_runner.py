@@ -3,7 +3,7 @@
 from tests.evals.run_query_router_eval import expected_labels, summarize
 
 
-def test_expected_labels_keep_bm25_and_multi_intent_gates_explicit() -> None:
+def test_expected_labels_keep_hybrid_and_multi_intent_gates_explicit() -> None:
     semantic = {
         "language": "zh",
         "category": "semantic_paraphrase",
@@ -17,7 +17,7 @@ def test_expected_labels_keep_bm25_and_multi_intent_gates_explicit() -> None:
 
     assert expected_labels(semantic) == {
         "language": "zh",
-        "retrieval_mode": "bm25",
+        "retrieval_mode": "hybrid",
         "execution_route": "linear",
         "subquestion_count": 1,
     }

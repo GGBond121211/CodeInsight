@@ -42,7 +42,7 @@
           "question": "`find_record` 搜出来两个，客服 ticket 又只写了 C-200/A-100 混在一起；哪个要 customer_id 并做 owner 校验，哪个只有 record_id？scope/status 别串线，也别把两份静态 row 当一张表。",
           "intent": "ambiguity",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "ast-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/customer/records.py",
@@ -88,7 +88,7 @@
           "question": "ETA 会不会其实是 `service_level_deadline`，SLA 又用了 transit_days？names in docs are aliases and ticket swapped them；请 map business shorthand to implementations and arithmetic units。",
           "intent": "ambiguity",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "ast-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/shipping/workflow.py",
@@ -129,7 +129,7 @@
           "question": "我本来想问为何 planned 之后没变 ready，后来发现可能根本不是同一对象。麻烦先验证对象/模块边界，再说 record_type 是否等于 state。",
           "intent": "ambiguity",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "ast-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/fulfillment/pipeline.py",
@@ -180,7 +180,7 @@
           "question": "available(false) -> reserve returns false or raises? and STOCK mutation before/after check? 另有 qty=-1 这个离谱输入，先看 validation call order，别孤立看 `STOCK[sku] -= quantity` 就下结论。",
           "intent": "boundary_behavior",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/inventory.py",
@@ -231,7 +231,7 @@
           "question": "ledger 这个名字 misleading：is it durable or just list？plan returns store directly so state/record_type 谁持有；回答要区分代码事实与 deployment guess。",
           "intent": "boundary_behavior",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/fulfillment/ledger.py",
@@ -277,7 +277,7 @@
           "question": "我一开始问 ETA，后来发现真正问题是 lane：地区表和易碎判断挤在一行，看起来像都会执行。请说明条件优先级，也明确仓库没有承运商调用。",
           "intent": "boundary_behavior",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/shipping/workflow.py",
@@ -318,7 +318,7 @@
           "question": "docs 说 persisted carrier reference，可 code maybe only returns object；`finalize_shipment` 到底 call carrier API/DB 没？compare guide vs body，别让 persist 这个词 overrule code。",
           "intent": "code_document_conflict",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "ast-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "docs/shipping-guide.md",
@@ -364,7 +364,7 @@
           "question": "我不能简单说“文档过期”，因为它确实提醒 admin scope 不同。请把文档能证明的和代码实际执行的边界分开，尤其 wrong owner 怎么处理。",
           "intent": "code_document_conflict",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "ast-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "docs/record-lookups.md",
@@ -415,7 +415,7 @@
           "question": "record lookup guide vs implementation 又撞了：same symbol、different args/scope；need code authority，也别忽略 docs 为什么会在 retrieval 里 collision。",
           "intent": "code_document_conflict",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "ast-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "docs/record-lookups.md",
@@ -466,7 +466,7 @@
           "question": "线上说下单成功但钱不对，我翻到 `checkout` 又像只是组对象；先别默认 API 就是路由，payload 到 `OrderRequest`、校验、扣库存、算总价、塞 currency 到返回到底按什么顺序？中间谁先抛错也一起说。",
           "intent": "cross_file_trace",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/api.py",
@@ -537,7 +537,7 @@
           "question": "ticket 写成 create_order -> reserve -> validate -> pricing，but 我怀疑顺序抄反了，而且 `Receipt.currency` 像是 user locale；pls trace payload→request→checkout→response，按 actual execution，不要照 ticket 猜。",
           "intent": "cross_file_trace",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/api.py",
@@ -608,7 +608,7 @@
           "question": "我本来以为 destination 在 store 时才补，后来又看到入口 cast；还有人说进程重启记录仍在。先不讨论生产应该怎样，只按这三个文件说明字段什么时候出现、谁调用谁、返回值是不是同一个 dict 链。",
           "intent": "cross_file_trace",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/fulfillment/entrypoint.py",
@@ -659,7 +659,7 @@
           "question": "quick check：validate、reserve、available、price 这几个谁包谁？ticket 说先算钱再锁库存但看着不对；need exact short-circuit evidence，别推 runtime transaction。",
           "intent": "cross_file_trace",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/service.py",
@@ -715,7 +715,7 @@
           "question": "前端拿到 sku、quantity、total_cents、currency，产品说四个都原样来自 payload，可 payload 明明没 currency，total 也不像原值。麻烦逐字段追来源和转换，别给一段泛泛的“checkout 返回 receipt”。",
           "intent": "data_flow",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/api.py",
@@ -776,7 +776,7 @@
           "question": "response mapping 有点怪：`quantity='2'` 最后变 int，total_cents maybe payload hidden field，currency maybe locale。Can you classify copied/cast/computed/configured for each output field and cite both creation and exposure sites?",
           "intent": "data_flow",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/api.py",
@@ -837,7 +837,7 @@
           "question": "同样是 quantity，日志一会儿像 ValueError from int，一会儿是 quantity must be positive。我没给你完整 traceback，所以不要猜具体坏字符串；只回答仓库能证明的转换和校验顺序。",
           "intent": "data_flow",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/api.py",
@@ -893,7 +893,7 @@
           "question": "unit vs total vs total_cents 三个名字绕晕：which one reads sku only, which multiplies qty, which is just output field；不要把同名含义拼起来。",
           "intent": "data_flow",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/pricing.py",
@@ -944,7 +944,7 @@
           "question": "退款 record 已经 queued，金额也有 amount_cents，所以 Stripe 应该在后台 worker 扣款吧？我要 provider 名、endpoint、回调和到账确认；如果这几个在仓库里一个都没有，不要拿 prepare_refund 的本地 dict 假装完成。",
           "intent": "insufficient_evidence",
           "expected_outcome": "insufficient_evidence",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [],
           "atomic_claims": [
             {
@@ -979,7 +979,7 @@
           "question": "what HTTP endpoint exposes `create_order`，POST maybe 200/201? 我找不到 FastAPI decorator，need actual route evidence or mark insufficient。",
           "intent": "insufficient_evidence",
           "expected_outcome": "insufficient_evidence",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [],
           "atomic_claims": [
             {
@@ -1014,7 +1014,7 @@
           "question": "API 是否构建 OrderRequest？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/api.py",
@@ -1040,7 +1040,7 @@
           "question": "校验是否发生在库存预留之后？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/service.py",
@@ -1066,7 +1066,7 @@
           "question": "总价是否包含税或折扣？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/pricing.py",
@@ -1107,7 +1107,7 @@
           "question": "API 是否构建 OrderRequest？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/api.py",
@@ -1133,7 +1133,7 @@
           "question": "校验是否发生在库存预留之后？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/service.py",
@@ -1159,7 +1159,7 @@
           "question": "总价是否包含税或折扣？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/pricing.py",
@@ -1200,7 +1200,7 @@
           "question": "customer lookup 是否校验 owner？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/customer/records.py",
@@ -1221,7 +1221,7 @@
           "question": "admin lookup 返回什么 scope？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/admin/records.py",
@@ -1242,7 +1242,7 @@
           "question": "queued refund 是否调用 Stripe？",
           "intent": "multi_intent",
           "expected_outcome": "insufficient_evidence",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [],
           "atomic_claims": [
             {
@@ -1277,7 +1277,7 @@
           "question": "易碎国内件选择哪条 lane？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/shipping/workflow.py",
@@ -1298,7 +1298,7 @@
           "question": "ETA 与 SLA 分别如何计算？",
           "intent": "multi_intent",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/shipping/workflow.py",
@@ -1319,7 +1319,7 @@
           "question": "finalize_shipment 是否调用外部承运商？",
           "intent": "multi_intent",
           "expected_outcome": "insufficient_evidence",
-          "primary_sparse_mode": "graph-bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [],
           "atomic_claims": [
             {
@@ -1354,7 +1354,7 @@
           "question": "帮忙看下 valdiate_requset 这玩意到底在哪被调的，别只甩定义；qty=0 是 api cast 挂还是 service 前面校验挂？我只截到 must be positive，调用栈没了，大概就这些。",
           "intent": "noisy_query",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/service.py",
@@ -1404,7 +1404,7 @@
           "question": "where `toatl_cents` + `curency` come frm?? maybe locale/discount？show price table→multiply→Receipt→response and DEFAULT config，unsupported guess 标出来。",
           "intent": "noisy_query",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/pricing.py",
@@ -1460,7 +1460,7 @@
           "question": "日志只剩一个 dict，没有函数名，我按字段猜到这三层但可能猜错。请用字段血缘验证，不要把模块 docstring 当执行行为。",
           "intent": "noisy_query",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/fulfillment/entrypoint.py",
@@ -1511,7 +1511,7 @@
           "question": "业务没说 quarantine，只说“分配失败的单子先搁着让人看，没失败就继续打包”。代码里哪个实现对应这句话？两个分支的精确 state 都要，别拿库存 reserve 的异常来替代。",
           "intent": "semantic_paraphrase",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/shipping/workflow.py",
@@ -1552,7 +1552,7 @@
           "question": "allocation failed 就转人工 review，otherwise packing continues；symbol 可能不叫 review_order。请找 semantic match 和 exact returned dict/state，不要只靠 filename keyword。",
           "intent": "semantic_paraphrase",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/shipping/workflow.py",
@@ -1593,7 +1593,7 @@
           "question": "我先搜 carrier 没结果，可能业务叫法完全不一样。只根据返回字符串和条件判断说明专线，不要推断真实承运商或费用。",
           "intent": "semantic_paraphrase",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/shipping/workflow.py",
@@ -1634,7 +1634,7 @@
           "question": "USD 到底什么 origin，pls；config vs model default vs payload 已经 confusion 了，need assignment chain，不要 semantic guess。",
           "intent": "semantic_paraphrase",
           "expected_outcome": "answered",
-          "primary_sparse_mode": "bm25",
+          "primary_sparse_mode": "sparse",
           "expected_evidence": [
             {
               "path": "src/shop/config.py",

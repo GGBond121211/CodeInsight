@@ -24,7 +24,7 @@ def require_sparse_batch(
         raise ModelResponseError("Embedding 提供方返回的 Dense 数量不符合预期")
     if batch.sparse_vectors is None:
         raise ModelResponseError(
-            "Embedding Provider 未返回 Sparse；2.1 Dense/Sparse 检索不会回退 BM25"
+            "Embedding Provider 未返回 Sparse；2.1 Dense/Sparse 检索无法继续"
         )
     if len(batch.sparse_vectors) != expected_count:
         raise ModelResponseError("Embedding 提供方返回的 Sparse 数量不符合预期")

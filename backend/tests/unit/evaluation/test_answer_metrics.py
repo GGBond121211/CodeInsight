@@ -34,7 +34,7 @@ def _answer(
         outcome=outcome,
         answer=text,
         citations=citations,
-        retrieval_mode="bm25",
+        retrieval_mode="hybrid",
         model="fake-model",
         prompt_version="code-answer-v1",
         input_tokens=10,

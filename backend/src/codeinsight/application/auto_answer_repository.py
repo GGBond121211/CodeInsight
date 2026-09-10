@@ -28,7 +28,6 @@ from codeinsight.domain.retrieval import RankedChunk, SubQuestionEvidence
 from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.prompts.code_answer import PROMPT_VERSION, build_answer_prompt
-from codeinsight.retrieval.persistent_semantic import embedding_model_id
 
 GenerateAnswer = Callable[[str, str], ModelAnswer]
 SemanticEmbed = Callable[[Sequence[str]], EmbeddingBatch]
@@ -106,7 +105,6 @@ def auto_answer_repository(
         root,
         chunk_max_lines=chunk_max_lines,
         semantic_embed=retrieval_embed,
-        semantic_model=embedding_model_id(semantic_embed),
         require_sparse=True,
     )
     retrieval_store = semantic_store or prepare_runtime_vector_store(root, semantic_index)

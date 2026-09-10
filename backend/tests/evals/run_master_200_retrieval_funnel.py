@@ -12,11 +12,12 @@ from typing import Any
 from codeinsight.application.search_repository import build_repository_semantic_index
 from codeinsight.evaluation.answer_metrics import citation_covers
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
+from codeinsight.infrastructure.reranker import OpenAITextReranker
 from codeinsight.ingestion.chunker import chunk_scan_result
 from codeinsight.ingestion.scanner import scan_repository
-from codeinsight.retrieval.bm25 import search_chunks_bm25
 from codeinsight.retrieval.hybrid import fuse_ranked_chunks, rerank_ranked_chunks
-from codeinsight.retrieval.semantic import search_chunks_semantic
+from codeinsight.retrieval.semantic import search_chunks_dense
+from codeinsight.retrieval.sparse import search_chunks_sparse
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_ROOT.parent
@@ -264,6 +265,7 @@ def main() -> int:
         return 0
 
     embed_model = OpenAIEmbeddingModel.from_environment()
+    reranker = OpenAITextReranker.from_environment()
     rows = []
     for repository_id in repositories:
         root = PROJECT_ROOT / metadata[repository_id]["local_root"]
@@ -287,17 +289,24 @@ def main() -> int:
             fused_by_key = {}
             reranked_by_key = {}
             for query in queries:
-                bm25 = search_chunks_bm25(query, chunks, limit=SOURCE_LIMIT)
-                semantic = search_chunks_semantic(
+                dense = search_chunks_dense(
                     query, semantic_index, embed_model.embed, limit=SOURCE_LIMIT
                 )
-                sources = (("bm25", bm25), ("semantic", semantic))
+                sparse = search_chunks_sparse(
+                    query, semantic_index, embed_model.embed, limit=SOURCE_LIMIT
+                )
+                sources = (("dense", dense), ("sparse", sparse))
                 for _, values in sources:
                     for item in values:
                         raw_by_key[_key(item)] = item
                 for item in fuse_ranked_chunks(sources, limit=SOURCE_LIMIT):
                     fused_by_key[_key(item)] = item
-                for item in rerank_ranked_chunks(query, sources, limit=FINAL_LIMIT):
+                for item in rerank_ranked_chunks(
+                    query,
+                    sources,
+                    reranker=reranker,
+                    limit=FINAL_LIMIT,
+                ):
                     reranked_by_key[_key(item)] = item
             raw = tuple(raw_by_key.values())
             fused = tuple(fused_by_key.values())

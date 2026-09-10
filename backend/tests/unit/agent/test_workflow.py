@@ -34,7 +34,7 @@ def test_no_evidence_stops_without_model_call() -> None:
         "unknown",
         complete=complete,
         search=_empty_search,
-        retrieval_mode="bm25",
+        retrieval_mode="hybrid",
     )
 
     assert result.result.outcome == "insufficient_evidence"
@@ -52,7 +52,7 @@ def test_pass_review_prunes_unnecessary_citation_without_revision() -> None:
     )
 
     result = run_citation_agent(
-        "repo", "Where?", complete=complete, search=_search, retrieval_mode="bm25"
+        "repo", "Where?", complete=complete, search=_search, retrieval_mode="hybrid"
     )
 
     citation_ids = []
@@ -73,7 +73,7 @@ def test_revise_route_runs_exactly_once_and_finishes() -> None:
     )
 
     result = run_citation_agent(
-        "repo", "Where?", complete=complete, search=_search, retrieval_mode="bm25"
+        "repo", "Where?", complete=complete, search=_search, retrieval_mode="hybrid"
     )
 
     assert result.revisions == 1
@@ -102,7 +102,7 @@ def test_insufficient_draft_skips_citation_review() -> None:
         "Which provider?",
         complete=complete,
         search=_search,
-        retrieval_mode="bm25",
+        retrieval_mode="hybrid",
     )
 
     assert result.result.outcome == "insufficient_evidence"
@@ -134,7 +134,7 @@ def test_reviser_stops_after_five_bounded_rounds() -> None:
     )
 
     result = run_citation_agent(
-        "repo", "Where?", complete=complete, search=_search, retrieval_mode="bm25"
+        "repo", "Where?", complete=complete, search=_search, retrieval_mode="hybrid"
     )
 
     assert result.revisions == 5

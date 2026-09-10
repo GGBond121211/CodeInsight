@@ -72,7 +72,7 @@ def _router_payload() -> str:
                 {
                     "question": "Where is checkout validation implemented?",
                     "intent": "implementation",
-                    "retrieval_mode": "bm25",
+                    "retrieval_mode": "hybrid",
                 }
             ],
             "execution_route": "linear",
@@ -145,12 +145,12 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
                 {
                     "question": "How is input validated?",
                     "intent": "implementation",
-                    "retrieval_mode": "bm25",
+                    "retrieval_mode": "hybrid",
                 },
                 {
                     "question": "How is price computed?",
                     "intent": "data_flow",
-                    "retrieval_mode": "bm25",
+                    "retrieval_mode": "hybrid",
                 },
             ],
             "execution_route": "agent",
@@ -161,7 +161,7 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
     validation = SubQuestionAnswer(
         "How is input validated?",
         "implementation",
-        "bm25",
+        "hybrid",
         "answered",
         "Validation answer.",
         (AnswerCitation("E1", "src/validation.py", 1, 4),),
@@ -169,7 +169,7 @@ def test_agent_route_returns_each_independent_subquestion_answer(monkeypatch) ->
     pricing = SubQuestionAnswer(
         "How is price computed?",
         "data_flow",
-        "bm25",
+        "hybrid",
         "insufficient_evidence",
         "Pricing evidence is insufficient.",
         (),

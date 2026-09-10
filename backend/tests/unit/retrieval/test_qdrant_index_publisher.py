@@ -52,6 +52,9 @@ def test_qdrant_staging_does_not_replace_active_until_publish_and_can_rollback(t
     published_first = publisher.publish(staged_first.manifest.index_version)
     assert published_first.collection == staged_first.manifest.collection
     assert publisher.active_store() is not None
+    assert publisher.active().index_version == first.metadata.index_id
+    aliases = {item.alias_name for item in publisher.client.get_aliases().aliases}
+    assert publisher.active_alias in aliases
 
     second = _index("return 2")
     staged_second = publisher.stage(

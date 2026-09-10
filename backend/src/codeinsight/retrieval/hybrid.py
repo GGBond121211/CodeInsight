@@ -12,9 +12,6 @@ _RRF_K = 60
 _SOURCE_WEIGHTS = {
     "dense": 1.0,
     "sparse": 1.0,
-    # 2.0 historical names remain readable for old evaluation artifacts only.
-    "bm25": 1.0,
-    "semantic": 1.0,
 }
 
 

@@ -22,7 +22,7 @@ dependencies = [
     "pymysql>=1.1,<2",
     # 可选热点缓存；Redis 故障时 SessionService 回源 Memory/Session Store。
     "redis>=6,<7",
-    # 2.1 运行时使用 Qdrant Named Dense/Sparse；local_json 仅保留历史/离线对照。
+    # 2.1 运行时唯一向量后端：Qdrant Named Dense/Sparse。
     "qdrant-client>=1.15,<1.16",
     # Step 7：Redis-backed Worker、OTel API 和本地 Prometheus 指标端点。
     "celery>=5.5,<6",

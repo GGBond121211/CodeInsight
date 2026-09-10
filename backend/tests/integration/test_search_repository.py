@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from qdrant_client import QdrantClient
 
 from codeinsight.application.search_repository import repository_id, search_repository
 from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
@@ -10,8 +11,8 @@ from codeinsight.infrastructure.reranker import RerankResult
 from codeinsight.ingestion.chunker import chunk_source_file
 from codeinsight.ingestion.scanner import scan_repository
 from codeinsight.retrieval.index_pipeline import publish_semantic_index, source_fingerprint
+from codeinsight.retrieval.qdrant_store import QdrantVectorStore
 from codeinsight.retrieval.semantic import build_semantic_index
-from codeinsight.retrieval.vector_store import LocalJsonVectorStore
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -35,19 +36,9 @@ class _FakeReranker:
         return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
 
 
-@pytest.mark.parametrize("retrieval_mode", ["lexical", "bm25"])
-def test_internal_sparse_retrieval_resolves_within_fixture(retrieval_mode: str) -> None:
-    results = search_repository(
-        FIXTURE_ROOT,
-        "Where is checkout defined?",
-        limit=5,
-        retrieval_mode=retrieval_mode,
-    )
-
-    result_paths = []
-    for item in results:
-        result_paths.append(item.chunk.relative_path)
-    assert "src/shop/service.py" in result_paths
+def test_search_requires_embedding_provider() -> None:
+    with pytest.raises(ValueError, match="Embedding"):
+        search_repository(FIXTURE_ROOT, "Where is checkout defined?", retrieval_mode="hybrid")
 
 
 def test_internal_hybrid_combines_dense_and_sparse_candidates() -> None:
@@ -66,7 +57,7 @@ def test_internal_hybrid_combines_dense_and_sparse_candidates() -> None:
         assert item.retrieval_reason in expected_reasons
 
 
-def test_search_repository_can_use_an_explicit_vector_store(tmp_path) -> None:
+def test_search_repository_can_use_an_explicit_qdrant_store() -> None:
     scan_result = scan_repository(FIXTURE_ROOT)
     index = build_semantic_index(
         tuple(
@@ -77,7 +68,11 @@ def test_search_repository_can_use_an_explicit_vector_store(tmp_path) -> None:
         ),
         _fake_embed,
     )
-    store = LocalJsonVectorStore(tmp_path / "vectors.json")
+    store = QdrantVectorStore(
+        client=QdrantClient(location=":memory:"),
+        collection_name="search_repository_test",
+        dimensions=2,
+    )
     publish_semantic_index(
         index,
         store,
@@ -104,7 +99,7 @@ def test_search_repository_can_use_an_explicit_vector_store(tmp_path) -> None:
     assert all(item.chunk.relative_path for item in results)
 
 
-@pytest.mark.parametrize("removed_mode", ["ast-bm25", "graph-bm25"])
-def test_removed_retrieval_modes_are_rejected(removed_mode: str) -> None:
+@pytest.mark.parametrize("removed_mode", ["keyword", "unsupported"])
+def test_unsupported_retrieval_modes_are_rejected(removed_mode: str) -> None:
     with pytest.raises(ValueError, match="不支持的检索模式"):
         search_repository(FIXTURE_ROOT, "Where is checkout?", retrieval_mode=removed_mode)

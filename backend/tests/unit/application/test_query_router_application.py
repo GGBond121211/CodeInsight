@@ -23,12 +23,12 @@ def _payload() -> dict:
             {
                 "question": "What does checkout validate?",
                 "intent": "implementation",
-                "retrieval_mode": "bm25",
+                "retrieval_mode": "hybrid",
             },
             {
                 "question": "How does checkout call inventory?",
                 "intent": "call_flow",
-                "retrieval_mode": "bm25",
+                "retrieval_mode": "hybrid",
             },
         ],
         "execution_route": "agent",
@@ -58,7 +58,7 @@ def test_parse_query_plan_tolerates_model_json_wrapper_and_aliases() -> None:
             {
                 "question": "Find semantic business rules.",
                 "intent": "business_logic",
-                "retrieval_mode": "bm25",
+                "retrieval_mode": "hybrid",
             },
         ],
         "execution_route": "linear",

@@ -23,7 +23,7 @@ def test_answer_evaluation_payload_shape(tmp_path: Path) -> None:
         outcome="answered",
         answer="run is defined in app.py.",
         citations=(AnswerCitation("E1", "src/app.py", 1, 2),),
-        retrieval_mode="bm25",
+        retrieval_mode="hybrid",
         model="fake-model",
         prompt_version="code-answer-v1",
         input_tokens=10,

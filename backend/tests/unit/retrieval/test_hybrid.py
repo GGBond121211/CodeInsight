@@ -33,10 +33,10 @@ def test_fusion_rewards_evidence_seen_by_multiple_retrievers() -> None:
     results = fuse_ranked_chunks(
         (
             (
-                "bm25",
+                "dense",
                 (_result("src/a.py", 1, "direct_match"), _result("src/b.py", 2, "direct_match")),
             ),
-            ("semantic", (_result("src/b.py", 1, "semantic_match"),)),
+            ("sparse", (_result("src/b.py", 1, "semantic_match"),)),
         ),
         limit=2,
     )
@@ -50,7 +50,7 @@ def test_fusion_rewards_evidence_seen_by_multiple_retrievers() -> None:
 
 
 def test_fusion_is_stable_and_validates_limit() -> None:
-    sources = (("semantic", (_result("src/z.py", 1, "semantic_match"),)),)
+    sources = (("sparse", (_result("src/z.py", 1, "semantic_match"),)),)
     assert fuse_ranked_chunks(sources, limit=1)[0].retrieval_reason == "semantic_match"
     with pytest.raises(ValueError, match="limit 必须是正整数"):
         fuse_ranked_chunks(sources, limit=0)
@@ -70,7 +70,7 @@ def test_model_reranker_receives_fused_candidates_and_controls_final_order() -> 
         "checkout",
         (
             (
-                "bm25",
+                "dense",
                 (
                     _result("src/a.py", 1, "direct_match"),
                     _result("src/b.py", 2, "direct_match"),
@@ -98,7 +98,7 @@ def test_model_reranker_receives_the_post_fusion_candidate_limit() -> None:
     source = tuple(_result(f"src/{index}.py", index + 1, "direct_match") for index in range(120))
     rerank_ranked_chunks(
         "candidate limit",
-        (("bm25", source), ("semantic", source)),
+        (("dense", source), ("sparse", source)),
         reranker=reranker,
         limit=10,
         candidate_limit=100,
@@ -121,7 +121,7 @@ def test_code_aware_reranker_prefers_exact_symbol_identity() -> None:
 
     results = rerank_ranked_chunks(
         "Where is CheckoutService.checkout implemented?",
-        (("bm25", (generic, symbol)),),
+        (("dense", (generic, symbol)),),
         reranker=_FakeReranker(),
         limit=2,
     )
@@ -151,7 +151,7 @@ def test_code_aware_reranker_rewards_sparse_semantic_agreement() -> None:
 
     results = rerank_ranked_chunks(
         "Trace the dispatch call flow",
-        (("bm25", (plain, sparse)), ("semantic", (semantic_copy,))),
+        (("dense", (plain, sparse)), ("sparse", (semantic_copy,))),
         reranker=_FakeReranker(),
         limit=2,
     )

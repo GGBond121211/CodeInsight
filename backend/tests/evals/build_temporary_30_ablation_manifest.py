@@ -25,15 +25,15 @@ CONFIRMATION_IDS = frozenset(
 )
 
 PRIMARY_MODE_BY_CATEGORY = {
-    "ambiguity": "bm25",
-    "boundary_behavior": "bm25",
-    "code_document_conflict": "bm25",
-    "cross_file_trace": "bm25",
-    "data_flow": "bm25",
-    "insufficient_evidence": "bm25",
-    "multi_intent": "bm25",
-    "noisy_query": "bm25",
-    "semantic_paraphrase": "bm25",
+    "ambiguity": "sparse",
+    "boundary_behavior": "sparse",
+    "code_document_conflict": "sparse",
+    "cross_file_trace": "sparse",
+    "data_flow": "sparse",
+    "insufficient_evidence": "sparse",
+    "multi_intent": "sparse",
+    "noisy_query": "sparse",
+    "semantic_paraphrase": "sparse",
 }
 
 MULTI_CLAIMS = {

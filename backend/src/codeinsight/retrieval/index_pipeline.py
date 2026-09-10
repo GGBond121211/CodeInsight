@@ -22,6 +22,7 @@ REQUIRED_PAYLOAD_FIELDS = frozenset(
         "module",
         "sourceFingerprint",
         "chunkVersion",
+        "sourceHash",
         "visibility",
         "indexVersion",
         "embeddingModel",
@@ -47,6 +48,7 @@ def vector_points_from_semantic_index(
 ) -> tuple[VectorPoint, ...]:
     """将语义索引的每个条目映射为可检索且可回到 Evidence 的向量点。"""
     points: list[VectorPoint] = []
+    source_hash = source_hash_from_fingerprints(source_fingerprints)
     for entry in index.entries:
         chunk = entry.chunk
         source_fingerprint = source_fingerprints.get(chunk.relative_path)
@@ -62,6 +64,7 @@ def vector_points_from_semantic_index(
             "module": _module(chunk.relative_path),
             "sourceFingerprint": source_fingerprint,
             "chunkVersion": chunk_version,
+            "sourceHash": source_hash,
             "visibility": visibility,
             "indexVersion": index.metadata.index_id,
             "embeddingModel": index.metadata.model,
@@ -177,6 +180,13 @@ def publish_semantic_index(
 
 def source_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def source_hash_from_fingerprints(source_fingerprints: Mapping[str, str]) -> str:
+    material = "\n".join(
+        f"{path}\0{fingerprint}" for path, fingerprint in sorted(source_fingerprints.items())
+    )
+    return source_fingerprint(material)
 
 
 def _language(relative_path: str) -> str:

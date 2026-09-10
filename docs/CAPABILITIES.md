@@ -2,7 +2,7 @@
 
 截至 2026-09-07，本项目可由代码、离线测试和最小真实 Provider smoke 证明；GitHub 最新正式 Release 为 v2.0.3：
 
-- Auto Answer：本地仓库扫描、问题路由、BM25/语义候选、证据引用映射。
+- Auto Answer：本地仓库扫描、问题路由、Provider Dense/Sparse 候选、证据引用映射。
 - Unified Chat：同一 Session 内的多轮上下文、`general_chat`/`scope_redirect`/`clarify`/解释/变更任务路由、SSE 阶段事件和调试 reasoning 展示。
 - 业务范围引导：业务外闲聊会自然承接并引导回代码任务；该路径不调用模型、不访问仓库，但保留 Session 审计记录。
 - Unified Chat 回答契约：`assistant_message` 是唯一自然语言正文；`result` 只保存路线、引用、模型、Router、缓存、usage 和 Change 详情。

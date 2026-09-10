@@ -1,4 +1,6 @@
-"""索引业务层元数据和增量计划测试。"""
+"""Qdrant 索引业务层元数据和增量计划测试。"""
+
+from qdrant_client import QdrantClient
 
 from codeinsight.domain.semantic import (
     SemanticIndex,
@@ -14,7 +16,8 @@ from codeinsight.retrieval.index_pipeline import (
     validate_vector_points,
     vector_points_from_semantic_index,
 )
-from codeinsight.retrieval.vector_store import LocalJsonVectorStore, VectorPoint
+from codeinsight.retrieval.qdrant_store import QdrantVectorStore
+from codeinsight.retrieval.vector_store import VectorPoint
 
 
 def _index() -> SemanticIndex:
@@ -69,15 +72,20 @@ def test_incremental_plan_deletes_changed_file_and_keeps_unchanged_file() -> Non
     assert plan.unchanged_paths == ("b.py",)
 
 
-def test_publish_validates_payload_before_writing_local_store(tmp_path) -> None:
-    store = LocalJsonVectorStore(tmp_path / "vectors.json")
+def test_publish_validates_payload_before_writing_qdrant() -> None:
+    store = QdrantVectorStore(
+        client=QdrantClient(location=":memory:"),
+        collection_name="index_pipeline_test",
+        dimensions=2,
+    )
     points = publish_semantic_index(
         _index(),
         store,
         repo_id="repo-a",
         source_fingerprints={"src/app.py": "source-hash"},
         chunk_version="structured-v1",
+        require_sparse=True,
     )
 
     assert points[0].payload["visibility"] == "active"
-    assert store.search((1.0, 0.0), limit=1)[0].point_id == "point-a"
+    assert store.search_dense((1.0, 0.0), limit=1)[0].point_id == "point-a"

@@ -22,10 +22,10 @@ def _router_result() -> QueryRouterResult:
         language="mixed",
         normalized_question="Explain checkout validation and payment provider.",
         subquestions=(
-            SubQuestion("How does checkout validate input?", "implementation", "bm25"),
-            SubQuestion("Which payment provider is used?", "unknown", "bm25"),
+            SubQuestion("How does checkout validate input?", "implementation", "hybrid"),
+            SubQuestion("Which payment provider is used?", "unknown", "hybrid"),
         ),
-        retrieval_modes=("bm25",),
+        retrieval_modes=("hybrid",),
         execution_route="linear",
         confidence=0.9,
     )
@@ -114,7 +114,7 @@ def test_auto_answer_fallback_plan_stops_without_answer_model() -> None:
     assert result.fallback_reason == "router_invalid_or_low_confidence"
 
 
-def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
+def test_auto_answer_reports_embedding_input_tokens() -> None:
     plan = QueryPlan(
         original_question="semantic question",
         language="en",
@@ -125,8 +125,6 @@ def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
         confidence=0.9,
     )
     router_result = QueryRouterResult(plan, False, None, "fake-router", 1, 1, 1.0)
-    chunk = SourceChunk("src/shop/service.py", 10, 19, "def checkout():")
-
     def fake_embed(texts):
         vectors = []
         for _ in texts:
@@ -138,15 +136,6 @@ def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
             tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
             "dense-sparse-v1",
         )
-
-    def fake_search(_root, _question, **kwargs):
-        assert kwargs["semantic_embed"] is None
-        return (RankedChunk(chunk, 1.0, 1, "hybrid_match"),)
-
-    monkeypatch.setattr(
-        "codeinsight.application.auto_answer_repository.search_repository",
-        fake_search,
-    )
 
     def generate_answer(_system: str, _user: str) -> ModelAnswer:
         return ModelAnswer(
@@ -201,10 +190,10 @@ def test_each_subquestion_keeps_its_own_candidate_capacity(monkeypatch) -> None:
         language="en",
         normalized_question="first and second",
         subquestions=(
-            SubQuestion("first question", "implementation", "bm25"),
-            SubQuestion("second question", "call_flow", "bm25"),
+            SubQuestion("first question", "implementation", "hybrid"),
+            SubQuestion("second question", "call_flow", "hybrid"),
         ),
-        retrieval_modes=("bm25",),
+        retrieval_modes=("hybrid",),
         execution_route="linear",
         confidence=0.9,
     )
@@ -243,7 +232,7 @@ def test_auto_answer_passes_model_identity_through_usage_wrapper(monkeypatch) ->
     captured = {}
 
     class Embedder:
-        model = "persistent-model"
+        model = "fake-embedding-model"
 
         def embed(self, texts):
             vectors = []
@@ -280,8 +269,8 @@ def test_auto_answer_passes_model_identity_through_usage_wrapper(monkeypatch) ->
         original_question="question",
         language="en",
         normalized_question="question",
-        subquestions=(SubQuestion("question", "semantic", "bm25"),),
-        retrieval_modes=("bm25",),
+        subquestions=(SubQuestion("question", "semantic", "hybrid"),),
+        retrieval_modes=("hybrid",),
         execution_route="linear",
         confidence=0.9,
     )
@@ -293,4 +282,4 @@ def test_auto_answer_passes_model_identity_through_usage_wrapper(monkeypatch) ->
         semantic_embed=Embedder().embed,
     )
 
-    assert captured["semantic_model"] == "persistent-model"
+    assert captured["require_sparse"] is True

@@ -25,7 +25,7 @@ class _FakeChatModel:
                         {
                             "question": "Where is checkout validation?",
                             "intent": "implementation",
-                            "retrieval_mode": "bm25",
+                            "retrieval_mode": "hybrid",
                         }
                     ],
                     "execution_route": "linear",

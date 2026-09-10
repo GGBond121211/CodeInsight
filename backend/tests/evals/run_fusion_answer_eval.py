@@ -121,7 +121,7 @@ def expected_router_labels(case: dict) -> dict:
     category = case["category"]
     return {
         "language": "mixed" if case["language"] == "zh-en" else case["language"],
-        "retrieval_mode": "bm25",
+        "retrieval_mode": "hybrid",
         "execution_route": "agent" if category == "multi_intent" else "linear",
         "subquestion_count": len(case.get("expected", {}).get("subquestions", ())) or 1,
     }
@@ -459,7 +459,8 @@ def main() -> int:
         "sources": document["sources"],
         "notes": [
             "All 131 cases use the same sample repository and deterministic citation metrics.",
-            "Linear uses graph-BM25; Router modes use the model-produced retrieval plan.",
+            "Linear uses the fixed hybrid route; Router modes use the model-produced "
+            "retrieval plan.",
             "The evaluator records actual model and embedding calls through wrappers.",
             "No LLM judge is used; outcome and citation metrics are deterministic.",
         ],

@@ -1,4 +1,4 @@
-"""Compare the current lexical, BM25, and hybrid retrieval modes."""
+"""Compare the current Provider Dense, Provider Sparse, and hybrid modes."""
 
 from __future__ import annotations
 
@@ -11,12 +11,9 @@ from pathlib import Path
 
 from codeinsight.application.search_repository import search_repository
 from codeinsight.domain.retrieval import RankedChunk
-from codeinsight.domain.semantic import EmbeddingBatch, SemanticIndex
+from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.domain.source import SourceChunk
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
-from codeinsight.ingestion.chunker import chunk_scan_result
-from codeinsight.ingestion.scanner import scan_repository
-from codeinsight.retrieval.semantic import build_semantic_index, search_chunks_semantic
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 CASES_PATH = BACKEND_ROOT / "tests" / "evals" / "multilingual_cases.json"
@@ -26,7 +23,7 @@ OUTPUT_ROOT = BACKEND_ROOT.parent / "outputs" / "evals"
 LIMIT = 5
 DIAGNOSTIC_LIMIT = 20
 CHUNK_MAX_LINES = 80
-RETRIEVAL_MODES = ("lexical", "bm25", "hybrid")
+RETRIEVAL_MODES = ("dense", "sparse", "hybrid")
 STRUCTURAL_CATEGORIES = {"boundary_behavior", "cross_file_trace", "data_flow"}
 _CODE_IDENTIFIER_PATTERN = re.compile(r"`[^`]+`")
 
@@ -169,13 +166,13 @@ def classify_failure(
     category = case["category"]
     if category == "multi_intent":
         return "decomposition_failure", "mixed_question_not_split_before_retrieval"
-    if category in STRUCTURAL_CATEGORIES and retrieval_mode == "bm25":
-        return "structural_mismatch", "required_cross_file_or_boundary_evidence_not_recovered"
+    if category in STRUCTURAL_CATEGORIES:
+        return "retrieval_mismatch", "required_cross_file_or_boundary_evidence_not_recovered"
     if has_expected_path:
         return "chunk_mismatch", "expected_path_returned_without_required_line_span"
     if category == "semantic_paraphrase":
-        return "lexical_mismatch", "semantic_mismatch_case"
-    return "lexical_mismatch", "no_expected_path_in_top_20"
+        return "retrieval_mismatch", "semantic_mismatch_case"
+    return "retrieval_mismatch", "no_expected_path_in_top_20"
 
 
 def _search_fn_default(
@@ -198,8 +195,7 @@ def _search_fn_default(
 def _search_fn_with_embedding(
     embed: Callable[[Sequence[str]], EmbeddingBatch],
 ) -> Callable[..., tuple[RankedChunk, ...]]:
-    """Build an evaluation search function with one reusable semantic index."""
-    semantic_indexes: dict[tuple[str, int], SemanticIndex] = {}
+    """Build an evaluation search function backed by the configured Embedding model."""
 
     def search_fn(
         root: str | Path,
@@ -209,30 +205,13 @@ def _search_fn_with_embedding(
         chunk_max_lines: int,
         retrieval_mode: str,
     ) -> tuple[RankedChunk, ...]:
-        if retrieval_mode == "semantic":
-            key = (str(Path(root).resolve()), chunk_max_lines)
-            index = semantic_indexes.get(key)
-            if index is None:
-                scan_result = scan_repository(root)
-                chunks = chunk_scan_result(scan_result, max_lines=chunk_max_lines)
-                index = build_semantic_index(chunks, embed)
-                semantic_indexes[key] = index
-            return search_chunks_semantic(question, index, embed, limit=limit)
-        if retrieval_mode == "hybrid":
-            return search_repository(
-                root,
-                question,
-                limit=limit,
-                chunk_max_lines=chunk_max_lines,
-                retrieval_mode="hybrid",
-                semantic_embed=embed,
-            )
-        return _search_fn_default(
+        return search_repository(
             root,
             question,
             limit=limit,
             chunk_max_lines=chunk_max_lines,
             retrieval_mode=retrieval_mode,
+            semantic_embed=embed,
         )
 
     return search_fn
@@ -452,9 +431,7 @@ def build_comparison(
             "diagnostic_top_k": DIAGNOSTIC_LIMIT,
             "chunk_max_lines": CHUNK_MAX_LINES,
             "model_calls": 0,
-            "embedding_calls": 0
-            if not set(retrieval_modes) & {"semantic", "hybrid"}
-            else "recorded_by_provider",
+            "embedding_calls": "recorded_by_provider",
             "grouping": (
                 "language, category, mixed_language, typo_or_noise, multi_question, "
                 "semantic_mismatch, exact_identifier"
@@ -471,26 +448,22 @@ def build_comparison(
             "answer text is used for routing.",
         ],
         "decision": (
-            "semantic_modes_enabled_for_explicit_embedding_config"
-            if set(retrieval_modes) & {"semantic", "hybrid"}
-            else "pending_task_11_3_gate"
+            "dense_sparse_modes_enabled_for_explicit_embedding_config",
         ),
     }
 
 
 def main() -> int:
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-    if os.environ.get("CODEINSIGHT_EMBEDDING_MODEL"):
-        embedding_model = OpenAIEmbeddingModel.from_environment()
-        retrieval_modes = RETRIEVAL_MODES + ("semantic", "hybrid")
-        search_fn = _search_fn_with_embedding(embedding_model.embed)
-        payload = build_comparison(
-            document,
-            search_fn=search_fn,
-            retrieval_modes=retrieval_modes,
-        )
-    else:
-        payload = build_comparison(document)
+    if not os.environ.get("CODEINSIGHT_EMBEDDING_MODEL"):
+        raise RuntimeError("CODEINSIGHT_EMBEDDING_MODEL is required for retrieval evaluation")
+    embedding_model = OpenAIEmbeddingModel.from_environment()
+    search_fn = _search_fn_with_embedding(embedding_model.embed)
+    payload = build_comparison(
+        document,
+        search_fn=search_fn,
+        retrieval_modes=RETRIEVAL_MODES,
+    )
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUT_ROOT / "multilingual-retrieval-comparison.json"
     output_path.write_text(

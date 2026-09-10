@@ -154,12 +154,14 @@ def test_model_insufficient_result_has_no_citations() -> None:
     assert result.citations == ()
 
 
-def test_answer_supports_explicit_lexical_retrieval() -> None:
+def test_answer_supports_explicit_sparse_retrieval() -> None:
     result = answer_repository(
         FIXTURE_ROOT,
         "Where is checkout defined?",
         generate=_generated_answer,
-        retrieval_mode="lexical",
+        retrieval_mode="sparse",
+        semantic_embed=_fake_embed,
+        reranker=_FakeReranker(),
     )
 
-    assert result.retrieval_mode == "lexical"
+    assert result.retrieval_mode == "sparse"

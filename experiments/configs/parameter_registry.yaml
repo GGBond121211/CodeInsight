@@ -140,37 +140,13 @@ tunable:
     priority: high
     note: "structural_v1 仍是用户指定候选，但当前正式搜索入口没有调用它；固定行回退不等于结构策略已接入。"
 
-  # --- 2.0 BM25 历史参数（不再由 2.1 正常路由使用） ---
-  - name: bm25_k1
-    current: 1.2
-    unit: dimensionless
-    candidates: [0.9, 1.2, 1.6]
-    safety_ceiling: 3.0
-    scope: "retrieval/bm25.py"
-    evidence: "标准默认，DEC-0007 标为暂定"
-    runtime_status: historical_only
-    evidence_status: supported_by_contract
-    priority: low
-
-  - name: bm25_b
-    current: 0.75
-    unit: dimensionless
-    candidates: [0.5, 0.75, 1.0]
-    safety_ceiling: 1.0
-    ceiling_reason: "b 的定义域为 [0,1]"
-    scope: "retrieval/bm25.py"
-    evidence: "同上"
-    runtime_status: historical_only
-    evidence_status: supported_by_contract
-    priority: low
-
   # --- 2.1 Provider Dense/Sparse 契约 ---
   - name: embedding_vector_schema
     current: "dense-sparse-v1"
     unit: schema
     candidates: ["dense-sparse-v1"]
     scope: "domain/semantic.py; infrastructure/embeddings.py"
-    evidence: "Provider Sparse 字段按登记格式解析；缺失或批次不齐时受控失败，不回退 BM25"
+    evidence: "Provider Sparse 字段按登记格式解析；缺失或批次不齐时受控失败"
     evidence_status: supported_by_contract
     priority: high
 

@@ -88,15 +88,15 @@ Conversation 的业务编排位于同一 API 入口之后：
                      └─ change      → Tool Loop → diff/approval/Sandbox
 ```
 
-语义索引以 JSON 缓存在操作系统的本地目录里，不会写进被分析的仓库。没改过的文件可以复用已有向量；Embedding 模型或切块配置改变时，系统会使用新的缓存身份。
+向量与索引生命周期由 Qdrant 管理，不写本地向量 JSON，也不写进被分析的仓库。应用内只保留当前请求所需的源码证据映射；Embedding 模型或切块配置改变时，通过新的 Qdrant collection 和 alias 身份隔离。
 
 ## 目前能做什么
 
 - 只读扫描本地仓库，跳过依赖、构建产物和缓存目录。
 - 按固定行数切分源码，保留仓库相对路径和从 1 开始的行号。
 - 整理多语言问题、识别意图并拆分子问题。
-- 默认使用 Provider Dense + Provider Sparse，在 Qdrant Named Vectors 中存取向量；BM25 和 local exact 仅作历史/离线对照。
-- Qdrant collection 通过 staging、payload/fingerprint 校验和小型 active manifest 发布；开发环境无 URL 时仅使用 Qdrant 进程内模式。
+- 默认使用 Provider Dense + Provider Sparse，在 Qdrant Named Vectors 中存取向量；不存在本地向量检索回退。
+- Qdrant collection 通过 staging、payload/fingerprint 校验和 active/previous alias 发布；开发环境无 URL 时仅使用 Qdrant 进程内模式。
 - 使用 RRF/agreement 融合，并调用阿里云 `qwen3.7-text-rerank` 做最终精排；服务失败时直接失败，不回退本地代码排序。
 - 每个子问题单独维护证据，最后按 QueryPlan 顺序汇总。
 - 同时保留 linear RAG 和有次数上限的 LangGraph Critic-Reviser 路径。
@@ -337,7 +337,7 @@ npm.cmd run build
 
 - 在证据不足时改写查询并重新检索，也就是 Evidence Retrieval Repair Loop。
 - 对 `qwen3.7-text-rerank` 的质量收益和代价仍保留为未测试边界；用户已取消原 Rerank A/B 对照。
-- Qdrant/HNSW 已由本地 Compose 管理；后续只需做规模交叉点和参数矩阵，不再重复评估“是否引入向量数据库”。历史 local JSON 对照结果保留。
+- Qdrant/HNSW 已由本地 Compose 管理；后续只需做规模交叉点和参数矩阵，不再重复评估“是否引入向量数据库”。历史后端对照结果仍作为演进证据保留。
 - 增加更多编程语言和 monorepo 场景。
 - 如果以后支持远程仓库，再单独设计安全边界。
 

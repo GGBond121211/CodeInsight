@@ -1,0 +1,244 @@
+# CodeInsight 2.1.0 实验基线
+#
+# 这是实验开始前的事实快照，不是参数最优结论。它把当前运行时代码、
+# 用户指定候选和实验尚未决定的变量分开，防止把计划值误写成线上值。
+
+schema_version: 1
+baseline_id: "codeinsight-2.1.0-experiment-baseline-20260908"
+version: "2.1.0"
+status: frozen_for_experiment_setup
+created_at: "2026-09-08"
+
+source:
+  base_release: "v2.0.3"
+  base_commit: "bf69022d63c74e0bf07ceaa12cf0bf002d269eca"
+  base_ref: "origin/main"
+  experiment_branch: "codex/2.1.0-development"
+  rule: "每个实验必须保存本文件的快照；实验结果不得覆盖本文件。"
+
+# 当前运行时事实：逐项以代码为准，不代表参数已经调优
+runtime_actual:
+  ingestion:
+    chunking_strategy: "fixed_lines"
+    chunk_max_lines: 80
+    chunk_overlap_ratio: 0.0
+    chunk_version: "fixed-lines-v1"
+    line_numbering: "1-based-inclusive"
+    source:
+      strategy: "backend/src/codeinsight/application/search_repository.py:56"
+      chunker: "backend/src/codeinsight/ingestion/chunker.py:11-12"
+    structural_v1:
+      status: "candidate_only"
+      source: "backend/src/codeinsight/ingestion/structural_chunker.py"
+      runtime_usage: "未被正式搜索入口调用；仅由结构切分评测脚本调用"
+
+  retrieval:
+    fusion:
+      rrf_k: 60
+      source_weights: {dense: 1.0, sparse: 1.0}
+      source: "backend/src/codeinsight/retrieval/hybrid.py:11-14"
+    hybrid_candidate_limit: 100
+    default_final_top_k: 5
+    source:
+      candidate_limit: "backend/src/codeinsight/application/search_repository.py:23,81,118"
+      default_top_k: "backend/src/codeinsight/application/auto_answer_repository.py:60"
+    reranker:
+      strategy: "aliyun_qwen37_text_rerank"
+      status: "interface_smoke_passed_quality_unverified"
+    semantic_min_score: 0.20
+
+  context:
+    max_input_tokens: 8000
+    reserved_output_tokens: 1000
+    source: "backend/src/codeinsight/application/context_assembler.py:46-47"
+    token_estimator: "utf8_bytes_div_4"
+    token_estimator_evidence_status: "pending_calibration"
+    token_estimator_source: "backend/src/codeinsight/application/context_budget.py:16-24"
+
+  query_rewrite:
+    enabled: false
+    status: "not_implemented_in_runtime"
+    source_evidence: "当前 backend/src 与正式搜索入口没有 query rewrite 实现"
+    experiment_gate: "先实现并单独验证，不能把配置文件中的 on 当成已接入"
+
+  execution_safety:
+    max_retries: 0
+    original_repo_write: "forbidden"
+    sandbox_network: "none"
+    command_execution_policy: "allowlist_only"
+    apply_requires_approval: true
+    path_containment: "enforced"
+
+# 控制组与用户候选：不能混写成当前值
+experiment_profiles:
+  control:
+    id: "fixed-80-00-candidate-100-topk-5"
+    owner: "experiment"
+    source: "runtime_actual"
+    chunking: "fixed_lines:80/0.0"
+    hybrid_candidate_limit: 100
+    final_top_k: 5
+    purpose: "2.1.0 所有检索对照的可比控制组"
+  user_selected_candidate:
+    id: "fixed-80-00-candidate-100-topk-10"
+    owner: "user"
+    status: "unverified_candidate"
+    chunking: "fixed_lines:80/0.0"
+    hybrid_candidate_limit: 100
+    final_top_k: 10
+    purpose: "验证用户在 2.0 阶段指定的 100/10 是否比当前 100/5 更有收益"
+    rule: "没有实验结果前，不把 Top-K=10 改成产品默认值"
+  structural_candidate:
+    id: "structural-v1"
+    owner: "user_selected_candidate"
+    status: "unverified_and_not_runtime_default"
+    fallback: "fixed_lines:80/0.0"
+    purpose: "单独验证结构边界是否改善证据质量，不能同时改变 Top-K 或 Embedding"
+
+selection_ownership:
+  project_hard_fixed:
+    - evidence_id_mapping
+    - original_repo_write
+    - sandbox_network
+    - sandbox_user
+    - command_execution_policy
+    - apply_requires_approval
+    - path_containment
+    - repo_content_trust_level
+  user_selected_unverified:
+    - "candidate_profile:fixed-80-00-candidate-100-topk-10"
+    - "candidate_profile:structural-v1"
+    - "reranker:aliyun_qwen37_text_rerank"
+  experiment_decided: []
+  interpretation: "用户可以指定要比较的候选，但选了它不等于已经被实验证明更好。"
+
+# 固定数据集登记：路径、数量和身份随结果保存
+datasets:
+  master_200:
+    path: "backend/tests/evals/master_200_cases.json"
+    sha256: "8774ec409c4071ec32d07364316962c77e3be3015d9c1cfd11477aa539cf5935"
+    cases: 200
+    composition: "task11_v2=100, master_200_new_real_repositories=100"
+    role: "只读检索/回答回归集；没有独立 holdout，不单独证明泛化"
+  change_tasks_l1:
+    path: "backend/tests/evals/change_eval_manifest.json"
+    sha256: "16f8ec7dd6eeb5db76f969487ca2ca680def0ee34d372355fe999262c1fc157a"
+    tasks: 34
+    split_counts: {regression: 12, boundary: 4, security: 8, reliability: 6, golden: 4}
+    role: "变更链路、拒答、安全门禁和有限修复主力集"
+  swebench_l2:
+    path: "backend/tests/evals/swebench_l2_frozen_80.json"
+    sha256: "aee52d5251b6a8f0d5f1e728df5757c040dfdc926dad9744ce4571c0b2b96368"
+    cases: 80
+    split_counts: {dev: 20, regression: 20, golden: 20, holdout: 20}
+    role: "外部代码定位基准；只报告文件/行证据，不等同完整 resolve"
+    holdout_policy: "holdout 只在最终验证使用一次，调参禁止查看"
+  multilingual_100:
+    path: "backend/tests/evals/multilingual_cases.json"
+    sha256: "c181ab8dbf00d8fc309f014f895dba5857178bb7109711552ea1cafb96e603ed"
+    cases: 100
+    role: "中文与中英混合检索/回答鲁棒性"
+  fusion_131:
+    path: "backend/tests/evals/multilingual_cases_fusion.json"
+    sha256: "5442519c227923a4469adcfd59997343bf8b625e823c2ad7ef556ac2ffa8a3a4"
+    cases: 131
+    composition: {legacy31: 31, task11_v2_100: 100}
+    role: "历史融合与负结果回归；不与 Master-200 相加成新质量数字"
+  temporary_30:
+    path: "backend/tests/evals/temporary_30_ablation_manifest.json"
+    sha256: "3b33e03f5732ddd626898449687265cdb586b7e8cf58c3d62b491573b6e8b507"
+    cases: 30
+    role: "临时消融和机制观察，不进入正式最终质量结论"
+  conversation_2_1_0:
+    path: "backend/tests/evals/conversation_cases_2_1_0.json"
+    sha256: "be0ac800909ce2cf3a5ec2fcef42187af2497658499cd0e5d57337872eb0e0f2"
+    cases: 24
+    turns: 123
+    split_counts: {dev: 6, regression: 6, golden: 6, holdout: 6}
+    role: "独立多轮入口、上下文、范围引导、证据回忆和审批边界"
+    quality_status: "READY_FOR_MODEL_PILOT"
+    source_audit: "agent_review_only"
+    holdout_policy: "holdout 只在最终验证使用；不得用于调参"
+
+dataset_quality:
+  policy: "experiments/configs/dataset_quality_policy_2_1_0.yaml"
+  split_manifest: "experiments/configs/experiment_splits_2_1_0.yaml"
+  status: "conversation_dataset_ready_for_model_pilot"
+  rule: "先通过自动结构/证据/指纹门禁，再允许真实模型 pilot；READY_FOR_FINAL 仍需独立复核"
+
+# 指标契约：每个实验只能使用登记过的主指标和代价指标
+metrics:
+  evidence_recall:
+    family: retrieval
+    definition: "返回块覆盖期望 Evidence 行区间的比例"
+    primary_for: [chunking, fusion, embedding, top_k]
+  complete_evidence_coverage:
+    family: retrieval
+    definition: "全部期望 Evidence 区间都被完整覆盖的案例比例"
+    primary_for: [chunking, fusion, embedding, top_k]
+  citation_validity:
+    family: grounding_gate
+    definition: "引用映射到真实仓库路径和合法 1-based 行号"
+    hard_gate: true
+  citation_precision:
+    family: retrieval
+    definition: "返回引用中与期望 Evidence 相交的比例"
+    primary_for: [fusion, rerank, top_k]
+  mrr:
+    family: retrieval
+    definition: "第一个命中期望 Evidence 的倒数排名均值"
+    primary_for: [embedding, vector_backend]
+  answer_outcome_accuracy:
+    family: answer_quality
+    definition: "模型 outcome 与 expected outcome 一致的比例"
+    caveat: "自动指标，不等价于人工确认的语义完全正确"
+  token_usage:
+    family: cost
+    definition: "按 provider 返回的 input/output/cached/total usage 记录"
+  latency:
+    family: cost
+    definition: "请求总耗时，按实验报告 P50/P95"
+  change_task_success:
+    family: change_quality
+    definition: "补丁解析、审批、隔离校验和目标检查均满足的案例比例"
+    hard_gates: [approval_bypass, sandbox_escape, original_repo_modifications]
+
+metric_policy:
+  aggregation: "先按 case，再按数据集分层；不同题型不得简单相加"
+  hard_gates_before_quality: true
+  bootstrap: "case-clustered bootstrap 95% CI when applicable"
+  fake_provider: "只能证明故障契约，不进入质量指标"
+
+# 已登记输入范围：没有写入范围的实验不得直接启动
+experiment_input_ranges:
+  chunking:
+    values: {chunk_max_lines: [40, 80, 120], chunk_overlap_ratio: [0.0, 0.10, 0.20]}
+    changed_variables: [chunk_max_lines, chunk_overlap_ratio]
+    dataset: master_200
+  fusion:
+    one_variable_at_a_time:
+      rrf_k: [20, 60, 100]
+      source_weight_semantic: [0.5, 0.8, 1.0]
+      semantic_min_score: [0.0, 0.20, 0.35]
+    dataset: master_200
+  candidate_and_top_k:
+    control: {hybrid_candidate_limit: 100, final_top_k: 5}
+    candidate: {hybrid_candidate_limit: 100, final_top_k: 10}
+    dataset: master_200
+  embedding:
+    models: [qwen3.7-text-embedding, qwen3.7-text-embedding-flash, text-embedding-v4, text-embedding-v3]
+    fixed_dimension: 1024
+    dataset: master_200
+  query_rewrite:
+    values: [false, true]
+    status: blocked_until_runtime_implementation
+    dataset: master_200
+  context_memory_gateway:
+    status: range_not_frozen
+    reason: "先完成真实 usage/延迟/质量校准，再登记预算、压缩和保留候选"
+
+stop_conditions:
+  - "本文件与实验运行时快照不一致"
+  - "数据集路径、数量或 sha256 变化但未生成新 baseline_id"
+  - "实验同时改变未登记变量"
+  - "任一 hard gate 非零"

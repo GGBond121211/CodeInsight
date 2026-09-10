@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import (
     ApiException,
     ResponseHandlingException,
@@ -16,19 +16,18 @@ from qdrant_client.http.exceptions import (
 
 from codeinsight.domain.errors import QdrantUnavailableError
 from codeinsight.domain.semantic import SemanticIndex
-from codeinsight.retrieval.index_manifest import IndexManifest, IndexPublisher
+from codeinsight.retrieval.index_manifest import IndexManifest
 from codeinsight.retrieval.index_pipeline import (
     REQUIRED_PAYLOAD_FIELDS,
     build_index_manifest,
     publish_semantic_index,
-    source_fingerprint,
+    source_hash_from_fingerprints,
     vector_points_from_semantic_index,
 )
 from codeinsight.retrieval.qdrant_store import QdrantVectorStore
 from codeinsight.retrieval.vector_store import VectorPoint
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_-]+")
-CONTROL_DIR = ".codeinsight/qdrant-index"
 
 
 @dataclass(frozen=True)
@@ -57,7 +56,7 @@ class QdrantStagedIndex:
 
 
 class QdrantIndexPublisher:
-    """用小型非向量 manifest 记录 active collection，向量始终留在 Qdrant。"""
+    """用 Qdrant collection 和 alias 持有索引状态，不写本地 JSON。"""
 
     def __init__(
         self,
@@ -82,10 +81,12 @@ class QdrantIndexPublisher:
         self.repository_root = root
         self.repo_id = repo_id
         self.collection_prefix = safe_prefix
+        self.active_alias = f"{safe_prefix}_active_{repo_id}"
+        self.previous_alias = f"{safe_prefix}_previous_{repo_id}"
         self.hnsw_m = hnsw_m
         self.hnsw_ef_construction = hnsw_ef_construction
         self.hnsw_ef_search = hnsw_ef_search
-        self._control = IndexPublisher(root / CONTROL_DIR)
+        self._staged: dict[str, IndexManifest] = {}
 
     def stage(
         self,
@@ -95,7 +96,7 @@ class QdrantIndexPublisher:
         chunk_version: str,
     ) -> QdrantStagedIndex:
         """写入新 collection 并完成发布前对账；不触碰当前 active。"""
-        collection = self._staging_collection(index)
+        collection = self._staging_collection(index.metadata.index_id)
         store = QdrantVectorStore(
             client=self.client,
             collection_name=collection,
@@ -110,7 +111,6 @@ class QdrantIndexPublisher:
             source_fingerprints=source_fingerprints,
             chunk_version=chunk_version,
         )
-        source_hash = _source_hash(source_fingerprints)
         manifest = build_index_manifest(
             index_version=index.metadata.index_id,
             repo_id=self.repo_id,
@@ -118,10 +118,8 @@ class QdrantIndexPublisher:
             collection=collection,
             index=index,
             chunk_version=chunk_version,
-            source_hash=source_hash,
+            source_hash=source_hash_from_fingerprints(source_fingerprints),
         )
-        # publish_semantic_index performs payload/schema checks before upsert and
-        # requires Provider Sparse for this 2.1 path.
         publish_semantic_index(
             index,
             store,
@@ -138,7 +136,7 @@ class QdrantIndexPublisher:
         )
         if not validation.valid:
             raise ValueError(f"Qdrant staging 校验失败：{'; '.join(validation.reasons)}")
-        self._control.stage(manifest)
+        self._staged[manifest.index_version] = manifest
         return QdrantStagedIndex(manifest, store, validation)
 
     def validate(
@@ -208,19 +206,26 @@ class QdrantIndexPublisher:
         )
 
     def publish(self, index_version: str) -> IndexManifest:
-        """只切换小型 active manifest；失败不会覆盖旧 active。"""
-        return self._control.publish(index_version)
+        """原子切换 Qdrant active alias；失败不会覆盖旧 active。"""
+        manifest = self._staged.get(index_version)
+        if manifest is None:
+            collection = self._staging_collection(index_version)
+            manifest = self._manifest_from_collection(collection)
+        if manifest is None:
+            raise ValueError(f"Qdrant staging collection 不存在或缺少元数据：{index_version}")
+        self._publish_alias(manifest.collection)
+        self._staged.pop(index_version, None)
+        return manifest
 
     def active(self) -> IndexManifest | None:
-        return self._control.active()
+        collection = self._alias_collection(self.active_alias)
+        if collection is None:
+            return None
+        return self._manifest_from_collection(collection)
 
     def active_store(self) -> QdrantVectorStore | None:
         manifest = self.active()
-        if manifest is None:
-            return None
-        if manifest.collection not in {
-            item.name for item in self.client.get_collections().collections
-        }:
+        if manifest is None or not self._collection_exists(manifest.collection):
             return None
         return QdrantVectorStore(
             client=self.client,
@@ -232,18 +237,151 @@ class QdrantIndexPublisher:
         )
 
     def rollback(self) -> IndexManifest:
-        return self._control.rollback()
+        current = self._alias_collection(self.active_alias)
+        previous = self._alias_collection(self.previous_alias)
+        if current is None or previous is None:
+            raise ValueError("没有可回滚的上一份 active index")
+        try:
+            self.client.update_collection_aliases(
+                [
+                    models.DeleteAliasOperation(
+                        delete_alias=models.DeleteAlias(alias_name=self.previous_alias)
+                    ),
+                    models.DeleteAliasOperation(
+                        delete_alias=models.DeleteAlias(alias_name=self.active_alias)
+                    ),
+                    models.CreateAliasOperation(
+                        create_alias=models.CreateAlias(
+                            collection_name=previous,
+                            alias_name=self.active_alias,
+                        )
+                    ),
+                    models.CreateAliasOperation(
+                        create_alias=models.CreateAlias(
+                            collection_name=current,
+                            alias_name=self.previous_alias,
+                        )
+                    ),
+                ]
+            )
+        except (ApiException, ResponseHandlingException, UnexpectedResponse, OSError) as error:
+            raise QdrantUnavailableError("Qdrant active alias 回滚失败") from error
+        manifest = self._manifest_from_collection(previous)
+        if manifest is None:
+            raise ValueError("回滚后的 Qdrant collection 缺少索引元数据")
+        return manifest
 
-    def _staging_collection(self, index: SemanticIndex) -> str:
-        version = _SAFE_NAME.sub("_", index.metadata.index_id).strip("_")[:48]
+    def _publish_alias(self, collection: str) -> None:
+        if not self._collection_exists(collection):
+            raise ValueError(f"Qdrant collection 不存在：{collection}")
+        current = self._alias_collection(self.active_alias)
+        actions: list[object] = []
+        previous = self._alias_collection(self.previous_alias)
+        if previous is not None:
+            actions.append(
+                models.DeleteAliasOperation(
+                    delete_alias=models.DeleteAlias(alias_name=self.previous_alias)
+                )
+            )
+        if current is not None:
+            actions.append(
+                models.CreateAliasOperation(
+                    create_alias=models.CreateAlias(
+                        collection_name=current,
+                        alias_name=self.previous_alias,
+                    )
+                )
+            )
+        if current is not None:
+            actions.append(
+                models.DeleteAliasOperation(
+                    delete_alias=models.DeleteAlias(alias_name=self.active_alias)
+                )
+            )
+        actions.append(
+            models.CreateAliasOperation(
+                create_alias=models.CreateAlias(
+                    collection_name=collection,
+                    alias_name=self.active_alias,
+                )
+            )
+        )
+        try:
+            self.client.update_collection_aliases(actions)
+        except (ApiException, ResponseHandlingException, UnexpectedResponse, OSError) as error:
+            raise QdrantUnavailableError("Qdrant active alias 发布失败") from error
+
+    def _alias_collection(self, alias_name: str) -> str | None:
+        try:
+            aliases = self.client.get_aliases().aliases
+        except (ApiException, ResponseHandlingException, UnexpectedResponse, OSError) as error:
+            raise QdrantUnavailableError("Qdrant alias 无法读取") from error
+        for item in aliases:
+            if item.alias_name == alias_name:
+                return item.collection_name
+        return None
+
+    def _manifest_from_collection(self, collection: str) -> IndexManifest | None:
+        if not self._collection_exists(collection):
+            return None
+        try:
+            info = self.client.get_collection(collection)
+            records = self.client.scroll(
+                collection_name=collection,
+                limit=1,
+                with_payload=True,
+                with_vectors=False,
+            )[0]
+        except (ApiException, ResponseHandlingException, UnexpectedResponse, OSError) as error:
+            raise QdrantUnavailableError("Qdrant collection 元数据无法读取") from error
+        if not records:
+            return None
+        payload = dict(records[0].payload or {})
+        try:
+            repo_id = _required_text(payload, "repoId")
+            index_version = _required_text(payload, "indexVersion")
+            embedding_model = _required_text(payload, "embeddingModel")
+            chunk_version = _required_text(payload, "chunkVersion")
+            vector_schema_version = _required_text(payload, "vectorSchemaVersion")
+            source_hash = _required_text(payload, "sourceHash")
+            vectors = getattr(info.config.params, "vectors", None)
+            dense = vectors.get("dense") if isinstance(vectors, dict) else None
+            dimension = int(getattr(dense, "size", 0))
+            distance = str(getattr(getattr(dense, "distance", None), "value", "cosine"))
+        except (TypeError, ValueError):
+            return None
+        if repo_id != self.repo_id or dimension <= 0:
+            return None
+        return IndexManifest.create(
+            index_version=index_version,
+            repo_id=repo_id,
+            backend="qdrant",
+            collection=collection,
+            embedding_model=embedding_model,
+            dimension=dimension,
+            distance=distance,
+            chunk_version=chunk_version,
+            source_hash=source_hash,
+            vector_schema_version=vector_schema_version,
+            sparse_model="provider-sparse",
+        )
+
+    def _collection_exists(self, collection: str) -> bool:
+        try:
+            return collection in {item.name for item in self.client.get_collections().collections}
+        except (ApiException, ResponseHandlingException, UnexpectedResponse, OSError) as error:
+            raise QdrantUnavailableError("Qdrant collection 列表无法读取") from error
+
+    def _staging_collection(self, index_version: str) -> str:
+        version = _SAFE_NAME.sub("_", index_version).strip("_")[:48]
         return f"{self.collection_prefix}_staging_{self.repo_id}_{version}"
 
 
-def _source_hash(source_fingerprints: Mapping[str, str]) -> str:
-    material = "\n".join(
-        f"{path}\0{fingerprint}" for path, fingerprint in sorted(source_fingerprints.items())
-    )
-    return source_fingerprint(material)
+def _required_text(payload: Mapping[str, object], name: str) -> str:
+    value = payload.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Qdrant payload 缺少 {name}")
+    return value
 
 
 def _scroll_all(client: QdrantClient, collection: str) -> tuple[object, ...]:

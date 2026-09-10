@@ -17,7 +17,7 @@ def test_answer_values_are_immutable() -> None:
         outcome=ANSWERED,
         answer="The implementation is in app.py.",
         citations=(citation,),
-        retrieval_mode="bm25",
+        retrieval_mode="hybrid",
         model="test-model",
         prompt_version="code-answer-v1",
         input_tokens=10,

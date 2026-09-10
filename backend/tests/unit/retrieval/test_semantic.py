@@ -1,16 +1,17 @@
 """确定性且保留证据映射的语义检索测试。"""
 
 import pytest
+from qdrant_client import QdrantClient
 
 from codeinsight.domain.errors import ModelResponseError
 from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.domain.source import SourceChunk
+from codeinsight.retrieval.qdrant_store import QdrantVectorStore
 from codeinsight.retrieval.semantic import (
     build_semantic_index,
     filter_indexable_chunks,
-    search_chunks_semantic,
+    search_chunks_dense,
 )
-from codeinsight.retrieval.vector_store import LocalJsonVectorStore
 
 
 def _chunks() -> tuple[SourceChunk, ...]:
@@ -30,7 +31,18 @@ class _FakeEmbedder:
                 vectors.append((0.0, 1.0))
             else:
                 vectors.append((0.0, 0.0))
-        return EmbeddingBatch("fake-multilingual", tuple(vectors), 3)
+        return EmbeddingBatch(
+            "fake-multilingual",
+            tuple(vectors),
+            len(texts),
+            tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+            "dense-sparse-v1",
+        )
+
+
+class _DenseOnlyEmbedder:
+    def __call__(self, texts):
+        return EmbeddingBatch("dense-only", tuple((1.0, 0.0) for _ in texts), len(texts))
 
 
 def test_build_index_preserves_source_identity_and_metadata() -> None:
@@ -47,8 +59,8 @@ def test_build_index_preserves_source_identity_and_metadata() -> None:
 
 
 def test_build_index_requires_provider_sparse_when_requested() -> None:
-    with pytest.raises(ModelResponseError, match="不会回退 BM25"):
-        build_semantic_index(_chunks(), _FakeEmbedder(), require_sparse=True)
+    with pytest.raises(ModelResponseError, match="无法继续"):
+        build_semantic_index(_chunks(), _DenseOnlyEmbedder())
 
 
 def test_build_index_keeps_provider_sparse_identity() -> None:
@@ -79,7 +91,13 @@ def test_index_skips_whitespace_only_chunks_before_embedding() -> None:
     def embedder(texts):
         values = tuple(texts)
         received.append(values)
-        return EmbeddingBatch("fake", ((1.0, 0.0),), len(values))
+        return EmbeddingBatch(
+            "fake",
+            ((1.0, 0.0),),
+            len(values),
+            (SparseEmbedding((1,), (1.0,)),),
+            "dense-sparse-v1",
+        )
 
     index = build_semantic_index(chunks, embedder)
 
@@ -103,7 +121,7 @@ def test_search_returns_evidence_with_semantic_reason() -> None:
     embedder = _FakeEmbedder()
     index = build_semantic_index(_chunks(), embedder)
 
-    results = search_chunks_semantic("易碎件要走专门的配送通道", index, embedder, limit=1)
+    results = search_chunks_dense("易碎件要走专门的配送通道", index, embedder, limit=1)
 
     assert len(results) == 1
     assert results[0].chunk.relative_path == "src/shop/shipping/workflow.py"
@@ -115,7 +133,7 @@ def test_low_similarity_returns_no_evidence() -> None:
     embedder = _FakeEmbedder()
     index = build_semantic_index(_chunks(), embedder)
 
-    assert search_chunks_semantic("unrelated question", index, embedder) == ()
+    assert search_chunks_dense("unrelated question", index, embedder) == ()
 
 
 def test_index_rejects_inconsistent_embedding_count() -> None:
@@ -133,13 +151,17 @@ def test_query_dimension_mismatch_is_explicit() -> None:
         return EmbeddingBatch("fake", ((1.0, 0.0, 0.0),), 1)
 
     with pytest.raises(ValueError, match="维度"):
-        search_chunks_semantic("fragile", index, wrong_dimension)
+        search_chunks_dense("fragile", index, wrong_dimension)
 
 
 def test_search_can_use_vector_store_without_changing_evidence_mapping(tmp_path) -> None:
     embedder = _FakeEmbedder()
     index = build_semantic_index(_chunks(), embedder)
-    store = LocalJsonVectorStore(tmp_path / "vectors.json")
+    store = QdrantVectorStore(
+        client=QdrantClient(location=":memory:"),
+        collection_name="semantic_search_test",
+        dimensions=2,
+    )
     from codeinsight.retrieval.index_pipeline import publish_semantic_index, source_fingerprint
 
     publish_semantic_index(
@@ -153,7 +175,7 @@ def test_search_can_use_vector_store_without_changing_evidence_mapping(tmp_path)
         chunk_version="fixed-lines-v1",
     )
 
-    results = search_chunks_semantic(
+    results = search_chunks_dense(
         "易碎件要走专门的配送通道",
         index,
         embedder,

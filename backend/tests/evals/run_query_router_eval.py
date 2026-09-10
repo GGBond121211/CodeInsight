@@ -22,7 +22,7 @@ def expected_labels(case: dict) -> dict:
     expected_subquestion_count = len(case.get("expected", {}).get("subquestions", ())) or 1
     return {
         "language": "mixed" if case["language"] == "zh-en" else case["language"],
-        "retrieval_mode": "bm25",
+        "retrieval_mode": "hybrid",
         "execution_route": "agent" if category == "multi_intent" else "linear",
         "subquestion_count": expected_subquestion_count,
     }

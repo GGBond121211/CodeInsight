@@ -24,7 +24,7 @@ def test_agent_payload_records_metrics_events_usage_and_revisions(tmp_path: Path
         "answered",
         "run is defined here.",
         (AnswerCitation("E1", "src/app.py", 1, 2),),
-        "bm25",
+        "hybrid",
         "fake-model",
         "citation-agent-v3",
         30,

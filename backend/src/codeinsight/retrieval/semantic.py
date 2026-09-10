@@ -35,7 +35,7 @@ def filter_indexable_chunks(chunks: Sequence[SourceChunk]) -> tuple[SourceChunk,
 
     切块阶段可以保留只有空行的范围，以便完整覆盖源码行并保持行号连续；
     语义索引阶段则不能为这类范围请求向量，因为 Embedding 服务拒绝空文本。
-    过滤只发生在索引边界，不修改 ``SourceChunk`` 本身，也不影响词法检索。
+    过滤只发生在索引边界，不修改 ``SourceChunk`` 本身，也不影响源码行号。
     """
     return tuple(chunk for chunk in chunks if chunk.text.strip())
 
@@ -63,7 +63,7 @@ def build_semantic_index(
     *,
     language_coverage: str = "multilingual",
     service: str = "openai-compatible",
-    require_sparse: bool = False,
+    require_sparse: bool = True,
 ) -> SemanticIndex:
     """对 *chunks* 一次性生成 Embedding，并构建保留证据映射的内存索引。"""
     indexable_chunks = filter_indexable_chunks(chunks)
@@ -217,13 +217,3 @@ def search_chunks_dense(
             )
         )
     return tuple(ranked_chunks)
-
-
-def search_chunks_semantic(
-    query: str,
-    index: SemanticIndex,
-    embed: EmbeddingFunction,
-    **kwargs,
-) -> tuple[RankedChunk, ...]:
-    """2.0 兼容别名；2.1 新代码应使用 ``search_chunks_dense``。"""
-    return search_chunks_dense(query, index, embed, **kwargs)

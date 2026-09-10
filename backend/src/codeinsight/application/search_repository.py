@@ -21,10 +21,8 @@ from codeinsight.domain.semantic import EmbeddingBatch, SemanticIndex
 from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.ingestion.chunker import chunk_scan_result
 from codeinsight.ingestion.scanner import scan_repository
-from codeinsight.retrieval.bm25 import search_chunks_bm25
 from codeinsight.retrieval.hybrid import rerank_ranked_chunks
 from codeinsight.retrieval.index_pipeline import publish_semantic_index
-from codeinsight.retrieval.lexical import search_chunks as search_chunks_lexical
 from codeinsight.retrieval.qdrant_index_publisher import QdrantIndexPublisher
 from codeinsight.retrieval.qdrant_store import QdrantVectorStore
 from codeinsight.retrieval.semantic import build_semantic_index, search_chunks_dense
@@ -44,15 +42,11 @@ _COLLECTION_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def candidate_retrieval_modes(primary_mode: str) -> tuple[str, ...]:
-    """返回规划模式对应的实际候选来源。
-
-    ``hybrid`` 是公开兼容名称，但其 2.1 实际来源已经是 Dense + Sparse；
-    ``bm25``/``lexical`` 只保留为显式历史评测入口，不会被正常路由自动选择。
-    """
+    """返回规划模式对应的 Dense/Sparse 候选来源。"""
     mode = _normalize_mode(primary_mode)
     if mode == "hybrid":
         return ("dense", "sparse")
-    if mode in {"dense", "sparse", "lexical", "bm25"}:
+    if mode in {"dense", "sparse"}:
         return (mode,)
     raise ValueError(f"不支持的检索模式：{primary_mode}")
 
@@ -63,16 +57,9 @@ def build_repository_semantic_index(
     chunk_max_lines: int = 80,
     chunk_overlap_ratio: float = 0.0,
     semantic_embed: SemanticEmbed,
-    cache_root: str | Path | None = None,
-    semantic_model: str | None = None,
-    require_sparse: bool = False,
+    require_sparse: bool = True,
 ) -> SemanticIndex:
-    """扫描、切块并构建内存中的证据映射。
-
-    ``cache_root`` 和 ``semantic_model`` 仅为 2.0 历史评测调用保留；2.1 正常
-    运行路径不再读写 local JSON，向量点发布由 Qdrant 完成。
-    """
-    del cache_root, semantic_model
+    """扫描、切块并构建内存中的证据映射；向量持久化由 Qdrant 完成。"""
     scan_result = scan_repository(root)
     chunks = chunk_scan_result(
         scan_result,
@@ -198,16 +185,18 @@ def retrieve_subquestion_evidence(
         raise ValueError("limit 必须是正整数")
     mode = _normalize_mode(primary_mode)
     candidate_retrieval_modes(mode)
-    if mode in {"lexical", "bm25"}:
-        search_fn = search or search_repository
-        return search_fn(
+    if search is not None and search is not search_repository:
+        return search(
             root,
             question,
             limit=limit,
             chunk_max_lines=chunk_max_lines,
+            chunk_overlap_ratio=chunk_overlap_ratio,
             retrieval_mode=mode,
-            semantic_embed=None,
-            semantic_index=None,
+            semantic_embed=semantic_embed,
+            semantic_index=semantic_index,
+            semantic_store=semantic_store,
+            reranker=reranker,
         )
     if semantic_embed is None or semantic_index is None:
         return search_repository(
@@ -251,8 +240,7 @@ def search_repository(
     """扫描仓库并返回可回到源码的 Dense/Sparse 证据。
 
     2.1 正常 ``hybrid`` 路径只使用 Provider Dense + Provider Sparse + RRF +
-    Rerank。BM25/lexical 仍可被历史评测显式调用，但不会由应用主路由或 MCP
-    ``search_repository`` 自动选择。
+    Rerank；向量数据和索引生命周期由 Qdrant 管理。
     """
     if limit <= 0:
         raise ValueError("limit 必须是正整数")
@@ -264,8 +252,6 @@ def search_repository(
         max_lines=chunk_max_lines,
         overlap_ratio=chunk_overlap_ratio,
     )
-    if mode in {"lexical", "bm25"}:
-        return _search_legacy_chunks(chunks, question, limit=limit, mode=mode)
     if semantic_embed is None:
         raise ValueError("Dense/Sparse 检索需要 Embedding 模型")
     index = semantic_index or build_semantic_index(
@@ -348,23 +334,9 @@ def _retrieve_from_index(
     )
 
 
-def _search_legacy_chunks(
-    chunks,
-    question: str,
-    *,
-    limit: int,
-    mode: str,
-) -> tuple[RankedChunk, ...]:
-    if mode == "lexical":
-        return search_chunks_lexical(question, chunks, limit=limit)
-    return search_chunks_bm25(question, chunks, limit=limit)
-
-
 def _normalize_mode(mode: str) -> str:
     normalized = mode.strip().lower()
     if normalized == "auto":
-        return "hybrid"
-    if normalized in {"semantic", "dense_sparse"}:
         return "hybrid"
     return normalized
 
@@ -385,8 +357,6 @@ def _search_scanned_repository(
     chunks = chunk_scan_result(scan_result, max_lines=chunk_max_lines)
     mode = _normalize_mode(retrieval_mode)
     candidate_retrieval_modes(mode)
-    if mode in {"lexical", "bm25"}:
-        return _search_legacy_chunks(chunks, question, limit=limit, mode=mode)
     if semantic_embed is None:
         raise ValueError("Dense/Sparse 检索需要 Embedding 模型")
     index = semantic_index or build_semantic_index(
@@ -430,8 +400,8 @@ def _runtime_qdrant_client() -> QdrantClient:
         raise QdrantNotConfiguredError(
             "生产运行时必须配置 CODEINSIGHT_QDRANT_URL；不回退本地 JSON 或进程内向量"
         )
-    # Development/test only: this is still Qdrant's in-process backend, not a
-    # LocalJsonVectorStore fallback. Persistent deployments must set the URL.
+    # Development/test only: this is Qdrant's in-process backend. Persistent
+    # deployments must set the URL.
     return QdrantClient(location=":memory:")
 
 

@@ -1,4 +1,4 @@
-export type RetrievalMode = 'lexical' | 'bm25' | 'hybrid'
+export type RetrievalMode = 'dense' | 'sparse' | 'hybrid'
 export type RetrievalReason =
   | 'direct_match'
   | 'semantic_match'
