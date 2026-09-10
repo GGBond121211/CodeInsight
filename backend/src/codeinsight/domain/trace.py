@@ -65,6 +65,11 @@ RETRIEVAL_STARTED = "retrieval_started"
 RETRIEVAL_FINISHED = "retrieval_finished"
 MODEL_GENERATING = "model_generating"
 ANSWER_READY = "answer_ready"
+# Q-009：证据评估与修复的公开事件。只记录状态、计数和动作，
+# 不记录隐藏推理、完整 Prompt 或工具 stdout。
+EVIDENCE_ASSESSED = "evidence_assessed"
+EVIDENCE_REPAIR_STARTED = "evidence_repair_started"
+EVIDENCE_REPAIR_FINISHED = "evidence_repair_finished"
 
 SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
     {
@@ -106,6 +111,9 @@ SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
         RETRIEVAL_FINISHED,
         MODEL_GENERATING,
         ANSWER_READY,
+        EVIDENCE_ASSESSED,
+        EVIDENCE_REPAIR_STARTED,
+        EVIDENCE_REPAIR_FINISHED,
     }
 )
 

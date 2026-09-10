@@ -154,6 +154,48 @@ class MCPToolClient(Protocol):
     def call_tool(self, call: ToolCall) -> ToolResult: ...
 
 
+# 控制层允许使用的终止状态；COMPLETED 只能由模型正常收尾产生。
+LOOP_TERMINAL_STATUSES: frozenset[str] = frozenset({"STUCK", "FAILED", "ABORTED"})
+
+
+@dataclass(frozen=True)
+class LoopIntervention:
+    """控制层在循环中途注入的一次干预。
+
+    ``message`` 会作为一条 user 消息追加到对话里，让模型带着新信息继续；
+    ``terminate_reason`` 非空则立即结束循环。两者至少要有一个。
+    """
+
+    message: str | None = None
+    terminate_reason: str | None = None
+    status: str = "STUCK"
+
+    def __post_init__(self) -> None:
+        if self.message is None and self.terminate_reason is None:
+            raise ValueError("干预必须给出 message 或 terminate_reason")
+        if self.terminate_reason is not None and self.status not in LOOP_TERMINAL_STATUSES:
+            raise ValueError(f"不支持的循环终止状态：{self.status}")
+
+
+class ToolOutcomeController(Protocol):
+    """夹在 ToolResult 和下一次模型调用之间的控制层。
+
+    它只负责「还能不能继续、要不要补充检索」，不执行工具、不修改权限。
+    """
+
+    def after_tools(
+        self,
+        *,
+        step: int,
+        calls: Sequence[ToolCall],
+        results: Sequence[ToolResult],
+    ) -> LoopIntervention | None: ...
+
+    def after_final_answer(
+        self, *, step: int, content: str | None
+    ) -> LoopIntervention | None: ...
+
+
 @dataclass(frozen=True)
 class ToolLoopConfig:
     max_steps: int = 8
@@ -198,11 +240,14 @@ class ToolLoop:
         config: ToolLoopConfig | None = None,
         run_id: str = "local-run",
         event_log=None,
+        outcome_controller: ToolOutcomeController | None = None,
     ) -> None:
         self._model = model
         self._mcp = mcp_client
         self._config = config or ToolLoopConfig()
         self._lifecycle = ToolLifecycleRecorder(run_id, event_log)
+        # 不传控制层时行为与之前完全一致：循环只在模型的 tool_calls 上推进。
+        self._controller = outcome_controller
 
     def run(
         self,
@@ -283,6 +328,23 @@ class ToolLoop:
                 )
             messages.append(assistant_message)
             if not response.tool_calls:
+                intervention = self._intervene_final(step, response.content)
+                if intervention is not None:
+                    if intervention.terminate_reason is not None:
+                        return self._result(
+                            intervention.status,
+                            None,
+                            messages,
+                            calls,
+                            results,
+                            step,
+                            input_tokens,
+                            output_tokens,
+                            intervention.terminate_reason,
+                        )
+                    if intervention.message:
+                        messages.append({"role": "user", "content": intervention.message})
+                        continue
                 return self._result(
                     "COMPLETED",
                     response.content,
@@ -389,6 +451,22 @@ class ToolLoop:
                         "content": result.as_model_content(),
                     }
                 )
+            intervention = self._intervene_tools(step, response.tool_calls, batch)
+            if intervention is not None:
+                if intervention.terminate_reason is not None:
+                    return self._result(
+                        intervention.status,
+                        None,
+                        messages,
+                        calls,
+                        results,
+                        step,
+                        input_tokens,
+                        output_tokens,
+                        intervention.terminate_reason,
+                    )
+                if intervention.message:
+                    messages.append({"role": "user", "content": intervention.message})
             if unchanged_write_streak >= 2:
                 return self._stuck(
                     messages,
@@ -474,6 +552,37 @@ class ToolLoop:
             return self._mcp.call_tool(call)
         except Exception:
             return ToolResult.failure(call.id, call.name, "UNKNOWN", "工具执行失败")
+
+    def _intervene_tools(
+        self,
+        step: int,
+        calls: Sequence[ToolCall],
+        results: Sequence[ToolResult],
+    ) -> LoopIntervention | None:
+        """把一批 ToolResult 交给控制层；控制层异常不得变成静默放行。"""
+        if self._controller is None:
+            return None
+        try:
+            return self._controller.after_tools(
+                step=step, calls=tuple(calls), results=tuple(results)
+            )
+        except Exception:
+            return LoopIntervention(
+                terminate_reason="控制层回调失败，按 fail-closed 终止",
+                status="FAILED",
+            )
+
+    def _intervene_final(self, step: int, content: str | None) -> LoopIntervention | None:
+        """模型想收尾时先问控制层；控制层异常同样 fail-closed。"""
+        if self._controller is None:
+            return None
+        try:
+            return self._controller.after_final_answer(step=step, content=content)
+        except Exception:
+            return LoopIntervention(
+                terminate_reason="控制层回调失败，按 fail-closed 终止",
+                status="FAILED",
+            )
 
     def _abort_unexecuted_calls(
         self,

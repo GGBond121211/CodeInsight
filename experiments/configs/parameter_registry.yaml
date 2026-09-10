@@ -320,6 +320,93 @@ tunable:
     note: "已有负结果。若 2.0 保留 Critic，应优先验证 0 是否更优。"
 
   # --- 2.0 新增（尚未实现，先登记） ---
+  # --- Q-008 / Q-009：代码理解 Tool Loop 与证据修复 ---
+  - name: explain_tool_loop_enabled
+    current: false
+    unit: bool
+    candidates: [false, true]
+    scope: "application/conversation_service.py:code_understanding_tool_loop_enabled"
+    experiment: "Q-008 Task 5 对照（未运行）"
+    evidence: >-
+      Q-008 2026-09-10：只读 Tool Loop、Evidence Ledger 与答案契约已实现并有契约测试；
+      默认关闭，explain 仍走原 LangGraph/linear 路径。
+    evidence_status: implemented_unoptimized
+    priority: high
+    note: >-
+      开关只影响 explain，不影响 change、general_chat 和 scope_redirect。
+      在完成同数据、同模型对照之前不得改为默认 true。
+
+  - name: tool_loop_max_steps
+    current: 8
+    unit: count
+    candidates: [3, 5, 8]
+    safety_ceiling: 20
+    ceiling_reason: "步数上限是防失控的关键约束"
+    scope: "agent/code_understanding_tool_loop.py:CodeUnderstandingConfig.loop"
+    evidence: "Q-008 2026-09-10：沿用 ToolLoopConfig 既有 8/64/2/2/60s 作为工程基线"
+    evidence_status: implemented_unoptimized
+    priority: high
+    note: "刻意不沿用 change 开发模式的 12 步/96 调用/120 秒。"
+
+  - name: tool_loop_max_tool_calls
+    current: 64
+    unit: count
+    candidates: [16, 32, 64]
+    safety_ceiling: 96
+    ceiling_reason: "单次 Run 的工具调用总数是成本与失控的硬上限"
+    scope: "agent/code_understanding_tool_loop.py:CodeUnderstandingConfig.loop"
+    evidence: "Q-008 2026-09-10：沿用既有 ToolLoopConfig 默认 64"
+    evidence_status: implemented_unoptimized
+    priority: high
+
+  - name: tool_loop_deadline_seconds
+    current: 60.0
+    unit: seconds
+    candidates: [30.0, 60.0, 120.0]
+    safety_ceiling: 120.0
+    ceiling_reason: "墙钟上限决定最坏情况下的用户等待"
+    scope: "agent/code_understanding_tool_loop.py:CodeUnderstandingConfig.loop"
+    evidence: "Q-008 2026-09-10：沿用既有默认 60 秒"
+    evidence_status: implemented_unoptimized
+    priority: medium
+
+  - name: evidence_min_count
+    current: 2
+    unit: count
+    candidates: [1, 2, 3]
+    safety_ceiling: 5
+    ceiling_reason: "门槛过高会让合理问题被反复判为证据不足"
+    scope: "application/evidence_assessor.py:EvidenceAssessor.min_evidence"
+    evidence: "Q-009 2026-09-10：确定性下限，用于触发 LOW_COVERAGE"
+    evidence_status: implemented_unoptimized
+    priority: high
+
+  - name: evidence_max_ledger
+    current: 40
+    unit: count
+    candidates: [20, 40, 80]
+    safety_ceiling: 200
+    ceiling_reason: "台账条数直接决定可引用证据总量和上下文占用"
+    scope: "application/evidence_ledger.py:EvidenceLedger.max_evidence"
+    evidence: "Q-009 2026-09-10：超出上限的新证据被丢弃并标记 truncated"
+    evidence_status: implemented_unoptimized
+    priority: medium
+
+  - name: evidence_max_repair_rounds
+    current: 1
+    unit: count
+    candidates: [0, 1, 2]
+    safety_ceiling: 3
+    ceiling_reason: "修复轮数直接乘上检索与模型调用成本，且收益递减"
+    scope: "application/evidence_repair.py:RepairBudget.max_repair_rounds"
+    experiment: "Q-009 Task 6 的 repair=0/1/2 对照（未运行）"
+    evidence: >-
+      Q-009 2026-09-10：控制器、动作去重和预算分账已实现并有契约测试；
+      1 是工程基线，没有任何质量或成本对照支持它优于 0 或 2。
+    evidence_status: implemented_unoptimized
+    priority: high
+    note: "计划明确要求在没有评测前不得把 repair 默认设为 2；当前按 1 起步。"
+
   - name: hnsw_m
     current: 16
     unit: count
@@ -348,13 +435,16 @@ tunable:
     priority: medium
 
   - name: agent_max_steps
-    current: null
+    current: 8
     unit: count
     candidates: [3, 5, 8]
     safety_ceiling: 20
     ceiling_reason: "Tool Loop 步数上限是防失控的关键约束"
-    scope: "Step 5"
-    status: not_implemented
+    scope: "agent/tool_loop.py:ToolLoopConfig.max_steps; agent/code_understanding_tool_loop.py"
+    evidence: >-
+      Q-008 2026-09-10：代码理解路线已接入有界 Tool Loop；
+      8 沿用既有 ToolLoopConfig 默认值，不是调优结果。
+    evidence_status: implemented_unoptimized
     priority: high
 
   - name: patch_repair_attempts

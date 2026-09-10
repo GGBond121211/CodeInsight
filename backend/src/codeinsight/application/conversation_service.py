@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import os
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -31,7 +32,13 @@ from codeinsight.application.scope_redirect import (
 )
 from codeinsight.application.session_service import SessionContext, SessionService
 from codeinsight.domain.agent import AgentRepositoryAnswer
-from codeinsight.domain.answer import AutoAnswer, AutoAnswerEvent, SubQuestionAnswer
+from codeinsight.domain.answer import (
+    ANSWERED,
+    INSUFFICIENT_EVIDENCE,
+    AutoAnswer,
+    AutoAnswerEvent,
+    SubQuestionAnswer,
+)
 from codeinsight.domain.change import MODE_ISOLATED_WRITE, MODE_READ_ONLY, TenantScope
 from codeinsight.domain.chat import (
     CHAT_COMPLETED,
@@ -66,6 +73,8 @@ from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.ingestion.scanner import scan_repository
 
 INDEX_VERSION = "conversation-scan-v1"
+# Q-008：explain 路线的迁移开关；默认关闭，只影响 explain。
+CODE_UNDERSTANDING_ENV_FLAG = "CODEINSIGHT_CODE_UNDERSTANDING_TOOL_LOOP"
 ModelFactory = Callable[[], object]
 EmbeddingFactory = Callable[[], object]
 RerankerFactory = Callable[[], Reranker]
@@ -109,10 +118,15 @@ class ConversationService:
         change_service,
         session_service: SessionService | None = None,
         runtime: ChatRuntime | None = None,
+        mcp_client_factory=None,
     ) -> None:
         self._model_factory = model_factory
         self._embedding_factory = embedding_factory
         self._reranker_factory = reranker_factory
+        # 只读代码理解 Tool Loop 的 MCP Client 工厂；测试注入 Fake，生产走 stdio。
+        self._mcp_client_factory = mcp_client_factory
+        # Q-008 迁移开关：默认关闭，直到新旧路线有同数据对照（计划 Task 5/6）。
+        self.code_understanding_enabled = code_understanding_tool_loop_enabled()
         self.change_service = change_service
         selected_policy = getattr(change_service, "development_policy", None)
         self.development_policy = (
@@ -607,17 +621,23 @@ class ConversationService:
             else None
         )
         if router_result.plan.execution_route == "agent":
-            agent_result = run_citation_agent(
-                turn_input.repository_root,
-                turn.user_message,
-                complete=model.complete,
-                limit=turn_input.limit,
-                retrieval_mode="auto",
-                semantic_embed=embedding_model.embed if embedding_model else None,
-                reranker=reranker,
-                query_plan=router_result.plan,
-            )
-            result = _auto_from_agent(router_result, agent_result)
+            if self.code_understanding_enabled:
+                result, tool_loop_payload = self._run_code_understanding(
+                    turn, turn_input, model, router_result
+                )
+            else:
+                agent_result = run_citation_agent(
+                    turn_input.repository_root,
+                    turn.user_message,
+                    complete=model.complete,
+                    limit=turn_input.limit,
+                    retrieval_mode="auto",
+                    semantic_embed=embedding_model.embed if embedding_model else None,
+                    reranker=reranker,
+                    query_plan=router_result.plan,
+                )
+                result = _auto_from_agent(router_result, agent_result)
+                tool_loop_payload = None
         else:
             result = auto_answer_repository(
                 turn_input.repository_root,
@@ -627,6 +647,7 @@ class ConversationService:
                 semantic_embed=embedding_model.embed if embedding_model else None,
                 reranker=reranker,
             )
+            tool_loop_payload = None
         self.runtime.emit(
             turn.run_id,
             RETRIEVAL_FINISHED,
@@ -643,6 +664,8 @@ class ConversationService:
             {"outcome": result.outcome, "citations": str(len(result.citations))},
         )
         payload = _auto_payload(result)
+        if tool_loop_payload is not None:
+            payload["tool_loop"] = tool_loop_payload
         payload["observability"] = _usage_payload(
             self.runtime.event_log.read_events(turn.run_id),
             fallback_input=result.input_tokens + result.router_input_tokens,
@@ -653,6 +676,70 @@ class ConversationService:
             assistant_message=result.answer,
             result=payload,
         )
+
+    def _run_code_understanding(
+        self,
+        turn: ChatTurn,
+        turn_input: _TurnInput,
+        model: _RunBoundModel,
+        router_result,
+    ) -> tuple[AutoAnswer, dict[str, object]]:
+        """跑一次只读代码理解 Tool Loop，并映射回公开的 AutoAnswer 形状。"""
+        from codeinsight.agent.code_understanding_tool_loop import (
+            ANSWERED_STATUS,
+            CodeUnderstandingToolLoop,
+        )
+
+        factory = self._mcp_client_factory or _default_mcp_client_factory()
+        with factory(turn_input.repository_root) as client:
+            loop = CodeUnderstandingToolLoop(
+                model,
+                client,
+                run_id=turn.run_id,
+                event_log=self.runtime.event_log,
+                repo_root=turn_input.repository_root,
+                emit=lambda event_type, detail: self.runtime.emit(
+                    turn.run_id, event_type, detail
+                ),
+            )
+            loop_result = loop.run(turn.user_message)
+        outcome = (
+            ANSWERED
+            if loop_result.status == ANSWERED_STATUS
+            else INSUFFICIENT_EVIDENCE
+        )
+        subquestions = tuple(
+            SubQuestionAnswer(
+                question=item.question,
+                intent=item.intent,
+                retrieval_mode="auto",
+                outcome=outcome,
+                answer=loop_result.answer,
+                citations=loop_result.citations,
+            )
+            for item in router_result.plan.subquestions
+        )
+        answer = AutoAnswer(
+            outcome=outcome,
+            answer=loop_result.answer,
+            citations=loop_result.citations,
+            retrieval_mode="auto",
+            model=model.model,
+            prompt_version=loop_result.prompt_version,
+            input_tokens=loop_result.input_tokens,
+            output_tokens=loop_result.output_tokens,
+            # MCP Server 在子进程内做 Embedding，用量目前不回流到主进程。
+            embedding_input_tokens=0,
+            plan=router_result.plan,
+            subquestions=subquestions,
+            router_model=router_result.model,
+            router_input_tokens=router_result.input_tokens,
+            router_output_tokens=router_result.output_tokens,
+            router_elapsed_milliseconds=router_result.elapsed_milliseconds,
+            fallback_reason=router_result.fallback_reason,
+            events=(),
+        )
+        return answer, loop_result.as_dict()
 
     def _execute_change(
         self, turn: ChatTurn, turn_input: _TurnInput, model: _RunBoundModel
@@ -1089,6 +1176,24 @@ def _goal_action(task_type: str, active_goal) -> str:
     if active_goal.task_type == task_type:
         return "continue"
     return "replace"
+
+
+def code_understanding_tool_loop_enabled(
+    source: Mapping[str, str] | None = None,
+) -> bool:
+    """Q-008 迁移开关；只控制 explain 路线，默认关闭。
+
+    默认关闭的原因：新路线还没有和 LangGraph 的同数据、同模型对照
+    （计划 Task 5），在拿到可回放结果之前不能沉默地替换默认行为。
+    """
+    environment = os.environ if source is None else source
+    return environment.get(CODE_UNDERSTANDING_ENV_FLAG, "").strip() == "1"
+
+
+def _default_mcp_client_factory():
+    from codeinsight.infrastructure.mcp_client import StdioMCPClient
+
+    return StdioMCPClient
 
 
 def _auto_from_agent(
