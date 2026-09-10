@@ -1,0 +1,2095 @@
+{
+  "schema_version": 1,
+  "dataset_id": "conversation_2_1_0",
+  "dataset_version": "2.1.0",
+  "case_count": 24,
+  "turn_count": 123,
+  "fixture": "tests/fixtures/sample_repo",
+  "source_commit": "bf69022d63c74e0bf07ceaa12cf0bf002d269eca",
+  "purpose": "独立测量同一 Session 中的入口分类、目标延续、上下文保留、范围引导、证据回忆和修改审批边界。",
+  "not_for": [
+    "不能把本数据集的自动 outcome 命中率当成人工语义正确率",
+    "不能把 holdout 用于参数调优或 Prompt 改写",
+    "不能把 change 轮次在没有审批的情况下当成已修改成功",
+    "不能记录供应商原始响应、用户隐私或模型隐藏推理"
+  ],
+  "generation_contract": {
+    "case_count": 24,
+    "turn_count": 123,
+    "minimum_turns_per_case": 4,
+    "splits": {
+      "dev": 6,
+      "regression": 6,
+      "golden": 6,
+      "holdout": 6
+    },
+    "languages": {
+      "zh": 18,
+      "zh-en": 6
+    },
+    "required_scenarios": [
+      "explain_to_bug_check",
+      "smalltalk_interleave",
+      "mixed_language_trace",
+      "ambiguous_follow_up",
+      "symbol_collision",
+      "insufficient_evidence",
+      "cross_file_trace",
+      "context_compaction",
+      "documentation_conflict",
+      "scope_redirect",
+      "change_approval_boundary",
+      "negative_write_intent",
+      "memory_correction",
+      "four_round_stability"
+    ],
+    "gold_policy": "期望值只保存可复核的路由、状态、事实和源码 Evidence，不保存模型生成答案。"
+  },
+  "cases": [
+    {
+      "id": "conv-001-shipping-bug-boundary",
+      "family": "shipping-unknown-region",
+      "split": "dev",
+      "language": "zh",
+      "scenario": "explain_to_bug_check",
+      "difficulty": "hard",
+      "tags": ["bug_hypothesis", "false_premise", "pronoun_follow_up", "insufficient_upstream_evidence", "approval_boundary"],
+      "description": "先解释派送规则，再确认未知 region 风险，最后验证修改必须停在审批前。",
+      "tuning_use": "dev_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请解释 src/shop/shipping/workflow.py 的 choose_dispatch_lane：region 和 fragile 分别怎么决定线路？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["lanes 将 local/domestic/remote 映射到 bike/ground/postal", "fragile 为真时优先返回 fragile-courier", "fragile 为假时使用 lanes[region]"],
+            "must_retain": ["choose_dispatch_lane", "region", "fragile", "线路选择规则"],
+            "allowed_to_forget": ["用户的措辞顺序"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "那如果 region 传了一个不存在的值，这里是不是会出 bug？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["fragile 为假且 region 不在 lanes 时，字典索引会抛 KeyError", "源码没有展示未知 region 的默认线路或友好错误处理"],
+            "must_retain": ["上一轮的 choose_dispatch_lane", "fragile 为真会绕过 region 索引"],
+            "allowed_to_forget": ["上一轮问题中的礼貌语气"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "这个异常会影响调用它的哪些上游逻辑？只根据仓库证据分析。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["当前 fixture 能证明函数内部的 KeyError 风险", "当前 fixture 没有给出 choose_dispatch_lane 的调用入口，不能断言具体上游影响"],
+            "must_retain": ["未知 region 风险", "证据不足时不能编造调用者"],
+            "allowed_to_forget": ["已确认的线路映射细节"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "请把未知 region 的处理修好，fragile 的专用线路规则保持不变。",
+          "expected": {
+            "task_type": "change",
+            "goal_action": "replace",
+            "outcome": "approval_required",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["修改请求应生成隔离 workspace 中的预览", "应用前必须等待一次性审批", "原始 fixture 不得被直接写入"],
+            "must_retain": ["只修未知 region", "fragile-courier 规则不可改变", "目标文件 workflow.py"],
+            "allowed_to_forget": ["无关闲聊"],
+            "change_contract": {"must_require_approval": true, "must_not_write_source_fixture": true}
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-002-checkout-trace",
+      "family": "checkout-request-to-receipt",
+      "split": "dev",
+      "language": "zh",
+      "scenario": "cross_file_trace",
+      "difficulty": "hard",
+      "tags": ["cross_file", "execution_order", "data_flow", "tax_false_premise"],
+      "description": "围绕一个 checkout 目标连续追问入口、校验、库存、计价和 Receipt。",
+      "tuning_use": "dev_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "从 src/shop/api.py 开始，解释 create_order 如何把 payload 交给 checkout。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/api.py", "start_line": 7, "end_line": 18}, {"path": "src/shop/service.py", "start_line": 4, "end_line": 14}],
+            "expected_facts": ["create_order 从 payload 读取 sku 和 quantity 构造 OrderRequest", "create_order 调用 checkout 并把 Receipt 字段映射到返回对象"],
+            "must_retain": ["create_order", "checkout", "payload 到 OrderRequest"],
+            "allowed_to_forget": ["用户要求的叙述顺序"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "那 checkout 先校验、扣库存还是先算价？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 4, "end_line": 14}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}, {"path": "src/shop/inventory.py", "start_line": 10, "end_line": 13}, {"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}],
+            "expected_facts": ["先调用 validate_request", "再调用 reserve", "最后调用 order_total 并构造 Receipt"],
+            "must_retain": ["执行顺序 validate→reserve→order_total", "调用失败会阻止后续步骤"],
+            "allowed_to_forget": ["create_order 返回字段的展示顺序"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "这些 request 字段最后怎样进 Receipt？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 11, "end_line": 19}, {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}],
+            "expected_facts": ["sku 和 quantity 从 OrderRequest 转发到 Receipt", "total_cents 来自 order_total", "currency 来自 DEFAULT_CURRENCY"],
+            "must_retain": ["OrderRequest 字段", "Receipt 字段", "total_cents", "currency 来源"],
+            "allowed_to_forget": ["前两轮的疑问语气"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "total_cents 里面包含税或折扣吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}],
+            "expected_facts": ["order_total 只把 unit_price 乘以 quantity", "当前源码没有税或折扣计算"],
+            "must_retain": ["total_cents 是当前总额计算结果", "没有税和折扣证据"],
+            "allowed_to_forget": ["入口函数的细枝末节"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "如果要给 order_total 接入税逻辑，应该先检查哪些调用点？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 6, "end_line": 14}, {"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}],
+            "expected_facts": ["order_total 的定义在 pricing.py", "checkout 在 service.py 调用 order_total", "create_order 通过 Receipt.total_cents 暴露结果"],
+            "must_retain": ["税逻辑尚未实现", "pricing.py 定义", "service.py 调用点", "api.py 输出映射"],
+            "allowed_to_forget": ["不影响调用点判断的原始措辞"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-003-smalltalk-interleave",
+      "family": "scope-guidance-around-shipping",
+      "split": "dev",
+      "language": "zh",
+      "scenario": "smalltalk_interleave",
+      "difficulty": "medium",
+      "tags": ["smalltalk", "scope_redirect", "active_goal", "natural_guidance"],
+      "description": "在代码目标前后插入无关闲聊，检查闲聊不污染代码目标且自然回引。",
+      "tuning_use": "dev_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "你好",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["使用自然语言回应问候", "可以说明自己是 CodeInsight 代码理解与修改助手"],
+            "must_retain": ["助手业务定位"],
+            "allowed_to_forget": ["不存在的代码目标"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "我喜欢打篮球，最近投篮不太准",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["不扩展篮球话题", "自然说明可以回到仓库、函数或报错"],
+            "must_retain": ["当前还没有代码目标"],
+            "allowed_to_forget": ["篮球细节"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "现在解释一下 workflow.py 的 fragile 派送规则",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["fragile 为真返回 fragile-courier", "该分支不读取 region 对应的 lanes 值"],
+            "must_retain": ["workflow.py", "fragile 派送规则"],
+            "allowed_to_forget": ["篮球话题"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "今天天气不错",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["承接一句自然话术后，把话题带回当前 workflow.py 目标"],
+            "must_retain": ["活动代码目标是 workflow.py 的派送规则"],
+            "allowed_to_forget": ["天气信息"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "谢谢你",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["简短回应感谢", "不创建新的代码目标"],
+            "must_retain": ["workflow.py 目标继续有效"],
+            "allowed_to_forget": ["感谢的具体表达"]
+          }
+        },
+        {
+          "turn_id": "t6",
+          "user_message": "再看看刚才那个函数有没有未知 region 的问题",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["回到 choose_dispatch_lane 的上下文", "未知 region 在 fragile 为假时会触发字典 KeyError"],
+            "must_retain": ["workflow.py", "choose_dispatch_lane", "未知 region 风险"],
+            "allowed_to_forget": ["天气和篮球"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-004-mixed-api-validation",
+      "family": "mixed-api-checkout-validation",
+      "split": "dev",
+      "language": "zh-en",
+      "scenario": "mixed_language_trace",
+      "difficulty": "hard",
+      "tags": ["zh_en", "mixed_language", "call_chain", "error_order", "memory_anchor"],
+      "description": "中英混合表达同一个调用链，检查模型能否在后续短句中继续使用代码上下文。",
+      "tuning_use": "dev_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "帮我 trace src/shop/api.py 里的 create_order 到 checkout 的 call chain。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/api.py", "start_line": 3, "end_line": 12}, {"path": "src/shop/service.py", "start_line": 4, "end_line": 14}],
+            "expected_facts": ["api.py 导入 checkout", "create_order 构造 OrderRequest 后调用 checkout"],
+            "must_retain": ["create_order→checkout", "api.py", "service.py"],
+            "allowed_to_forget": ["trace 这个英文动词"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "then in validation.py, quantity <= 0 会发生什么？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["quantity <= 0 时 validate_request 抛 ValueError", "该校验位于 reserve 之前"],
+            "must_retain": ["quantity <= 0", "validation.py", "reserve 之前"],
+            "allowed_to_forget": ["第一轮的 API 返回字段"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "这个 error 会不会在 reserve 之前出现？请对照 service.py。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 7, "end_line": 13}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["service.py 先调用 validate_request，再调用 reserve", "quantity 校验失败时 reserve 不会执行"],
+            "must_retain": ["error 指 quantity 校验错误", "validate_request→reserve"],
+            "allowed_to_forget": ["中英混合的表面形式"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "OK，记住 total_cents 是最终总额，不是 unit price；再解释 service.py 里的 currency 来源。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 1, "end_line": 19}, {"path": "src/shop/config.py", "start_line": 3, "end_line": 3}],
+            "expected_facts": ["Receipt.total_cents 接收 order_total 的结果", "Receipt.currency 接收 DEFAULT_CURRENCY", "DEFAULT_CURRENCY 定义在 config.py"],
+            "must_retain": ["total_cents≠unit_price", "currency 来源是 config.py"],
+            "allowed_to_forget": ["quantity 错误的英文描述"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "最后用中英混合说一下 models.py 里 Receipt 的字段。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/models.py", "start_line": 12, "end_line": 17}],
+            "expected_facts": ["Receipt 包含 sku、quantity、total_cents、currency", "这些是 dataclass 字段而不是新的计算逻辑"],
+            "must_retain": ["Receipt 字段列表", "total_cents 与 currency 的含义"],
+            "allowed_to_forget": ["不再追问的 validation 细节"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-005-ambiguous-then-change",
+      "family": "ambiguous-validation-change",
+      "split": "dev",
+      "language": "zh",
+      "scenario": "ambiguous_follow_up",
+      "difficulty": "hard",
+      "tags": ["clarification", "active_goal", "change_boundary", "short_follow_up"],
+      "description": "先处理无法落地的短句，再建立代码目标，最后验证‘修复它’会进入受审批修改路由。",
+      "tuning_use": "dev_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "这个可以吗？",
+          "expected": {
+            "task_type": "clarify",
+            "goal_action": "preserve",
+            "outcome": "clarification_required",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["无法在没有文件、函数或上一轮目标的情况下判断指代对象", "应请求用户补充代码任务"],
+            "must_retain": ["尚无活动代码目标"],
+            "allowed_to_forget": ["这个的具体指代假设"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "我想看 checkout 的输入校验",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 7, "end_line": 12}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["checkout 调用 validate_request", "sku 不能为空且 quantity 必须为正"],
+            "must_retain": ["checkout 输入校验", "validate_request"],
+            "allowed_to_forget": ["第一轮没有目标的短句"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "这个函数为什么拒绝 quantity=0？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["quantity=0 满足 quantity <= 0", "validate_request 因此抛出 quantity must be positive"],
+            "must_retain": ["quantity=0", "validate_request", "当前活动目标"],
+            "allowed_to_forget": ["用户最初的泛化问法"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "那就修复它",
+          "expected": {
+            "task_type": "change",
+            "goal_action": "replace",
+            "outcome": "approval_required",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["指代应解析为上一轮的 quantity 校验问题", "应先展示变更预览并等待审批"],
+            "must_retain": ["quantity=0 校验问题", "validation.py", "修改范围不能扩散"],
+            "allowed_to_forget": ["t1 的澄清提示"],
+            "change_contract": {"must_require_approval": true, "must_not_write_source_fixture": true}
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-006-record-symbol-collision",
+      "family": "customer-admin-find-record",
+      "split": "regression",
+      "language": "zh",
+      "scenario": "symbol_collision",
+      "difficulty": "hard",
+      "tags": ["same_name_symbol", "scope", "ownership", "cross_module"],
+      "description": "同名 find_record 在 customer/admin 两个模块中含义不同，连续追问作用域与参数。",
+      "tuning_use": "regression_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请解释 src/shop/customer/records.py 里的 find_record，customer_id 在这里有什么作用？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["先按 record_id 取行", "owner 不等于 customer_id 时抛 LookupError", "返回 scope=customer 和 status"],
+            "must_retain": ["customer/records.py", "customer_id", "owner 校验"],
+            "allowed_to_forget": ["静态 row 的具体 ID"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "再看 src/shop/admin/records.py 里的同名 find_record，它和刚才的版本差在哪？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}, {"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["admin 版本只接收 record_id", "admin 版本返回 scope=admin", "customer 版本额外需要 customer_id 并做 owner 校验"],
+            "must_retain": ["两个同名函数的模块边界", "customer/admin 参数差异"],
+            "allowed_to_forget": ["customer 行的 status 值"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "对比 customer 和 admin 两个 find_record，它们的 scope 为什么不同？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}, {"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["scope 是各模块返回对象中的固定标记", "customer 表示面向客户且有 ownership check", "admin 表示后台操作范围"],
+            "must_retain": ["scope=customer", "scope=admin", "ownership check"],
+            "allowed_to_forget": ["两个函数的定义顺序"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "如果只有 record_id，没有 customer_id，customer 入口能直接复用吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["customer find_record 的函数签名要求 customer_id", "仅有 record_id 不能满足该调用契约"],
+            "must_retain": ["customer_id 是必需参数", "不能用 admin 版本替代 customer 版本"],
+            "allowed_to_forget": ["admin 的 status 示例"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "请记住 admin 版本不做 owner 校验，再总结两个版本的使用边界。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}, {"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["customer 入口用于有 owner 权限检查的客户记录", "admin 入口用于后台 scope", "两者不能因为函数同名而互换"],
+            "must_retain": ["admin 不做 owner 校验", "customer/admin 使用边界"],
+            "allowed_to_forget": ["不影响边界的静态数据"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-007-refund-insufficient",
+      "family": "refund-provider-boundary",
+      "split": "regression",
+      "language": "zh",
+      "scenario": "insufficient_evidence",
+      "difficulty": "medium",
+      "tags": ["insufficient_evidence", "anti_hallucination", "smalltalk_after_refusal", "provider_boundary"],
+      "description": "连续询问退款 provider、到账和 endpoint，要求模型保持证据边界而不是补全业务。",
+      "tuning_use": "regression_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请分析 src/shop/refunds.py 的 prepare_refund：它会调用哪个支付 provider？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/refunds.py", "start_line": 4, "end_line": 6}],
+            "expected_facts": ["prepare_refund 只创建本地 queued 记录", "源码明确没有选择支付 provider 或 endpoint"],
+            "must_retain": ["refund provider 证据不足", "refunds.py"],
+            "allowed_to_forget": ["order_id 示例"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "那 queued 状态是不是已经代表银行到账？请按 refunds.py 证据回答。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/refunds.py", "start_line": 4, "end_line": 10}],
+            "expected_facts": ["queued 只表示本地准备记录的状态", "当前源码不能证明银行到账或外部执行结果"],
+            "must_retain": ["queued 的语义边界", "不能把本地状态升级为银行结果"],
+            "allowed_to_forget": ["provider 的具体候选名称"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "不要猜 endpoint，先说明当前仓库还缺什么退款集成事实。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/refunds.py", "start_line": 1, "end_line": 10}],
+            "expected_facts": ["缺少 provider 选择、请求 endpoint、鉴权和到账确认等证据", "不能用函数名或 state 字段推断这些事实"],
+            "must_retain": ["缺口列表", "不要猜 endpoint"],
+            "allowed_to_forget": ["上一轮的问句形式"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "嗨，你是谁",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然介绍 CodeInsight 是代码理解和修改助手", "不把退款猜测混入身份介绍"],
+            "must_retain": ["refund 目标仍可被后续追问引用"],
+            "allowed_to_forget": ["用户没有要求继续讨论的 provider 猜测"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "我周末想去打球",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["自然承接一句后回到仓库、函数或报错", "不继续编造运动建议"],
+            "must_retain": ["当前 Session 的退款证据边界"],
+            "allowed_to_forget": ["周末活动"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-008-fulfillment-three-hop",
+      "family": "fulfillment-entry-pipeline-ledger",
+      "split": "regression",
+      "language": "zh-en",
+      "scenario": "cross_file_trace",
+      "difficulty": "hard",
+      "tags": ["three_hop", "in_memory_storage", "missing_input", "pipeline"],
+      "description": "从入口适配器追到 planning 和 ledger，并对缺失字段与存储性质做边界判断。",
+      "tuning_use": "regression_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请追踪 src/shop/fulfillment/entrypoint.py 的 payload 如何变成 fulfillment record。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/entrypoint.py", "start_line": 6, "end_line": 12}, {"path": "src/shop/fulfillment/pipeline.py", "start_line": 6, "end_line": 13}, {"path": "src/shop/fulfillment/ledger.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["entrypoint 读取 sku、quantity、destination", "plan_fulfillment 加入 state=planned", "store_fulfillment 加入 record_type=fulfillment 并 append 到列表"],
+            "must_retain": ["entrypoint→pipeline→ledger", "record_type=fulfillment"],
+            "allowed_to_forget": ["变量 planned 的局部命名"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "中间的 planned 记录具体在哪里产生？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/pipeline.py", "start_line": 6, "end_line": 13}],
+            "expected_facts": ["plan_fulfillment 构造 planned 字典", "state 字段在 pipeline.py 被设为 planned", "随后传给 store_fulfillment"],
+            "must_retain": ["planned 在 pipeline.py 产生", "后续进入 ledger"],
+            "allowed_to_forget": ["入口 payload 的原始描述"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "在 src/shop/fulfillment/ledger.py 里，record_type 是在哪一步加上的？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/ledger.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["store_fulfillment 复制 planned 并增加 record_type=fulfillment", "增加后的 record 被 append 到 FULFILLMENT_RECORDS"],
+            "must_retain": ["record_type 的添加位置", "FULFILLMENT_RECORDS"],
+            "allowed_to_forget": ["state=planned 的来源细节"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "如果 entrypoint.py 的 payload 没有 destination，当前实现会自动补默认值吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/entrypoint.py", "start_line": 6, "end_line": 12}],
+            "expected_facts": ["代码直接读取 payload['destination']", "fixture 没有默认值分支，缺失时会产生 KeyError"],
+            "must_retain": ["destination 是入口必读字段", "没有默认值"],
+            "allowed_to_forget": ["record_type 的静态值"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "entrypoint.py 这条流程最后写入哪个存储？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/ledger.py", "start_line": 3, "end_line": 9}],
+            "expected_facts": ["记录被 append 到进程内的 FULFILLMENT_RECORDS 列表", "当前 fixture 没有数据库或持久化文件证据"],
+            "must_retain": ["存储是进程内列表", "不能声称写入数据库"],
+            "allowed_to_forget": ["入口字段的转换细节"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-009-pricing-boundary",
+      "family": "pricing-total-boundary",
+      "split": "regression",
+      "language": "zh-en",
+      "scenario": "boundary_behavior",
+      "difficulty": "medium",
+      "tags": ["pricing", "rounding", "tax", "unknown_key", "mixed_language"],
+      "description": "围绕价格计算的舍入、税折扣、单价和未知 SKU 进行上下文连续追问。",
+      "tuning_use": "regression_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请解释 src/shop/pricing.py 里的 order_total 是怎么计算的。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}],
+            "expected_facts": ["order_total 先调用 unit_price", "结果是 price * quantity"],
+            "must_retain": ["order_total", "unit_price", "乘法关系"],
+            "allowed_to_forget": ["函数文档字符串"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "在 pricing.py 里 quantity=2 会不会四舍五入？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}],
+            "expected_facts": ["当前计算使用整数乘法", "源码没有四舍五入步骤"],
+            "must_retain": ["没有 rounding 证据", "order_total 仍是整数乘法"],
+            "allowed_to_forget": ["上一轮的解释顺序"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "order_total 是不是含 tax 和 discount？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 11, "end_line": 14}],
+            "expected_facts": ["当前 order_total 没有 tax 或 discount 参数", "只使用 unit_price 和 quantity"],
+            "must_retain": ["tax/discount 未实现", "order_total 输入范围"],
+            "allowed_to_forget": ["quantity=2 的示例"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "unit_price('pen') 在 pricing.py 返回什么？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 3, "end_line": 8}],
+            "expected_facts": ["PRICE_CENTS 中 pen 的单价为 250", "unit_price 返回 PRICE_CENTS[sku]"],
+            "must_retain": ["pen=250", "unit_price 的查表关系"],
+            "allowed_to_forget": ["税折扣判断"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "如果 sku 不存在，当前 pricing.py 会给默认价格吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 6, "end_line": 14}],
+            "expected_facts": ["unit_price 直接索引 PRICE_CENTS", "未知 sku 没有默认价格分支，可能抛 KeyError"],
+            "must_retain": ["未知 sku 行为", "没有默认价格"],
+            "allowed_to_forget": ["pen 的具体价格"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-010-shipping-aliases",
+      "family": "shipping-eta-sla-alias",
+      "split": "regression",
+      "language": "zh-en",
+      "scenario": "documentation_conflict",
+      "difficulty": "medium",
+      "tags": ["docs_alias", "ETA", "SLA", "same_function_false_premise", "false_premise", "mixed_language"],
+      "description": "先从文档别名定位到实现，再判断 ETA 与 SLA 是否是同一时间。",
+      "tuning_use": "regression_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "docs/shipping-guide.md 里提到的 ETA 和 SLA，分别对应仓库中的什么实现？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "docs/shipping-guide.md", "start_line": 7, "end_line": 9}, {"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 26}],
+            "expected_facts": ["ETA 是 estimated_arrival_at 的文档别名", "SLA 是 service_level_deadline 的文档别名", "两者是不同函数和不同输入概念"],
+            "must_retain": ["ETA→estimated_arrival_at", "SLA→service_level_deadline"],
+            "allowed_to_forget": ["文档的标题"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "workflow.py 的 estimated_arrival_at 具体加了哪个时间参数？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 22}],
+            "expected_facts": ["estimated_arrival_at 将 dispatched_at 加上 transit_days 天", "它返回 datetime"],
+            "must_retain": ["ETA 使用 transit_days", "dispatched_at"],
+            "allowed_to_forget": ["SLA 的输入"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "那 service_level_deadline 又是怎么计算的？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 25, "end_line": 26}],
+            "expected_facts": ["service_level_deadline 将 opened_at 加上 response_hours 小时", "它不是 transit_days 的别名"],
+            "must_retain": ["SLA 使用 response_hours", "opened_at"],
+            "allowed_to_forget": ["ETA 的返回类型"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "workflow.py 里的 ETA and SLA 是同一个 timestamp 吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 26}],
+            "expected_facts": ["不是同一个函数", "ETA 基于 dispatched_at 和 transit_days", "SLA 基于 opened_at 和 response_hours"],
+            "must_retain": ["ETA/SLA 不同", "两个计算公式"],
+            "allowed_to_forget": ["英文连词 and"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "Thanks，接下来先回到代码。",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["简短回应感谢，不生成新的事实", "保留 shipping 目标供下一轮继续"],
+            "must_retain": ["ETA/SLA 已经解释过的结论"],
+            "allowed_to_forget": ["感谢措辞"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-011-config-change-preview",
+      "family": "config-threshold-change",
+      "split": "golden",
+      "language": "zh",
+      "scenario": "change_approval_boundary",
+      "difficulty": "hard",
+      "tags": ["config_flow", "parameter_dependency", "change_preview", "no_auto_apply"],
+      "description": "追踪库存阈值的定义与使用，最终只要求生成修改预览而不是直接写入。",
+      "tuning_use": "golden_final_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请解释 src/shop/config.py 里的 LOW_STOCK_THRESHOLD，目前它被谁使用？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/config.py", "start_line": 3, "end_line": 4}, {"path": "src/shop/reporting.py", "start_line": 3, "end_line": 7}],
+            "expected_facts": ["LOW_STOCK_THRESHOLD 定义为 3", "reporting.py 的 low_stock_skus 接受 threshold 参数但没有导入该常量"],
+            "must_retain": ["LOW_STOCK_THRESHOLD=3", "low_stock_skus 参数关系"],
+            "allowed_to_forget": ["DEFAULT_CURRENCY"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "low_stock_skus 是不是自动使用 config.py 的 3？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/reporting.py", "start_line": 3, "end_line": 7}, {"path": "src/shop/config.py", "start_line": 3, "end_line": 4}],
+            "expected_facts": ["low_stock_skus 的 threshold 是显式参数", "reporting.py 当前没有直接读取 LOW_STOCK_THRESHOLD"],
+            "must_retain": ["当前没有自动接线", "threshold 参数是调用方责任"],
+            "allowed_to_forget": ["LOW_STOCK_THRESHOLD 的旁边常量"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "如果 threshold=5，会影响 inventory.py 的 reserve 吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/reporting.py", "start_line": 6, "end_line": 7}, {"path": "src/shop/inventory.py", "start_line": 10, "end_line": 13}],
+            "expected_facts": ["reporting 的 threshold 只用于筛选 low_stock_skus", "inventory.reserve 使用 available 和实际 quantity，不读取 threshold"],
+            "must_retain": ["reporting threshold 与 reserve 独立", "不能把低库存报告阈值当扣减门槛"],
+            "allowed_to_forget": ["config 的默认值"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "low_stock_skus 的默认阈值和 config.py 目前如何衔接？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/reporting.py", "start_line": 3, "end_line": 7}, {"path": "src/shop/config.py", "start_line": 3, "end_line": 4}],
+            "expected_facts": ["当前 reporting.py 没有把 LOW_STOCK_THRESHOLD 接入 low_stock_skus 的默认参数", "config.py 只定义了常量，不能据此声称已经自动生效"],
+            "must_retain": ["LOW_STOCK_THRESHOLD", "low_stock_skus", "当前没有自动接线"],
+            "allowed_to_forget": ["threshold=5 的假设"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "请把 low_stock_skus 的默认 threshold 接到 config.py 的 LOW_STOCK_THRESHOLD，并生成修改预览；在审批之前先告诉我最多应该涉及哪些文件。",
+          "expected": {
+            "task_type": "change",
+            "goal_action": "replace",
+            "outcome": "approval_required",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/reporting.py", "start_line": 3, "end_line": 7}, {"path": "src/shop/config.py", "start_line": 3, "end_line": 4}],
+            "expected_facts": ["最小修改应涉及 reporting.py，必要时引用已有 config.py 常量", "审批前不应用文件"],
+            "must_retain": ["修改目标是 reporting.py 的默认参数接线", "审批状态"],
+            "allowed_to_forget": ["与变更无关的 inventory 说明"],
+            "change_contract": {"must_require_approval": true, "must_not_write_source_fixture": true}
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-012-active-goal-scope-redirect",
+      "family": "checkout-scope-redirect-resume",
+      "split": "golden",
+      "language": "zh",
+      "scenario": "smalltalk_interleave",
+      "difficulty": "medium",
+      "tags": ["active_goal", "smalltalk", "two_redirects", "resume", "natural_language"],
+      "description": "已有代码目标时连续插入两次闲聊，之后用短指代恢复原目标。",
+      "tuning_use": "golden_final_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "先解释 src/shop/service.py 里的 checkout 校验和库存顺序。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 4, "end_line": 14}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}, {"path": "src/shop/inventory.py", "start_line": 10, "end_line": 13}],
+            "expected_facts": ["checkout 先校验再 reserve", "校验和库存操作的调用顺序可由 service.py 证明"],
+            "must_retain": ["checkout", "validate_request→reserve"],
+            "allowed_to_forget": ["用户的先字"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "我最近在学篮球",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["不展开篮球内容", "提醒可以继续检查 checkout 或报错"],
+            "must_retain": ["checkout 活动目标"],
+            "allowed_to_forget": ["篮球学习"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "今天心情不错",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["第二次范围外输入仍保持简短自然引导", "不覆盖已有代码目标"],
+            "must_retain": ["checkout 目标没有结束"],
+            "allowed_to_forget": ["心情信息"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "继续说明刚才 checkout 的校验顺序",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 7, "end_line": 13}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["恢复 checkout 上下文", "validate_request 在 reserve 之前执行"],
+            "must_retain": ["checkout", "校验顺序", "篮球和心情都可压缩"],
+            "allowed_to_forget": ["两轮闲聊"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "这个函数还有没有问题？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 7, "end_line": 19}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}, {"path": "src/shop/inventory.py", "start_line": 10, "end_line": 13}],
+            "expected_facts": ["这个函数应指向当前 checkout 目标", "分析必须基于实际校验、库存和返回构造证据，不凭空宣称存在或不存在 Bug"],
+            "must_retain": ["当前指代是 checkout", "已有证据范围"],
+            "allowed_to_forget": ["篮球和天气心情"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-013-context-compaction",
+      "family": "long-session-fact-retention",
+      "split": "golden",
+      "language": "zh",
+      "scenario": "context_compaction",
+      "difficulty": "hard",
+      "tags": ["long_history", "compaction", "forget_noise", "fact_summary", "cache_context"],
+      "description": "超过短上下文窗口后，要求保留多组代码事实并压缩问候和闲聊。",
+      "tuning_use": "golden_final_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请解释 src/shop/config.py 的 DEFAULT_CURRENCY。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/config.py", "start_line": 3, "end_line": 3}],
+            "expected_facts": ["DEFAULT_CURRENCY 的值是 USD"],
+            "must_retain": ["DEFAULT_CURRENCY=USD"],
+            "allowed_to_forget": ["t1 的问句"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "嗨",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然回应，不创建新目标"],
+            "must_retain": ["DEFAULT_CURRENCY=USD"],
+            "allowed_to_forget": ["嗨"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "我今天吃了面",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["简短引导回代码助手范围"],
+            "must_retain": ["DEFAULT_CURRENCY=USD"],
+            "allowed_to_forget": ["吃面"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "请看 src/shop/pricing.py 的 unit_price 实现。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 3, "end_line": 8}],
+            "expected_facts": ["unit_price 按 sku 查 PRICE_CENTS", "当前有 book 和 pen 的静态单价"],
+            "must_retain": ["DEFAULT_CURRENCY=USD", "unit_price 查表"],
+            "allowed_to_forget": ["吃面内容"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "谢谢",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["简短回应感谢，不改变活动代码目标"],
+            "must_retain": ["DEFAULT_CURRENCY=USD", "unit_price 查表"],
+            "allowed_to_forget": ["谢谢"]
+          }
+        },
+        {
+          "turn_id": "t6",
+          "user_message": "src/shop/inventory.py 的 reserve 如何判断库存？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/inventory.py", "start_line": 6, "end_line": 13}],
+            "expected_facts": ["available 比较 STOCK 中的数量", "不足时 reserve 抛 ValueError", "成功时减少 STOCK"],
+            "must_retain": ["DEFAULT_CURRENCY=USD", "unit_price 查表", "reserve 的库存判断"],
+            "allowed_to_forget": ["感谢表达"]
+          }
+        },
+        {
+          "turn_id": "t7",
+          "user_message": "再看 src/shop/api.py 的返回字段。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/api.py", "start_line": 12, "end_line": 18}],
+            "expected_facts": ["create_order 返回 sku、quantity、total_cents、currency"],
+            "must_retain": ["前面的三组代码事实", "api.py 返回字段"],
+            "allowed_to_forget": ["问候和感谢"]
+          }
+        },
+        {
+          "turn_id": "t8",
+          "user_message": "我喜欢看球",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["不展开球类话题", "保留已有代码上下文"],
+            "must_retain": ["DEFAULT_CURRENCY", "unit_price", "reserve", "api 返回字段"],
+            "allowed_to_forget": ["看球"]
+          }
+        },
+        {
+          "turn_id": "t9",
+          "user_message": "解释 src/shop/validation.py 对 quantity 的检查。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["quantity <= 0 会抛 ValueError", "sku 为空也会抛 ValueError"],
+            "must_retain": ["至少保留 validation.py 事实", "此前关键 checkout 相关事实"],
+            "allowed_to_forget": ["看球"]
+          }
+        },
+        {
+          "turn_id": "t10",
+          "user_message": "你可以做什么",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["介绍可以理解、定位和修改仓库代码", "不把历史代码事实编成能力宣传"],
+            "must_retain": ["代码 Session 的活动目标和摘要"],
+            "allowed_to_forget": ["能力介绍问句本身"]
+          }
+        },
+        {
+          "turn_id": "t11",
+          "user_message": "请分析 src/shop/shipping/workflow.py 的 ETA 计算。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 22}],
+            "expected_facts": ["estimated_arrival_at 将 dispatched_at 加 transit_days 天"],
+            "must_retain": ["DEFAULT_CURRENCY", "reserve", "quantity 校验", "ETA 公式"],
+            "allowed_to_forget": ["能力介绍和看球"]
+          }
+        },
+        {
+          "turn_id": "t12",
+          "user_message": "请在 workflow.py 和 config.py 中归纳前面提到的 currency、库存和 ETA，别混淆它们。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/config.py", "start_line": 3, "end_line": 4}, {"path": "src/shop/inventory.py", "start_line": 6, "end_line": 13}, {"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 22}],
+            "expected_facts": ["currency 是 config.py 的 DEFAULT_CURRENCY=USD", "库存由 inventory.py 的 STOCK/available/reserve 管理", "ETA 是 workflow.py 根据 dispatched_at 和 transit_days 计算的时间"],
+            "must_retain": ["DEFAULT_CURRENCY=USD", "库存 reserve 规则", "ETA 公式", "三者属于不同模块和概念"],
+            "allowed_to_forget": ["所有问候、感谢、吃面、看球和能力介绍"],
+            "context_expectation": {"compaction_allowed": true, "noise_should_be_omitted": true, "facts_must_survive": true}
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-014-docs-code-conflict",
+      "family": "record-doc-code-precedence",
+      "split": "golden",
+      "language": "zh",
+      "scenario": "documentation_conflict",
+      "difficulty": "hard",
+      "tags": ["docs_vs_code", "same_name", "signature", "false_premise"],
+      "description": "先引用文档，再要求以实际源码和函数签名为准。",
+      "tuning_use": "golden_final_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "先读 docs/record-lookups.md，它说 customer record lookup 的标准入口是什么？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "docs/record-lookups.md", "start_line": 3, "end_line": 8}],
+            "expected_facts": ["文档把 find_record 称为标准 lookup", "文档同时提醒 admin 也有同名 lookup"],
+            "must_retain": ["文档只是导航和说明", "存在 customer/admin 两个同名实现"],
+            "allowed_to_forget": ["文档标题"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "现在对照 src/shop/customer/records.py，真正的 owner 校验在哪里？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["owner 校验在 customer find_record 的 if 条件中", "不匹配时抛 LookupError"],
+            "must_retain": ["代码优先于文档泛称", "customer owner 校验"],
+            "allowed_to_forget": ["文档的导航措辞"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "admin/records.py 的同名函数是不是也要求 customer_id？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["admin find_record 只接收 record_id", "它不接收 customer_id，也没有 customer owner 校验"],
+            "must_retain": ["admin 签名只有 record_id", "与 customer 版本不同"],
+            "allowed_to_forget": ["customer 行的 owner 值"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "文档里的 standard lookup 能覆盖 admin 版本吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "docs/record-lookups.md", "start_line": 3, "end_line": 8}, {"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["文档的 standard 是概念性导航，不改变 admin 函数的模块和签名", "admin 仍是 back-office scope"],
+            "must_retain": ["文档与实现的职责不同", "admin scope"],
+            "allowed_to_forget": ["文档中的重复 find_record 描述"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "调用 customer find_record 时只传 record_id，证据显示会怎样？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["函数签名要求 record_id 和 customer_id 两个参数", "只传一个参数不满足 Python 调用契约"],
+            "must_retain": ["customer_id 必填", "不能套用 admin 签名"],
+            "allowed_to_forget": ["standard 这个文档术语"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-015-general-capability",
+      "family": "general-capability-to-code",
+      "split": "golden",
+      "language": "zh",
+      "scenario": "general_chat",
+      "difficulty": "easy",
+      "tags": ["greeting", "capability", "route_switch", "goodbye"],
+      "description": "测试普通聊天出口存在时不会误走代码检索，随后仍能切回代码理解。",
+      "tuning_use": "golden_final_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "您好",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然回应问候", "可以说明 CodeInsight 的业务范围"],
+            "must_retain": ["助手业务范围"],
+            "allowed_to_forget": ["尚不存在的代码问题"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "你是谁",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["回答自己是 CodeInsight 代码理解和修改助手", "不声称自己是开放域百科助手"],
+            "must_retain": ["业务范围说明"],
+            "allowed_to_forget": ["上一轮问候"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "你能做什么",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["说明可理解仓库、定位证据、分析和修改代码", "不把没有证据的生产能力写进介绍"],
+            "must_retain": ["代码助手定位"],
+            "allowed_to_forget": ["能力问法"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "我想检查 src/shop/service.py 的 checkout",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 4, "end_line": 19}],
+            "expected_facts": ["切换到代码理解入口", "checkout 包含校验、reserve、计价和 Receipt 构造"],
+            "must_retain": ["checkout 新的活动目标"],
+            "allowed_to_forget": ["开放域能力宣传的表面措辞"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "再见",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然回应告别", "不清除已记录的 checkout Session 事实"],
+            "must_retain": ["checkout 目标可被恢复"],
+            "allowed_to_forget": ["告别语"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-016-noisy-shipping-holdout",
+      "family": "shipping-sla-noisy-holdout",
+      "split": "holdout",
+      "language": "zh",
+      "scenario": "scope_redirect",
+      "difficulty": "hard",
+      "tags": ["holdout", "noise", "scope_redirect", "docs_not_code", "alias", "insufficient_database_evidence"],
+      "description": "含日志、别名和无关插话的 holdout，验证模型是否仍能回到精确源码证据。",
+      "tuning_use": "final_only",
+      "holdout_policy": "never_tune",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "我在日志里看到 ETA/SLA，别把 docs 当实现，请定位 src/shop/shipping/workflow.py 的 service_level_deadline。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 25, "end_line": 26}],
+            "expected_facts": ["service_level_deadline 使用 opened_at 和 response_hours", "代码实现优先于 docs 中的别名描述"],
+            "must_retain": ["service_level_deadline", "不要把 docs 当实现"],
+            "allowed_to_forget": ["日志这个背景词"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "workflow.py 的 service_level_deadline 是加 response_hours，还是加 transit_days？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 26}],
+            "expected_facts": ["service_level_deadline 加 response_hours 小时", "transit_days 属于 estimated_arrival_at 的计算"],
+            "must_retain": ["response_hours→SLA", "transit_days→ETA"],
+            "allowed_to_forget": ["第一轮的日志背景"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "顺便问下你喜欢什么球",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["不回答个人偏好细节", "自然引导回 ETA/SLA 或源码问题"],
+            "must_retain": ["SLA/ETA 当前目标"],
+            "allowed_to_forget": ["球类偏好"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "回到刚才，ETA 和 SLA 会不会来自同一个函数？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 26}],
+            "expected_facts": ["ETA 和 SLA 来自两个不同函数", "两者输入时间字段和偏移单位不同"],
+            "must_retain": ["ETA/SLA 两函数边界"],
+            "allowed_to_forget": ["球类闲聊"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "不要猜数据库，说明当前代码能证明到哪里。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 26}],
+            "expected_facts": ["当前代码只能证明两个时间函数的计算公式", "不能据此证明数据库写入、查询或持久化行为"],
+            "must_retain": ["证据边界", "不能猜数据库"],
+            "allowed_to_forget": ["用户对球的提问"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-017-validation-change-holdout",
+      "family": "validation-fix-approval-holdout",
+      "split": "holdout",
+      "language": "zh",
+      "scenario": "change_approval_boundary",
+      "difficulty": "hard",
+      "tags": ["holdout", "bug_check", "change_request", "approval_boundary"],
+      "description": "验证多轮确认校验行为后，修改请求不会跳过审批。",
+      "tuning_use": "final_only",
+      "holdout_policy": "never_tune",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "解释 src/shop/validation.py 的 validate_request 如何检查输入。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["sku 为空时抛 ValueError", "quantity <= 0 时抛 ValueError"],
+            "must_retain": ["validate_request 两条校验"],
+            "allowed_to_forget": ["函数外的调用链"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "quantity=0 会在哪里被拒绝？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["validate_request 的 if request.quantity <= 0 分支拒绝 quantity=0"],
+            "must_retain": ["quantity=0→validate_request"],
+            "allowed_to_forget": ["sku 分支的错误文本"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "这个校验失败会不会发生在 reserve 之前？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 7, "end_line": 13}, {"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["checkout 先 validate_request 后 reserve", "quantity 校验失败时不会进入 reserve"],
+            "must_retain": ["调用顺序", "修改目标仍是校验问题"],
+            "allowed_to_forget": ["t1 的完整解释"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "修复这个校验，并保留 sku 为空的错误信息。",
+          "expected": {
+            "task_type": "change",
+            "goal_action": "replace",
+            "outcome": "approval_required",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/validation.py", "start_line": 6, "end_line": 10}],
+            "expected_facts": ["修改请求必须明确展示 diff", "sku 为空的既有错误信息属于保留约束", "应用前必须审批"],
+            "must_retain": ["quantity 校验问题", "sku 错误信息不可丢失", "validation.py"],
+            "allowed_to_forget": ["reserve 调用的非必要细节"],
+            "change_contract": {"must_require_approval": true, "must_not_write_source_fixture": true}
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-018-mixed-record-holdout",
+      "family": "mixed-record-scope-holdout",
+      "split": "holdout",
+      "language": "zh-en",
+      "scenario": "negative_write_intent",
+      "difficulty": "hard",
+      "tags": ["holdout", "zh_en", "mixed_language", "scope_confusion", "negated_write_intent"],
+      "description": "混合语言比较两个记录入口，并加入否定修改意图的路由压力。",
+      "tuning_use": "final_only",
+      "holdout_policy": "never_tune",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "customer portal 里的 record lookup 是 src/shop/customer/records.py 哪个 implementation？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["customer 模块的 find_record 接收 record_id 和 customer_id", "它执行 owner 校验并返回 customer scope"],
+            "must_retain": ["customer record lookup", "customer/records.py"],
+            "allowed_to_forget": ["portal 这个产品词"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "Then compare src/shop/admin/records.py，does it need customer_id?",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}, {"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["admin find_record 不需要 customer_id", "customer 版本需要 customer_id"],
+            "must_retain": ["admin/customer 参数差异"],
+            "allowed_to_forget": ["英文 Then compare"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "这两个 scope/status 字段能否说明它们其实是同一个入口？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}, {"path": "src/shop/admin/records.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["返回字段相似不代表模块和权限边界相同", "customer 返回 scope=customer，admin 返回 scope=admin"],
+            "must_retain": ["不同模块、不同 scope", "不能仅凭字段名合并入口"],
+            "allowed_to_forget": ["status 的静态值"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "我只是补充背景，不需要修改代码，请继续解释 customer 版本的 owner check。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["这是解释请求而不是变更请求", "owner 不匹配时 customer 版本拒绝访问"],
+            "must_retain": ["不需要修改代码", "customer owner check"],
+            "allowed_to_forget": ["admin 版本的 status"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "刚才 customer 版本的 owner check 再总结一次。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/customer/records.py", "start_line": 6, "end_line": 11}],
+            "expected_facts": ["根据 record_id 取 row 后比较 owner 与 customer_id", "不匹配抛 LookupError，匹配才返回 customer scope"],
+            "must_retain": ["owner check 完整流程"],
+            "allowed_to_forget": ["中英混合的表面表达"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-019-memory-correction-holdout",
+      "family": "currency-source-correction",
+      "split": "holdout",
+      "language": "zh",
+      "scenario": "memory_correction",
+      "difficulty": "hard",
+      "tags": ["holdout", "false_premise", "correction", "source_of_truth", "scope_redirect"],
+      "description": "用户先提出错误来源假设，再纠正问题，要求 Session 以后保留修正后的事实。",
+      "tuning_use": "final_only",
+      "holdout_policy": "never_tune",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请解释 src/shop/config.py 的 DEFAULT_CURRENCY 是什么。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/config.py", "start_line": 3, "end_line": 3}],
+            "expected_facts": ["DEFAULT_CURRENCY 定义为 USD"],
+            "must_retain": ["DEFAULT_CURRENCY=USD"],
+            "allowed_to_forget": ["初始问句"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "我猜默认币种在 service.py 里硬编码，对吗？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 1, "end_line": 3}, {"path": "src/shop/config.py", "start_line": 3, "end_line": 3}],
+            "expected_facts": ["service.py 从 config.py 导入 DEFAULT_CURRENCY", "不是在 service.py 中直接写死 USD"],
+            "must_retain": ["错误假设已被纠正", "真实来源是 config.py"],
+            "allowed_to_forget": ["用户猜测的错误结论"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "不对，我是说最终 Receipt.currency 从哪里来？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 14, "end_line": 19}, {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}, {"path": "src/shop/config.py", "start_line": 3, "end_line": 3}],
+            "expected_facts": ["checkout 构造 Receipt 时把 DEFAULT_CURRENCY 赋给 currency", "Receipt.currency 保存该字段"],
+            "must_retain": ["Receipt.currency 来源链", "config.py→service.py→Receipt"],
+            "allowed_to_forget": ["service.py 硬编码的错误假设"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "请记住它来自配置常量，不是模型自行推断；再确认 config.py 里当前值。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/config.py", "start_line": 3, "end_line": 3}],
+            "expected_facts": ["config.py 中 DEFAULT_CURRENCY 当前为 USD", "来源是仓库配置和调用链，不是模型推断"],
+            "must_retain": ["修正后的 currency 来源", "DEFAULT_CURRENCY=USD"],
+            "allowed_to_forget": ["之前的错误前提"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "我喜欢科比",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["不展开无关个人偏好", "自然引导回 currency 或其他代码问题"],
+            "must_retain": ["修正后的 currency 来源事实"],
+            "allowed_to_forget": ["球员偏好"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-020-four-round-lane-recheck",
+      "family": "four-round-lane-recheck",
+      "split": "holdout",
+      "language": "zh",
+      "scenario": "four_round_stability",
+      "difficulty": "hard",
+      "tags": ["holdout", "four_round", "explain_then_recheck", "mixed_noise"],
+      "description": "四轮只读验收链：理解函数、判断 bug、检查相邻 ETA 逻辑、最后复查前述风险。",
+      "tuning_use": "final_only",
+      "holdout_policy": "never_tune",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "从配送实现看，src/shop/shipping/workflow.py 的 choose_dispatch_lane 如何用 region 与 fragile 选择返回线路？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["fragile 为真返回 fragile-courier", "否则按 region 从 local/domestic/remote 映射中取线路"],
+            "must_retain": ["choose_dispatch_lane", "region", "fragile"],
+            "allowed_to_forget": ["配送实现这个背景短语"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "结合上一轮，未知 region 是不是一个真实缺陷？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}],
+            "expected_facts": ["在 fragile 为假且 region 未登记时，lanes[region] 会抛 KeyError", "这能支持存在未处理输入分支的风险，但不能单凭它断言业务修复方案"],
+            "must_retain": ["未知 region 风险", "fragile 分支不受该索引影响"],
+            "allowed_to_forget": ["第一轮的完整复述"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "除这个问题外，再看看 workflow.py 的 ETA 逻辑有没有明显问题。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 22}],
+            "expected_facts": ["ETA 逻辑是 dispatched_at 加 transit_days 天", "该片段没有显示额外异常，但仍应说明判断只覆盖当前证据"],
+            "must_retain": ["未知 region 风险仍存在", "ETA 公式和证据范围"],
+            "allowed_to_forget": ["fragile 线路的映射细节可在摘要中压缩"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "最后再检查 workflow.py 现在还有没有前面提到的问题？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/shipping/workflow.py", "start_line": 11, "end_line": 13}, {"path": "src/shop/shipping/workflow.py", "start_line": 21, "end_line": 22}],
+            "expected_facts": ["如果没有实际应用补丁，未知 region 风险仍然存在", "ETA 计算与未知 region 是两个独立逻辑", "不能把分析结论说成代码已修复"],
+            "must_retain": ["未执行修改", "未知 region 仍是风险", "ETA 独立"],
+            "allowed_to_forget": ["无关闲聊和第一轮措辞"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-021-refund-boundary-extension",
+      "family": "refund-missing-integration-facts",
+      "split": "dev",
+      "language": "zh",
+      "scenario": "insufficient_evidence",
+      "difficulty": "medium",
+      "tags": ["insufficient_evidence", "provider_boundary", "endpoint_boundary", "state_semantics"],
+      "description": "补足退款问题的多轮证据边界样本：本地状态不能冒充外部支付完成。",
+      "tuning_use": "dev_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请分析 src/shop/refunds.py 的 refund_summary 能否确认外部支付已经完成？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/refunds.py", "start_line": 9, "end_line": 10}],
+            "expected_facts": ["refund_summary 只读取 record 的 order_id 和 state 并拼接文本", "不能由此确认外部支付已完成"],
+            "must_retain": ["refund_summary", "外部支付完成证据不足"],
+            "allowed_to_forget": ["用户的疑问语气"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "那在 refunds.py 里 state=queued 到底能证明什么？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/refunds.py", "start_line": 4, "end_line": 6}],
+            "expected_facts": ["queued 是 prepare_refund 返回的本地状态值", "它不能证明 provider 已执行或银行已到账"],
+            "must_retain": ["queued 只代表本地排队/准备状态", "不可外推到账"],
+            "allowed_to_forget": ["refund_summary 的字符串格式"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "refunds.py 里 provider、endpoint 和银行回执现在各自缺什么？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "insufficient_evidence",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/refunds.py", "start_line": 1, "end_line": 10}],
+            "expected_facts": ["fixture 没有 provider 选择、endpoint、鉴权或银行回执确认代码", "只能报告缺口，不能猜具体供应商"],
+            "must_retain": ["provider/endpoint/回执均缺证据", "不要猜测"],
+            "allowed_to_forget": ["queued 的具体拼写"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "辛苦了",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然回应感谢，不把未知退款事实说成已确认"],
+            "must_retain": ["退款证据边界"],
+            "allowed_to_forget": ["感谢措辞"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-022-smalltalk-pricing-regression",
+      "family": "smalltalk-pricing-resume",
+      "split": "regression",
+      "language": "zh",
+      "scenario": "smalltalk_interleave",
+      "difficulty": "medium",
+      "tags": ["smalltalk", "scope_redirect", "resume", "pricing"],
+      "description": "在价格问题前后加入英文问候和无关天气话题，检查目标是否能恢复。",
+      "tuning_use": "regression_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "hello",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然回应问候并保持 CodeInsight 业务定位"],
+            "must_retain": ["尚无代码目标"],
+            "allowed_to_forget": ["hello"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "我喜欢游泳",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["不展开游泳话题", "把用户引导到文件、函数或报错"],
+            "must_retain": ["仍无价格代码目标"],
+            "allowed_to_forget": ["游泳"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "解释 src/shop/pricing.py 的 unit_price",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 3, "end_line": 8}],
+            "expected_facts": ["unit_price 根据 sku 返回 PRICE_CENTS 的值", "book 和 pen 是当前静态键"],
+            "must_retain": ["pricing.py", "unit_price 查表"],
+            "allowed_to_forget": ["游泳话题"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "今天天气很热",
+          "expected": {
+            "task_type": "scope_redirect",
+            "goal_action": "preserve",
+            "outcome": "redirected",
+            "requires_model": false,
+            "evidence": [],
+            "expected_facts": ["简短承接天气后回到 unit_price 或 pricing.py"],
+            "must_retain": ["unit_price 目标"],
+            "allowed_to_forget": ["天气"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "继续看 pricing.py 的未知 sku 行为",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/pricing.py", "start_line": 6, "end_line": 8}],
+            "expected_facts": ["未知 sku 直接索引 PRICE_CENTS，可能抛 KeyError", "源码没有默认价格分支"],
+            "must_retain": ["pricing.py", "未知 sku 行为", "unit_price"],
+            "allowed_to_forget": ["天气和游泳"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-023-mixed-fulfillment-golden",
+      "family": "mixed-fulfillment-no-write",
+      "split": "golden",
+      "language": "zh-en",
+      "scenario": "mixed_language_trace",
+      "difficulty": "hard",
+      "tags": ["zh_en", "mixed_language", "negative_write_intent", "three_hop", "golden"],
+      "description": "中英混合追踪 fulfillment，并明确只读确认而不修改文件。",
+      "tuning_use": "golden_final_only",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "Please trace src/shop/fulfillment/entrypoint.py to ledger.py。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/entrypoint.py", "start_line": 6, "end_line": 12}, {"path": "src/shop/fulfillment/pipeline.py", "start_line": 6, "end_line": 13}, {"path": "src/shop/fulfillment/ledger.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["入口读取并转换 payload", "pipeline 设定 planned", "ledger 增加 record_type 并存入列表"],
+            "must_retain": ["entrypoint→pipeline→ledger", "planned", "record_type"],
+            "allowed_to_forget": ["Please trace 的表面表达"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "What does record_type mean in ledger.py?",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/ledger.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["record_type 被写成 fulfillment", "它是存储记录上的类型标记"],
+            "must_retain": ["record_type=fulfillment", "ledger.py"],
+            "allowed_to_forget": ["入口字段转换"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "我不想改文件，只想确认 destination 是不是 required。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/entrypoint.py", "start_line": 6, "end_line": 12}],
+            "expected_facts": ["入口直接读取 payload['destination']", "在当前 fixture 中 destination 是入口所需字段", "本轮不应进入修改应用"],
+            "must_retain": ["只读确认", "destination 必读", "不修改文件"],
+            "allowed_to_forget": ["record_type 的英文问法"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "then in pipeline.py and ledger.py summarize planned and stored record 的差异。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/fulfillment/pipeline.py", "start_line": 6, "end_line": 13}, {"path": "src/shop/fulfillment/ledger.py", "start_line": 6, "end_line": 9}],
+            "expected_facts": ["planned 是 pipeline 构造的中间字典", "stored record 在 ledger 增加 record_type 后加入 FULFILLMENT_RECORDS"],
+            "must_retain": ["planned 与 stored record 的顺序差异", "不修改文件"],
+            "allowed_to_forget": ["destination 的提问语气"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "好的",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然回应确认，不清除 fulfillment 上下文"],
+            "must_retain": ["fulfillment 调用链"],
+            "allowed_to_forget": ["好的"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "conv-024-four-round-receipt-holdout",
+      "family": "four-round-receipt-recheck",
+      "split": "holdout",
+      "language": "zh",
+      "scenario": "four_round_stability",
+      "difficulty": "hard",
+      "tags": ["holdout", "four_round", "cross_file", "negative_write_intent", "field_consistency"],
+      "description": "四轮检查 create_order、checkout 和 Receipt 的字段链，最后确认分析没有越界为修改。",
+      "tuning_use": "final_only",
+      "holdout_policy": "never_tune",
+      "turns": [
+        {
+          "turn_id": "t1",
+          "user_message": "请解释 src/shop/api.py 的 create_order 返回哪些 Receipt 字段。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "create",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/api.py", "start_line": 12, "end_line": 18}, {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}],
+            "expected_facts": ["返回 sku、quantity、total_cents、currency", "这些字段来自 Receipt"],
+            "must_retain": ["create_order 返回字段", "Receipt"],
+            "allowed_to_forget": ["字段提问的礼貌前缀"]
+          }
+        },
+        {
+          "turn_id": "t2",
+          "user_message": "这些字段的 currency 是否来自 config.py？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 14, "end_line": 19}, {"path": "src/shop/config.py", "start_line": 3, "end_line": 3}],
+            "expected_facts": ["checkout 将 DEFAULT_CURRENCY 赋给 Receipt.currency", "DEFAULT_CURRENCY 定义在 config.py"],
+            "must_retain": ["currency 来源链", "config.py"],
+            "allowed_to_forget": ["api 返回字段的顺序"]
+          }
+        },
+        {
+          "turn_id": "t3",
+          "user_message": "我只想继续确认，不要求修改：service.py 里是怎样构造 Receipt 的？",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/service.py", "start_line": 11, "end_line": 19}, {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}],
+            "expected_facts": ["checkout 在通过校验、库存和计价后构造 Receipt", "sku、quantity、total_cents 和 DEFAULT_CURRENCY 被传入 Receipt", "本轮是只读解释"],
+            "must_retain": ["不要求修改", "Receipt 构造链"],
+            "allowed_to_forget": ["currency 的重复提问"]
+          }
+        },
+        {
+          "turn_id": "t4",
+          "user_message": "最后检查 create_order、checkout 和 Receipt 的字段链是否一致。",
+          "expected": {
+            "task_type": "explain",
+            "goal_action": "continue",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [{"path": "src/shop/api.py", "start_line": 7, "end_line": 18}, {"path": "src/shop/service.py", "start_line": 11, "end_line": 19}, {"path": "src/shop/models.py", "start_line": 12, "end_line": 17}],
+            "expected_facts": ["create_order 从 payload 构造 request 并调用 checkout", "checkout 产出 Receipt", "api.py 返回 Receipt 的四个公开字段"],
+            "must_retain": ["create_order→checkout→Receipt→返回字段", "只做分析未应用修改"],
+            "allowed_to_forget": ["无关的闲聊内容"]
+          }
+        },
+        {
+          "turn_id": "t5",
+          "user_message": "晚安",
+          "expected": {
+            "task_type": "general_chat",
+            "goal_action": "preserve",
+            "outcome": "answered",
+            "requires_model": true,
+            "evidence": [],
+            "expected_facts": ["自然回应告别，不把只读分析说成代码已修改"],
+            "must_retain": ["Receipt 字段链"],
+            "allowed_to_forget": ["告别语"]
+          }
+        }
+      ]
+    }
+  ]
+}

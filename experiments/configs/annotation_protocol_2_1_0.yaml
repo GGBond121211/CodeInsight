@@ -1,0 +1,42 @@
+schema_version: 1
+protocol_id: "conversation-semantic-review-2.1.0"
+version: "2.1.0"
+dataset: "conversation_2_1_0"
+
+reviewer_policy:
+  authorized_reviewer: "codex-agent-source-audit"
+  user_instruction: "用户已明确授权由 Agent 完成原本需要人工完成的语义审查。"
+  independent_human_review: "deferred"
+  claim_limit: "通过本协议只能升级到 READY_FOR_MODEL_PILOT，不能冒充双人盲审或 READY_FOR_FINAL。"
+
+review_order:
+  - "先读取对应 fixture 源码，不以模型回答作为 gold"
+  - "核对每轮 user_message 是否能触发期望的业务意图"
+  - "核对 task_type、goal_action 和 outcome 是否与用户体验契约一致"
+  - "逐条核对 expected_facts 是否能被 evidence 行区间支持"
+  - "核对 must_retain 与 allowed_to_forget 是否分别属于任务事实和噪声"
+  - "核对 change 轮是否明确 approval_required 且禁止直接写 fixture"
+  - "争议或证据不足时降级为 insufficient_evidence，不猜测补全"
+
+decision_enum:
+  pass: "证据、任务目标和上下文策略一致"
+  reject: "事实错误、行号错误、任务不可执行或存在泄漏"
+  needs_arbitration: "需要第二位审查者才能作出最终语义判断；本轮不得进入 final"
+
+required_review_fields:
+  - case_id
+  - reviewer
+  - review_version
+  - source_commit
+  - turn_count
+  - evidence_turn_count
+  - decision
+  - evidence_basis
+  - notes
+
+coverage_policy:
+  automated_structural_review: "100%"
+  agent_semantic_source_audit: "100% of conversation cases"
+  human_double_blind_review: "not_completed"
+  model_quality_claim: "only after real provider pilot; no LLM judge substitutes for source audit"
+

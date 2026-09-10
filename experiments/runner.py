@@ -65,6 +65,9 @@ DATASET_TASK_TYPES: dict[str, str] = {
     "httpx_answer_8": "comprehension",
     "answer_13": "comprehension",
     "retrieval_27": "comprehension",
+    # 题型 C：同一 Session 的多轮体验。它与单轮 comprehension 分开报告，
+    # 因为它同时测量入口切换、目标延续、上下文保留和范围引导。
+    "conversation_2_1_0": "conversation_quality",
     # 题型 B：代码修改。2.0 能力主指标的唯一来源。
     "change_tasks_l1": "code_modification",
     "swebench_l2": "code_modification",

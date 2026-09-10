@@ -4,10 +4,21 @@
 # 用户指定候选和实验尚未决定的变量分开，防止把计划值误写成线上值。
 
 schema_version: 1
-baseline_id: "codeinsight-2.1.0-experiment-baseline-20260908"
+baseline_id: "codeinsight-2.1.0-experiment-baseline-20260910"
 version: "2.1.0"
 status: frozen_for_experiment_setup
 created_at: "2026-09-08"
+updated_at: "2026-09-10"
+supersedes: "codeinsight-2.1.0-experiment-baseline-20260908"
+
+# 基线的每次事实变化在此留痕；旧值不静默覆盖。
+revisions:
+  - date: "2026-09-10"
+    baseline_id: "codeinsight-2.1.0-experiment-baseline-20260910"
+    changes:
+      - "Q-003（用户决定，提交 a32782e）：public 搜索默认 final Top-K 由 5 改为 10；本文件把它从候选登记为 runtime_actual。10 相对 5 的收益仍未做 A/B。"
+      - "Q-001（提交 8131e63）：temporary_30 清单的 primary_sparse_mode 由 ast-bm25/graph-bm25 改为 sparse；文件由 backend/tests/evals/build_temporary_30_ablation_manifest.py 重建后按新内容登记 sha256。"
+    rule: "只登记已经发生的事实变化；这不是实验结果，也不把候选写成已验证的更优值。"
 
 source:
   base_release: "v2.0.3"
@@ -38,10 +49,11 @@ runtime_actual:
       source_weights: {dense: 1.0, sparse: 1.0}
       source: "backend/src/codeinsight/retrieval/hybrid.py:11-14"
     hybrid_candidate_limit: 100
-    default_final_top_k: 5
+    default_final_top_k: 10
+    default_final_top_k_note: "2026-09-10 起为运行时默认（Q-003 用户决定，提交 a32782e）；尚未用 A/B 证明 10 优于 5"
     source:
-      candidate_limit: "backend/src/codeinsight/application/search_repository.py:23,81,118"
-      default_top_k: "backend/src/codeinsight/application/auto_answer_repository.py:60"
+      candidate_limit: "backend/src/codeinsight/application/search_repository.py:35-37"
+      default_top_k: "backend/src/codeinsight/application/search_repository.py:38；backend/src/codeinsight/application/auto_answer_repository.py:61"
     reranker:
       strategy: "aliyun_qwen37_text_rerank"
       status: "interface_smoke_passed_quality_unverified"
@@ -74,20 +86,20 @@ experiment_profiles:
   control:
     id: "fixed-80-00-candidate-100-topk-5"
     owner: "experiment"
-    source: "runtime_actual"
+    source: "previous_runtime_default_before_20260910"
     chunking: "fixed_lines:80/0.0"
     hybrid_candidate_limit: 100
     final_top_k: 5
-    purpose: "2.1.0 所有检索对照的可比控制组"
+    purpose: "2.1.0 检索对照的值；2026-09-10 之前曾是运行时默认值"
   user_selected_candidate:
     id: "fixed-80-00-candidate-100-topk-10"
     owner: "user"
-    status: "unverified_candidate"
+    status: "adopted_as_runtime_default_unvalidated"
     chunking: "fixed_lines:80/0.0"
     hybrid_candidate_limit: 100
     final_top_k: 10
-    purpose: "验证用户在 2.0 阶段指定的 100/10 是否比当前 100/5 更有收益"
-    rule: "没有实验结果前，不把 Top-K=10 改成产品默认值"
+    purpose: "用户在 2.0 阶段指定的 100/10；2026-09-10 由 Q-003 决定设为运行时默认"
+    rule: "已是运行时默认值；仍必须做 5 vs 10 的 A/B，不得把默认值当成已验证的更优值"
   structural_candidate:
     id: "structural-v1"
     owner: "user_selected_candidate"
@@ -107,6 +119,7 @@ selection_ownership:
     - repo_content_trust_level
   user_selected_unverified:
     - "candidate_profile:fixed-80-00-candidate-100-topk-10"
+    # 2026-09-10：Top-K=10 已成为运行时默认（Q-003），但仍未验证优于 5。
     - "candidate_profile:structural-v1"
     - "reranker:aliyun_qwen37_text_rerank"
   experiment_decided: []
@@ -146,7 +159,7 @@ datasets:
     role: "历史融合与负结果回归；不与 Master-200 相加成新质量数字"
   temporary_30:
     path: "backend/tests/evals/temporary_30_ablation_manifest.json"
-    sha256: "3b33e03f5732ddd626898449687265cdb586b7e8cf58c3d62b491573b6e8b507"
+    sha256: "f9657cc6e91b07bd9dd046a0d8aea754c85efff1849e22effcb73dd7e843cd80"
     cases: 30
     role: "临时消融和机制观察，不进入正式最终质量结论"
   conversation_2_1_0:

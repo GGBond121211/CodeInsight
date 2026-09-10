@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "addition_id": "conversation-additions-2.1.0",
+  "dataset": "conversation_2_1_0",
+  "base_fixture": "tests/fixtures/sample_repo",
+  "source_commit": "bf69022d63c74e0bf07ceaa12cf0bf002d269eca",
+  "added_case_count": 4,
+  "added_turn_count": 19,
+  "added_case_ids": [
+    "conv-021-refund-boundary-extension",
+    "conv-022-smalltalk-pricing-regression",
+    "conv-023-mixed-fulfillment-golden",
+    "conv-024-four-round-receipt-holdout"
+  ],
+  "gap_targets": [
+    "补足证据不足链的独立 case 数",
+    "补足闲聊插入后恢复代码目标的回归链",
+    "补足中英混合和否定修改意图",
+    "补足四轮字段链 holdout"
+  ],
+  "authoring_policy": "源码事实由 Agent 逐条审查；不复制旧问题，不保存模型答案，不把新增样本直接用于最终结论。"
+}

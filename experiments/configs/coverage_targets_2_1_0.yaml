@@ -1,0 +1,70 @@
+schema_version: 1
+target_id: "conversation-coverage-2.1.0"
+dataset: "conversation_2_1_0"
+
+# 这里的 minimum 是“覆盖缺口”门槛，不是模型通过率门槛。
+case_targets:
+  minimum_case_count: 16
+  required_split_count: 4
+  minimum_turns_per_case: 4
+  minimum_cases_by_scenario:
+    smalltalk_interleave: 2
+    mixed_language_trace: 2
+    context_compaction: 1
+    change_approval_boundary: 2
+    insufficient_evidence: 2
+    four_round_stability: 2
+    documentation_conflict: 2
+  minimum_cases_by_language:
+    zh: 12
+    zh-en: 4
+
+turn_targets:
+  minimum_task_type_count:
+    explain: 60
+    general_chat: 8
+    scope_redirect: 8
+    change: 3
+    clarify: 1
+  minimum_context_signal_count:
+    must_retain: 80
+    allowed_to_forget: 80
+    evidence_bearing_turns: 60
+  minimum_noise_tags:
+    smalltalk: 3
+    mixed_language: 4
+    false_premise: 3
+    scope_redirect: 3
+
+statistical_policy:
+  route_accuracy:
+    minimum_detectable_difference: 0.15
+    minimum_case_count: 20
+    conclusion: "20 条只能做方向性观察；不能作为稳定生产错误率"
+  required_fact_recall:
+    minimum_detectable_difference: 0.15
+    minimum_case_count: 20
+    conclusion: "按 case 聚合；不能按 turn 简单扩大分母"
+  cache_hit_ratio:
+    minimum_detectable_difference: 0.10
+    minimum_case_count: 20
+    conclusion: "受 Prompt、Session、Provider 缓存策略共同影响，只报告观测值"
+  compaction:
+    minimum_detectable_difference: 0.20
+    minimum_case_count: 4
+    conclusion: "只验证长会话是否触发和关键事实是否保留，不宣称最佳预算"
+  change_approval_boundary:
+    minimum_detectable_difference: 0.10
+    minimum_case_count: 3
+    conclusion: "优先看硬门禁；不把等待审批当作修改成功"
+
+conclusion_levels:
+  - "contract_only"
+  - "directional"
+  - "model_pilot"
+  - "final_holdout"
+rules:
+  - "turn 数不能代替独立 case 数"
+  - "同一 family 的改写不能增加有效样本量"
+  - "holdout 不参与上述阈值调优"
+  - "不同 task_type 不计算统一加权总分"

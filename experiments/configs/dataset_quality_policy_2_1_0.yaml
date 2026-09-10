@@ -1,0 +1,132 @@
+schema_version: 1
+policy_id: "codeinsight-2.1.0-dataset-quality"
+version: "2.1.0"
+created_at: "2026-09-08"
+baseline: "experiments/configs/baseline_2_1_0.yaml"
+split_manifest: "experiments/configs/experiment_splits_2_1_0.yaml"
+annotation_protocol: "experiments/configs/annotation_protocol_2_1_0.yaml"
+coverage_targets: "experiments/configs/coverage_targets_2_1_0.yaml"
+
+# 状态含义：数据准入状态，不是模型质量分数。
+readiness_states:
+  - DATASET_BLOCKED
+  - STRUCTURALLY_VALID
+  - READY_FOR_DETERMINISTIC
+  - READY_FOR_MODEL_PILOT
+  - READY_FOR_FINAL
+
+global_rules:
+  hash_mismatch: "DATASET_BLOCKED"
+  count_mismatch: "DATASET_BLOCKED"
+  holdout_in_tuning: "DATASET_BLOCKED"
+  semantic_review_missing: "不能进入 READY_FOR_MODEL_PILOT 或 READY_FOR_FINAL"
+  fake_provider: "只能进入故障契约指标，不得进入模型质量指标"
+  aggregation: "按数据集和实验族分层，不生成跨题型总分"
+  source_of_truth: "数据文件、源码 fixture、baseline、split manifest 和 review 记录共同构成一次可复现输入"
+
+datasets:
+  - id: "master_200"
+    path: "backend/tests/evals/master_200_cases.json"
+    count_field: "cases"
+    expected_count: 200
+    expected_sha256: "8774ec409c4071ec32d07364316962c77e3be3015d9c1cfd11477aa539cf5935"
+    task_type: "comprehension"
+    role: "只读检索和回答回归"
+    validation_mode: "metadata_only"
+    quality_status: "READY_FOR_DETERMINISTIC"
+    allowed_splits: ["regression"]
+    allowed_experiments: ["chunking", "fusion", "embedding", "candidate_and_top_k"]
+    prohibited_conclusions: ["最终泛化", "多轮记忆质量", "完整 Agent 修复成功率"]
+    holdout_status: "missing_independent_holdout"
+
+  - id: "change_tasks_l1"
+    path: "backend/tests/evals/change_eval_manifest.json"
+    count_field: "tasks"
+    expected_count: 34
+    expected_sha256: "16f8ec7dd6eeb5db76f969487ca2ca680def0ee34d372355fe999262c1fc157a"
+    task_type: "code_modification"
+    role: "变更链路、拒答、安全门禁和有限修复契约"
+    validation_mode: "metadata_only"
+    quality_status: "STRUCTURALLY_VALID"
+    allowed_splits: ["regression", "boundary", "security", "reliability", "golden"]
+    allowed_experiments: ["change_contract", "safety_gates"]
+    prohibited_conclusions: ["独立最终 patch success", "完整 SWE-bench resolve"]
+    holdout_status: "missing_independent_holdout"
+    patch_success_rule: "authoring_status=ready_with_reference_patch 才能进入 patch success 分母"
+
+  - id: "swebench_l2"
+    path: "backend/tests/evals/swebench_l2_frozen_80.json"
+    count_field: "cases"
+    expected_count: 80
+    expected_sha256: "aee52d5251b6a8f0d5f1e728df5757c040dfdc926dad9744ce4571c0b2b96368"
+    task_type: "code_modification"
+    role: "外部仓库文件和行定位"
+    validation_mode: "metadata_only"
+    quality_status: "READY_FOR_DETERMINISTIC"
+    allowed_splits: ["dev", "regression", "golden", "holdout"]
+    allowed_experiments: ["localization"]
+    prohibited_conclusions: ["完整修复成功", "模型上下文记忆质量"]
+    holdout_status: "available_final_only"
+
+  - id: "multilingual_100"
+    path: "backend/tests/evals/multilingual_cases.json"
+    count_field: "cases"
+    expected_count: 100
+    expected_sha256: "c181ab8dbf00d8fc309f014f895dba5857178bb7109711552ea1cafb96e603ed"
+    task_type: "comprehension"
+    role: "中文与中英混合单轮鲁棒性"
+    validation_mode: "metadata_only"
+    quality_status: "STRUCTURALLY_VALID"
+    allowed_splits: ["regression"]
+    allowed_experiments: ["language_robustness", "retrieval"]
+    prohibited_conclusions: ["多轮上下文质量", "独立最终泛化"]
+    holdout_status: "missing_independent_holdout"
+
+  - id: "fusion_131"
+    path: "backend/tests/evals/multilingual_cases_fusion.json"
+    count_field: "cases"
+    expected_count: 131
+    expected_sha256: "5442519c227923a4469adcfd59997343bf8b625e823c2ad7ef556ac2ffa8a3a4"
+    task_type: "comprehension"
+    role: "历史融合回归和负结果对照"
+    validation_mode: "metadata_only"
+    quality_status: "STRUCTURALLY_VALID"
+    allowed_splits: ["regression"]
+    allowed_experiments: ["fusion", "language_robustness"]
+    prohibited_conclusions: ["与 Master-200 相加后的总质量分", "多轮记忆质量"]
+    holdout_status: "missing_independent_holdout"
+
+  - id: "temporary_30"
+    path: "backend/tests/evals/temporary_30_ablation_manifest.json"
+    count_field: "cases"
+    expected_count: 30
+    expected_sha256: "f9657cc6e91b07bd9dd046a0d8aea754c85efff1849e22effcb73dd7e843cd80"
+    hash_note: "2026-09-10 重新登记：Q-001 删除 BM25 后 primary_sparse_mode 由 ast-bm25/graph-bm25 改为 sparse，清单由 build_temporary_30_ablation_manifest.py 重建；哈希按工作区原始字节计算（本机检出为 CRLF）。"
+    task_type: "comprehension"
+    role: "临时消融和机制观察"
+    validation_mode: "metadata_only"
+    quality_status: "STRUCTURALLY_VALID"
+    allowed_splits: ["confirmation", "diagnostic"]
+    allowed_experiments: ["temporary_ablation"]
+    prohibited_conclusions: ["正式最终质量", "多轮上下文质量"]
+    holdout_status: "not_applicable"
+
+  - id: "conversation_2_1_0"
+    path: "backend/tests/evals/conversation_cases_2_1_0.json"
+    count_field: "cases"
+    expected_count: 24
+    expected_turn_count: 123
+    expected_sha256: "be0ac800909ce2cf3a5ec2fcef42187af2497658499cd0e5d57337872eb0e0f2"
+    task_type: "conversation_quality"
+    role: "独立多轮入口、上下文、范围引导、证据回忆和审批边界"
+    validation_mode: "conversation_fixture"
+    quality_status: "READY_FOR_MODEL_PILOT"
+    allowed_splits: ["dev", "regression", "golden", "holdout"]
+    tuning_splits: ["dev", "regression"]
+    pilot_splits: ["dev", "regression", "golden"]
+    final_splits: ["holdout"]
+    allowed_experiments: ["conversation_context", "conversation_routing", "real_model_pilot"]
+    prohibited_conclusions: ["没有独立人工复核的最终语义正确率", "全量生产稳定性", "change 已经自动应用"]
+    holdout_status: "available_final_only"
+    review_record: "experiments/annotations/conversation_cases_2_1_0_review.jsonl"
+    source_audit: "agent_review_only"

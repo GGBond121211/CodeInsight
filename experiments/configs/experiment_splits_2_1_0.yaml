@@ -1,0 +1,81 @@
+schema_version: 1
+manifest_id: "codeinsight-2.1.0-experiment-splits"
+version: "2.1.0"
+created_at: "2026-09-08"
+dataset: "backend/tests/evals/conversation_cases_2_1_0.json"
+dataset_id: "conversation_2_1_0"
+
+# 每个 family 只出现一次；holdout 的内容不能被调参阶段读取。
+split_policy:
+  tuning: ["dev", "regression"]
+  model_pilot: ["dev", "regression", "golden"]
+  final_only: ["holdout"]
+  forbidden_for_tuning: ["golden", "holdout"]
+  forbidden_for_final_claim: ["dev", "regression"]
+  leakage_checks:
+    - "case_id 在 split 间唯一"
+    - "family 在 split 间唯一"
+    - "规范化 user_message 不跨 case 重复"
+    - "holdout 不出现在调参实验或 Prompt 选择记录"
+
+splits:
+  dev:
+    purpose: "开发期路由和上下文方向性检查"
+    case_ids:
+      - "conv-001-shipping-bug-boundary"
+      - "conv-002-checkout-trace"
+      - "conv-003-smalltalk-interleave"
+      - "conv-004-mixed-api-validation"
+      - "conv-005-ambiguous-then-change"
+      - "conv-021-refund-boundary-extension"
+  regression:
+    purpose: "每次相关代码变更后的稳定回归"
+    case_ids:
+      - "conv-006-record-symbol-collision"
+      - "conv-007-refund-insufficient"
+      - "conv-008-fulfillment-three-hop"
+      - "conv-009-pricing-boundary"
+      - "conv-010-shipping-aliases"
+      - "conv-022-smalltalk-pricing-regression"
+  golden:
+    purpose: "冻结后的真实模型 pilot 和高价值回归"
+    case_ids:
+      - "conv-011-config-change-preview"
+      - "conv-012-active-goal-scope-redirect"
+      - "conv-013-context-compaction"
+      - "conv-014-docs-code-conflict"
+      - "conv-015-general-capability"
+      - "conv-023-mixed-fulfillment-golden"
+  holdout:
+    purpose: "参数和 Prompt 冻结后的最终多轮验证"
+    case_ids:
+      - "conv-016-noisy-shipping-holdout"
+      - "conv-017-validation-change-holdout"
+      - "conv-018-mixed-record-holdout"
+      - "conv-019-memory-correction-holdout"
+      - "conv-020-four-round-lane-recheck"
+      - "conv-024-four-round-receipt-holdout"
+
+experiment_families:
+  conversation_routing:
+    dataset_id: "conversation_2_1_0"
+    allowed_splits: ["dev", "regression"]
+    primary_metrics: ["route_accuracy", "scope_redirect_precision", "model_call_policy_accuracy"]
+    conclusion_level: "directional_until_holdout"
+  conversation_context:
+    dataset_id: "conversation_2_1_0"
+    allowed_splits: ["dev", "regression", "golden"]
+    primary_metrics: ["required_fact_recall", "turn_reference_accuracy", "goal_continuity"]
+    cost_metrics: ["input_tokens", "cached_input_tokens", "cache_hit_ratio", "latency_milliseconds", "compaction_count"]
+    conclusion_level: "model_pilot_only"
+  conversation_change_boundary:
+    dataset_id: "conversation_2_1_0"
+    allowed_splits: ["dev", "regression", "golden"]
+    primary_metrics: ["approval_boundary_rate", "source_fixture_write_count", "change_target_retention"]
+    hard_gates: ["approval_bypass", "original_repo_modifications", "sandbox_escape"]
+    conclusion_level: "contract_and_pilot"
+  conversation_final:
+    dataset_id: "conversation_2_1_0"
+    allowed_splits: ["holdout"]
+    requires: "parameters_and_prompt_versions_frozen"
+    conclusion_level: "final_only_after_independent_review"
