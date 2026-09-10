@@ -13,6 +13,7 @@ IGNORED_DIRECTORIES: frozenset[str] = frozenset(
         "__pycache__",
         ".pytest_cache",
         ".ruff_cache",
+        ".codeinsight",
         "dist",
         "build",
     }

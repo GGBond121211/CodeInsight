@@ -101,6 +101,8 @@ INTERRUPTIBLE_TOOLS: frozenset[str] = frozenset(
         "search_repository",
         "read_file",
         "get_repository_map",
+        "lsp_definition",
+        "scip_references",
         "get_evidence_context",
         "get_run_events",
         "get_diff",
@@ -623,6 +625,7 @@ class RepositoryMap:
     imports: tuple[tuple[str, str], ...] = ()
     file_summaries: tuple[tuple[str, str], ...] = ()
     token_budget: int = 0
+    repo_fingerprint: str = ""
 
     def __post_init__(self) -> None:
         if not self.index_version.strip():

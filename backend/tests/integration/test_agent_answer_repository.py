@@ -2,7 +2,7 @@ from pathlib import Path
 
 from codeinsight.application.agent_answer_repository import agent_answer_repository
 from codeinsight.domain.answer import ModelCompletion
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -13,7 +13,13 @@ def _fake_embed(texts):
     vectors = []
     for _ in texts:
         vectors.append((1.0, 0.0))
-    return EmbeddingBatch("fake", tuple(vectors), len(texts))
+    return EmbeddingBatch(
+        "fake",
+        tuple(vectors),
+        len(texts),
+        tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+        "dense-sparse-v1",
+    )
 
 
 class CompletionSequence:

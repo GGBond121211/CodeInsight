@@ -23,6 +23,9 @@ REQUIRED_PAYLOAD_FIELDS = frozenset(
         "sourceFingerprint",
         "chunkVersion",
         "visibility",
+        "indexVersion",
+        "embeddingModel",
+        "vectorSchemaVersion",
     }
 )
 
@@ -60,8 +63,18 @@ def vector_points_from_semantic_index(
             "sourceFingerprint": source_fingerprint,
             "chunkVersion": chunk_version,
             "visibility": visibility,
+            "indexVersion": index.metadata.index_id,
+            "embeddingModel": index.metadata.model,
+            "vectorSchemaVersion": index.metadata.vector_schema_version,
         }
-        points.append(VectorPoint(entry.chunk_id, entry.embedding, payload))
+        points.append(
+            VectorPoint(
+                entry.chunk_id,
+                entry.embedding,
+                payload,
+                sparse_vector=entry.sparse_embedding,
+            )
+        )
     return tuple(points)
 
 
@@ -85,6 +98,8 @@ def build_index_manifest(
         distance="cosine",
         chunk_version=chunk_version,
         source_hash=source_hash,
+        vector_schema_version=index.metadata.vector_schema_version,
+        sparse_model=index.metadata.sparse_model,
     )
 
 
@@ -118,7 +133,9 @@ def plan_incremental_update(
     return IncrementalUpdatePlan(tuple(upsert), tuple(sorted(delete)), tuple(unchanged))
 
 
-def validate_vector_points(points: Sequence[VectorPoint]) -> None:
+def validate_vector_points(
+    points: Sequence[VectorPoint], *, require_sparse: bool = False
+) -> None:
     """发布前检查 payload 字段和 Evidence 行号，不改变后端状态。"""
     for point in points:
         missing = REQUIRED_PAYLOAD_FIELDS - set(point.payload)
@@ -131,6 +148,8 @@ def validate_vector_points(points: Sequence[VectorPoint]) -> None:
             or point.payload["endLine"] < point.payload["startLine"]
         ):
             raise ValueError("向量点行号必须是合法的 1-based 闭区间")
+        if require_sparse and point.sparse_vector is None:
+            raise ValueError("Dense/Sparse 向量点缺少 Provider Sparse 向量")
 
 
 def publish_semantic_index(
@@ -140,6 +159,7 @@ def publish_semantic_index(
     repo_id: str,
     source_fingerprints: Mapping[str, str],
     chunk_version: str,
+    require_sparse: bool = False,
 ) -> tuple[VectorPoint, ...]:
     """校验并写入任意 VectorStore；只有 payload 合法后才触碰后端。"""
     points = vector_points_from_semantic_index(
@@ -148,7 +168,7 @@ def publish_semantic_index(
         source_fingerprints=source_fingerprints,
         chunk_version=chunk_version,
     )
-    validate_vector_points(points)
+    validate_vector_points(points, require_sparse=require_sparse)
     store.upsert(points)
     if not store.health():
         raise RuntimeError("向量后端写入后健康检查失败")

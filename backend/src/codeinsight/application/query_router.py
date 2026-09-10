@@ -25,7 +25,7 @@ SUBQUESTION_KEYS = frozenset({"question", "intent", "retrieval_mode"})
 SUPPORTED_INTENTS = frozenset(
     {"symbol_lookup", "call_flow", "data_flow", "implementation", "boundary", "semantic", "unknown"}
 )
-ROUTER_RETRIEVAL_MODES = frozenset({"bm25"})
+ROUTER_RETRIEVAL_MODES = frozenset({"hybrid", "dense", "sparse"})
 _LANGUAGE_ALIASES = {
     "zh-en": "mixed",
     "en-zh": "mixed",
@@ -38,7 +38,10 @@ _INTENT_ALIASES = {
     "dataflow": "data_flow",
     "business_logic": "implementation",
 }
-_RETRIEVAL_ALIASES = {"sparse": "bm25"}
+_RETRIEVAL_ALIASES = {
+    "bm25": "hybrid",
+    "semantic": "dense",
+}
 
 
 @dataclass(frozen=True)
@@ -54,14 +57,14 @@ class QueryRouterResult:
 
 
 def fallback_plan(question: str, reason: str) -> QueryPlan:
-    """构造文档中约定的 BM25 + Linear 回退计划。"""
-    subquestion = SubQuestion(question, "unknown", "bm25")
+    """构造 2.1 的 Dense/Sparse + Linear 回退计划。"""
+    subquestion = SubQuestion(question, "unknown", "hybrid")
     return QueryPlan(
         original_question=question,
         language="unknown",
         normalized_question=question,
         subquestions=(subquestion,),
-        retrieval_modes=("bm25",),
+        retrieval_modes=("hybrid",),
         execution_route="linear",
         confidence=0.0,
         fallback_reason=reason,

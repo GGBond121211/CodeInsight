@@ -6,7 +6,7 @@ from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.domain.answer import ModelCompletion
 from codeinsight.domain.query_plan import QueryPlan, SubQuestion
 from codeinsight.domain.retrieval import RankedChunk
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.domain.source import SourceChunk
 from codeinsight.infrastructure.reranker import RerankResult
 
@@ -31,7 +31,13 @@ def _fake_embedding(texts):
     vectors: list[tuple[float, float]] = []
     for _ in texts:
         vectors.append((1.0, 0.0))
-    return EmbeddingBatch("fake", tuple(vectors), len(texts))
+    return EmbeddingBatch(
+        "fake",
+        tuple(vectors),
+        len(texts),
+        tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+        "dense-sparse-v1",
+    )
 
 
 class _FakeReranker:

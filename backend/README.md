@@ -2,7 +2,7 @@
 
 后端对外提供 `auto-answer` 和统一 `chat` 两个业务入口，并提供用量观测与变更闭环接口。统一 chat 先在业务编排层把本轮请求分为 `general_chat`、`clarify`、`explain` 或 `change`，再进入对应路线；同一 Session 内保留多轮上下文，普通聊天不会被强制套用代码回答的 JSON 协议。原来的 `search`、`answer` 和 `agent-answer` 仍供 Auto Answer 内部复用，但对应的 HTTP 路由和 CLI 命令已经停用。
 
-检索链是 `BM25 + semantic → RRF/代码感知 reranker`。AST-BM25、graph-BM25 以及相关的 AST 分块、静态调用图和运行脚本已经删除。语义索引缓存在本地 JSON 中，没改过的文件可以直接复用向量。一次请求只加载或构建一个 SemanticIndex，供所有子问题使用；候选、重排结果和证据覆盖仍按子问题分开保存。
+2.1.0 的正常检索链是 `Provider Dense + Provider Sparse → Qdrant Named Vectors → RRF → qwen3.7-text-rerank`。BM25/lexical 和 LocalJsonVectorStore 只保留为显式历史/离线对照，不是默认回退路径；Provider 只返回 Dense 时会受控失败。一次请求只加载或构建一个 SemanticIndex，供所有子问题使用；候选、重排结果和证据覆盖仍按子问题分开保存。
 
 ## 配置
 
@@ -17,8 +17,9 @@ $env:CODEINSIGHT_BASE_URL="<chat-compatible-base-url>"
 $env:CODEINSIGHT_EMBEDDING_API_KEY="<embedding-key>"
 $env:CODEINSIGHT_EMBEDDING_MODEL="<embedding-model>"
 $env:CODEINSIGHT_EMBEDDING_BASE_URL="<embedding-compatible-base-url>"
-# 可选：覆盖操作系统默认的本地语义索引目录
-# $env:CODEINSIGHT_SEMANTIC_CACHE_DIR="<cache-directory>"
+$env:CODEINSIGHT_QDRANT_URL="http://127.0.0.1:6335"
+# 生产环境必须配置 QDRANT_URL；开发环境无 URL 时仅使用 Qdrant 进程内模式，
+# 不会写 LocalJsonVectorStore 或 persistent_semantic JSON。
 ```
 
 Gateway 的模型注册表包含能力和价格目录，不代表同一个兼容端点支持全部模型。

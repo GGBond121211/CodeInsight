@@ -21,12 +21,12 @@ experiment_tiers:
     verification: "重跑必须逐位相同"
     applies_to:
       - chunk 行数与 overlap
-      - BM25 k1 / b
+      - BM25 k1 / b（历史对照）
       - RRF K 与来源权重
       - semantic min_score
       - Top-K 与候选上限
       - HNSW 参数
-      - Embedding 对照（固定 chunk 与索引后）
+      - Provider Dense/Sparse 对照（固定 chunk 与索引后）
     cost: "仅 Embedding 调用，无 Chat 调用"
 
   single_model_call:
@@ -100,6 +100,19 @@ datasets:
     adopted: false
     gate: "同 L3"
 
+  L5_conversation_2_1_0:
+    path: "backend/tests/evals/conversation_cases_2_1_0.json"
+    size: 24
+    turns: 123
+    role: "同一 Session 的入口、上下文、范围引导、Evidence 回忆和审批边界"
+    adopted: true
+    quality_policy: "experiments/configs/dataset_quality_policy_2_1_0.yaml"
+    split_manifest: "experiments/configs/experiment_splits_2_1_0.yaml"
+    split_counts: {dev: 6, regression: 6, golden: 6, holdout: 6}
+    holdout_policy: "holdout 只在参数和 Prompt 冻结后使用"
+    quality_status: "READY_FOR_MODEL_PILOT"
+    source_audit: "agent_review_only; not independent human double-blind"
+
 # ---------------------------------------------------------------------------
 # 实验队列 —— 按执行顺序排列
 # ---------------------------------------------------------------------------
@@ -118,11 +131,13 @@ queue:
       chunk_max_lines: [40, 80, 120]
       chunk_overlap_ratio: [0.0, 0.10, 0.20]
     fixed:
-      - "retriever = BM25 + semantic"
+      - "retriever = Provider Dense + Provider Sparse"
       - "rrf_k = 60"
-      - "source_weights = {bm25: 1.0, semantic: 0.8}"
+      - "source_weights = {dense: 1.0, sparse: 1.0}"
       - "semantic_min_score = 0.20"
-      - "top_k = 5"
+      - "dense_candidates = 40"
+      - "sparse_candidates = 40"
+      - "top_k = 10"
       - "embedding model = qwen3.7-text-embedding"
     datasets: [L0_master200]
     metrics:
@@ -131,10 +146,10 @@ queue:
       cost: [index_build_seconds, index_size_mb, embedding_tokens]
     hard_gates: [citation_validity == 1.0]
     answers_interview_question: "重叠窗口设了多少？为什么？"
-    status: closed_by_user_without_retest
+    status: baseline_retest_required
     decision: >-
-      2026-09-04 用户指定采用 structural_v1，按 module/class/function 整体边界优先切分；
-      不再运行九格复测。旧结果保留为历史探索，不作为最优性证据。
+      2.1.0 基线确认当前正式入口仍运行 fixed_lines/80/0；structural_v1 是用户指定的
+      未验证候选，只在独立实验中比较，不把历史用户选择写成运行时默认。
 
   - id: EXP-002
     name: "融合参数单变量扫描"
@@ -146,7 +161,8 @@ queue:
     depends_reason: "chunk 定下来才能固定其他变量"
     variables_one_at_a_time:
       rrf_k: [20, 60, 100]
-      source_weight_semantic: [0.5, 0.8, 1.0]
+      source_weight_dense: [1.0]
+      source_weight_sparse: [1.0]
       semantic_min_score: [0.0, 0.20, 0.35]
     datasets: [L0_master200, L2_swebench_localization]
     metrics:
@@ -184,7 +200,10 @@ queue:
     note: >-
       外部资料建议粗召回 30-100 条再 Rerank，当前 20 偏低。
       但候选越多 token 与重排成本越高，必须同时看代价。
-    status: fixed_by_user_unverified
+    status: candidate_profile_pending
+    baseline_control: {dense_candidate_limit: 40, sparse_candidate_limit: 40, hybrid_candidate_limit: 100, final_top_k: 10}
+    user_candidate: {dense_candidate_limit: 40, sparse_candidate_limit: 40, hybrid_candidate_limit: 100, final_top_k: 10}
+    hard_rule: "先固定 chunk、Embedding、融合与 Rerank；只改变 final_top_k，报告质量和 token/延迟代价"
 
   - id: EXP-005
     name: "Embedding 模型对照"
@@ -259,16 +278,47 @@ queue:
     trials: "3-5"
     schedule: "Step 8"
     variables:
-      query_rewrite: [on]
+      query_rewrite: [off, on]
     hard_rule: >-
       改写时必须保留原始 query，原始与改写一起召回后融合。
       只用改写后的 query 会在改写模型理解错意图时导致整轮召回全偏。
     metrics:
       primary: [evidence_recall]
       cost: [added_model_calls, added_latency_ms, added_tokens]
-    status: fixed_by_user_unverified
-    decision: "2026-09-04 用户指定默认启用，不做 off/on 对照；不得表述为已证明收益"
-    note: "对应 1.0 待办中的 Evidence Retrieval Repair Loop"
+    status: blocked_not_implemented
+    decision: "当前正式运行时未实现；先完成原始 query 保留、改写结果记录和失败回退，再做 off/on 对照"
+    note: "旧的 on-only 记录与当前代码不一致，已降级为未来候选；不得表述为已启用或已证明收益"
+
+  - id: EXP-009
+    name: "独立多轮会话真实模型 pilot"
+    amendment: "2.1.0 数据集合格化"
+    tier: single_model_call
+    trials: 3
+    schedule: "Stage 0 数据准入通过后；参数实验前"
+    dataset: L5_conversation_2_1_0
+    allowed_splits: [dev, regression, golden]
+    forbidden_splits: [holdout]
+    fixed:
+      - "同一 case 使用同一个 session_id"
+      - "real provider only; Fake Provider 不进入质量指标"
+      - "request-level output cap"
+      - "max_retries = 0"
+      - "不应用 change 轮的 source fixture"
+    primary_metrics:
+      - route_accuracy
+      - goal_continuity
+      - required_fact_recall
+      - evidence_recall
+      - approval_boundary_rate
+    secondary_metrics:
+      - compaction_count
+      - session_restore_success
+      - cache_hit_ratio
+      - input_tokens
+      - output_tokens
+      - latency_p50_p95
+    conclusion: "pilot/directional；holdout 和独立审查完成后才允许 final"
+    status: ready_for_real_model_pilot
 
 # ---------------------------------------------------------------------------
 # 禁止事项

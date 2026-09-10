@@ -59,7 +59,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             "search_repository",
-            "在仓库文本中检索问题相关的证据块；结果只用于导航，不能修改文件。",
+            "用 Provider Dense/Sparse 检索问题相关的证据块；结果只用于导航，不能修改文件。",
             _object_schema(
                 {
                     "question": {"type": "string", "minLength": 1},
@@ -101,8 +101,25 @@ def build_default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             "get_repository_map",
-            "获取文件、Python 符号和 import 的导航地图。",
-            _object_schema({}, ()),
+            "获取有界、可过滤、可分页的文件、符号和 import 导航地图；地图不是最终 Evidence。",
+            _object_schema(
+                {
+                    "path_prefix": {"type": "string", "minLength": 1},
+                    "symbol_query": {"type": "string", "minLength": 1},
+                    "include": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["files", "symbols", "imports"]},
+                        "minItems": 1,
+                        "maxItems": 3,
+                    },
+                    "max_files": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    "max_symbols": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    "max_imports": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    "cursor": {"type": "string", "minLength": 1},
+                    "token_budget": {"type": "integer", "minimum": 0, "maximum": 32000},
+                },
+                (),
+            ),
             True,
             False,
             True,
@@ -110,6 +127,59 @@ def build_default_registry() -> ToolRegistry:
             "low",
             10,
             "repository",
+            version="2.1",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            "lsp_definition",
+            "查找仓库内某个位置的符号定义；只返回位置身份，必须继续 read_file 形成 Evidence。",
+            _object_schema(
+                {
+                    "path": text_path,
+                    "line": {"type": "integer", "minimum": 1},
+                    "column": {"type": "integer", "minimum": 0},
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "typescript", "typescriptreact"],
+                    },
+                },
+                ("path", "line", "column"),
+            ),
+            True,
+            False,
+            True,
+            False,
+            "low",
+            15,
+            "repository",
+            version="2.1",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            "scip_references",
+            "查找符号引用位置；索引必须与当前仓库指纹匹配，结果仍需 read_file 验证。",
+            _object_schema(
+                {
+                    "symbol_id": {"type": "string", "minLength": 1},
+                    "path": text_path,
+                    "line": {"type": "integer", "minimum": 1},
+                    "column": {"type": "integer", "minimum": 0},
+                    "index_version": {"type": "string", "minLength": 1},
+                    "cursor": {"type": "string", "minLength": 1},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                },
+                (),
+            ),
+            True,
+            False,
+            True,
+            False,
+            "low",
+            15,
+            "repository",
+            version="2.1",
         )
     )
     registry.register(

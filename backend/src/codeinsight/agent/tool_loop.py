@@ -29,6 +29,13 @@ TOOL_ERROR_CODES = frozenset(
         "UNKNOWN",
         "DB_CONFLICT",
         "ABORTED",
+        "NOT_CONFIGURED",
+        "QDRANT_NOT_CONFIGURED",
+        "QDRANT_UNAVAILABLE",
+        "INDEX_NOT_FOUND",
+        "INDEX_STALE",
+        "UNSUPPORTED_LANGUAGE",
+        "INVALID_RESPONSE",
     }
 )
 

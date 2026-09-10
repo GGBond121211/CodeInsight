@@ -5,6 +5,7 @@ import os
 import pytest
 from qdrant_client import QdrantClient
 
+from codeinsight.domain.semantic import SparseEmbedding
 from codeinsight.retrieval.qdrant_store import QdrantVectorStore
 from codeinsight.retrieval.vector_store import VectorPoint
 
@@ -18,7 +19,7 @@ def _store() -> QdrantVectorStore:
         pytest.skip(f"本地 Qdrant 不可用：{type(error).__name__}")
     return QdrantVectorStore(
         client=client,
-        collection_name="codeinsight_test_vectors",
+        collection_name="codeinsight_test_vectors_dense_sparse",
         dimensions=2,
         hnsw_m=8,
         hnsw_ef_construction=64,
@@ -31,8 +32,18 @@ def test_qdrant_upsert_search_filter_delete_and_health() -> None:
     store.delete(["point-a", "point-b"])
     store.upsert(
         [
-            VectorPoint("point-a", (1.0, 0.0), {"path": "a.py", "language": "py"}),
-            VectorPoint("point-b", (0.0, 1.0), {"path": "b.py", "language": "py"}),
+            VectorPoint(
+                "point-a",
+                (1.0, 0.0),
+                {"path": "a.py", "language": "py"},
+                SparseEmbedding((1,), (1.0,)),
+            ),
+            VectorPoint(
+                "point-b",
+                (0.0, 1.0),
+                {"path": "b.py", "language": "py"},
+                SparseEmbedding((2,), (1.0,)),
+            ),
         ]
     )
 

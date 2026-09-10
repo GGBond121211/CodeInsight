@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from codeinsight.api.app import create_app
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
@@ -32,7 +32,13 @@ class FakeEmbedding:
         vectors = []
         for _ in texts:
             vectors.append((1.0, 0.0))
-        return EmbeddingBatch("fake", tuple(vectors), len(texts))
+        return EmbeddingBatch(
+            "fake",
+            tuple(vectors),
+            len(texts),
+            tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+            "dense-sparse-v1",
+        )
 
 
 class FakeReranker:

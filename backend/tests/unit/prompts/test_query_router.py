@@ -11,5 +11,5 @@ def test_router_prompt_preserves_user_text_and_forbids_evidence_generation() -> 
     assert "evidence ID" in system
     assert "一个边界明确的请求通常只有一个" in system
     assert "默认使用 linear" in system
-    assert "Semantic 检索总是" in system
+    assert "Provider Dense 与 Provider Sparse" in system
     assert "checkout 先校验什么？" in user

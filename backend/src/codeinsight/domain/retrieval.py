@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from codeinsight.domain.source import SourceChunk
 
+DENSE_MATCH_REASON = "dense_match"
+# 2.0 response compatibility for callers that still construct semantic results.
 SEMANTIC_MATCH_REASON = "semantic_match"
 
 

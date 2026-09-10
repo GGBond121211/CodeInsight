@@ -41,7 +41,7 @@ def test_parse_query_plan_preserves_original_question() -> None:
 
     assert plan.original_question.startswith("checkout")
     assert plan.language == "mixed"
-    assert plan.retrieval_modes == ("bm25",)
+    assert plan.retrieval_modes == ("hybrid",)
     assert plan.execution_route == "agent"
 
 
@@ -70,24 +70,21 @@ def test_parse_query_plan_tolerates_model_json_wrapper_and_aliases() -> None:
     assert plan.language == "mixed"
     assert plan.confidence == 0.8
     assert plan.subquestions[0].intent == "call_flow"
-    assert plan.subquestions[0].retrieval_mode == "bm25"
+    assert plan.subquestions[0].retrieval_mode == "sparse"
     assert plan.subquestions[1].intent == "implementation"
-    assert plan.subquestions[1].retrieval_mode == "bm25"
+    assert plan.subquestions[1].retrieval_mode == "hybrid"
 
 
-def test_router_cannot_disable_mandatory_semantic_with_a_hybrid_choice() -> None:
+def test_router_accepts_hybrid_as_dense_sparse_runtime_route() -> None:
     payload = _payload()
     payload["subquestions"][0]["retrieval_mode"] = "hybrid"
 
-    try:
-        parse_query_plan("question", json.dumps(payload))
-    except ModelResponseError as error:
-        assert "retrieval_mode 不受支持" in str(error)
-    else:
-        raise AssertionError("Router 只能选择稀疏检索增强")
+    plan = parse_query_plan("question", json.dumps(payload))
+
+    assert plan.subquestions[0].retrieval_mode == "hybrid"
 
 
-def test_router_returns_bm25_linear_fallback_on_invalid_output() -> None:
+def test_router_returns_dense_sparse_linear_fallback_on_invalid_output() -> None:
     result = route_question(
         "Where is checkout?",
         complete=_invalid_completion,
@@ -95,7 +92,7 @@ def test_router_returns_bm25_linear_fallback_on_invalid_output() -> None:
 
     assert result.used_fallback is True
     assert result.plan.execution_route == "linear"
-    assert result.plan.subquestions[0].retrieval_mode == "bm25"
+    assert result.plan.subquestions[0].retrieval_mode == "hybrid"
     assert result.fallback_reason == "router_invalid_or_low_confidence"
 
 

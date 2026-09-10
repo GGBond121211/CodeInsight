@@ -3,8 +3,8 @@
 import json
 from pathlib import Path
 
-from codeinsight.application.search_repository import build_repository_semantic_index
 from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.ingestion.scanner import scan_repository
 from codeinsight.retrieval import persistent_semantic
 
 
@@ -28,6 +28,17 @@ class _CountingEmbedder:
         return EmbeddingBatch(self.model, tuple(vectors), len(values))
 
 
+def _build_cached(repository, embedder, *, cache_root=None, chunk_max_lines=80):
+    return persistent_semantic.build_persistent_semantic_index(
+        repository,
+        scan_repository(repository),
+        embedder.embed,
+        model=embedder.model,
+        chunk_max_lines=chunk_max_lines,
+        cache_root=cache_root,
+    )
+
+
 def test_unchanged_repository_reuses_all_persisted_vectors(tmp_path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -36,13 +47,9 @@ def test_unchanged_repository_reuses_all_persisted_vectors(tmp_path) -> None:
     cache = tmp_path / "cache"
     embedder = _CountingEmbedder()
 
-    first = build_repository_semantic_index(
-        repository, semantic_embed=embedder.embed, cache_root=cache
-    )
+    first = _build_cached(repository, embedder, cache_root=cache)
     calls_after_first_build = len(embedder.calls)
-    second = build_repository_semantic_index(
-        repository, semantic_embed=embedder.embed, cache_root=cache
-    )
+    second = _build_cached(repository, embedder, cache_root=cache)
 
     assert calls_after_first_build == 1
     assert len(embedder.calls) == calls_after_first_build
@@ -86,9 +93,7 @@ def test_default_cache_permission_uses_user_temp_fallback(monkeypatch, tmp_path)
 
     monkeypatch.setattr(persistent_semantic, "_write_manifest", deny_default_once)
 
-    index = build_repository_semantic_index(
-        repository, semantic_embed=embedder.embed
-    )
+    index = _build_cached(repository, embedder)
 
     assert index.entries
     assert writes[0].is_relative_to(default_root)
@@ -104,13 +109,11 @@ def test_only_changed_file_is_reembedded(tmp_path) -> None:
     second_path.write_text("def second():\n    return 2\n", encoding="utf-8")
     cache = tmp_path / "cache"
     embedder = _CountingEmbedder()
-    build_repository_semantic_index(repository, semantic_embed=embedder.embed, cache_root=cache)
+    _build_cached(repository, embedder, cache_root=cache)
     embedder.calls.clear()
 
     second_path.write_text("def second():\n    return 3\n", encoding="utf-8")
-    index = build_repository_semantic_index(
-        repository, semantic_embed=embedder.embed, cache_root=cache
-    )
+    index = _build_cached(repository, embedder, cache_root=cache)
 
     assert len(embedder.calls) == 1
     assert "return 3" in embedder.calls[0][0]
@@ -128,25 +131,25 @@ def test_model_and_chunk_configuration_use_separate_cache_identity(tmp_path) -> 
     )
     cache = tmp_path / "cache"
     first = _CountingEmbedder()
-    build_repository_semantic_index(
+    _build_cached(
         repository,
-        semantic_embed=first.embed,
+        first,
         chunk_max_lines=3,
         cache_root=cache,
     )
 
     second = _CountingEmbedder()
     second.model = "different-model"
-    build_repository_semantic_index(
+    _build_cached(
         repository,
-        semantic_embed=second.embed,
+        second,
         chunk_max_lines=3,
         cache_root=cache,
     )
     third = _CountingEmbedder()
-    build_repository_semantic_index(
+    _build_cached(
         repository,
-        semantic_embed=third.embed,
+        third,
         chunk_max_lines=2,
         cache_root=cache,
     )
@@ -174,13 +177,11 @@ def test_deleted_file_is_removed_from_persisted_index(tmp_path) -> None:
     remove.write_text("remove = True\n", encoding="utf-8")
     cache = tmp_path / "cache"
     embedder = _CountingEmbedder()
-    build_repository_semantic_index(repository, semantic_embed=embedder.embed, cache_root=cache)
+    _build_cached(repository, embedder, cache_root=cache)
     embedder.calls.clear()
 
     remove.unlink()
-    index = build_repository_semantic_index(
-        repository, semantic_embed=embedder.embed, cache_root=cache
-    )
+    index = _build_cached(repository, embedder, cache_root=cache)
 
     assert embedder.calls == []
     indexed_paths = []
@@ -197,9 +198,7 @@ def test_whitespace_only_file_is_not_sent_to_embedding(tmp_path) -> None:
     cache = tmp_path / "cache"
     embedder = _CountingEmbedder()
 
-    index = build_repository_semantic_index(
-        repository, semantic_embed=embedder.embed, cache_root=cache
-    )
+    index = _build_cached(repository, embedder, cache_root=cache)
 
     assert len(embedder.calls) == 1
     assert all(text.strip() for text in embedder.calls[0])

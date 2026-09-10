@@ -2,7 +2,8 @@
 
 import pytest
 
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.errors import ModelResponseError
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.domain.source import SourceChunk
 from codeinsight.retrieval.semantic import (
     build_semantic_index,
@@ -45,6 +46,29 @@ def test_build_index_preserves_source_identity_and_metadata() -> None:
     assert index.entries[0].chunk.relative_path == "src/shop/shipping/workflow.py"
 
 
+def test_build_index_requires_provider_sparse_when_requested() -> None:
+    with pytest.raises(ModelResponseError, match="不会回退 BM25"):
+        build_semantic_index(_chunks(), _FakeEmbedder(), require_sparse=True)
+
+
+def test_build_index_keeps_provider_sparse_identity() -> None:
+    def embedder(texts):
+        return EmbeddingBatch(
+            "sparse-provider",
+            tuple((1.0, 0.0) for _ in texts),
+            3,
+            tuple(
+                SparseEmbedding((1,), (float(index + 1),))
+                for index, _ in enumerate(texts)
+            ),
+            "dense-sparse-v1",
+        )
+
+    index = build_semantic_index(_chunks(), embedder, require_sparse=True)
+
+    assert index.entries[0].sparse_embedding == SparseEmbedding((1,), (1.0,))
+
+
 def test_index_skips_whitespace_only_chunks_before_embedding() -> None:
     chunks = (
         SourceChunk("app.py", 1, 1, "\n  \t"),
@@ -83,7 +107,7 @@ def test_search_returns_evidence_with_semantic_reason() -> None:
 
     assert len(results) == 1
     assert results[0].chunk.relative_path == "src/shop/shipping/workflow.py"
-    assert results[0].retrieval_reason == "semantic_match"
+    assert results[0].retrieval_reason == "dense_match"
     assert results[0].rank == 1
 
 

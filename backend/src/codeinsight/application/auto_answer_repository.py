@@ -8,7 +8,9 @@ from pathlib import Path
 from codeinsight.application.answer_repository import map_model_answer
 from codeinsight.application.query_router import QueryRouterResult
 from codeinsight.application.search_repository import (
+    DEFAULT_FINAL_TOP_K,
     build_repository_semantic_index,
+    prepare_runtime_vector_store,
     retrieve_subquestion_evidence,
     search_repository,
 )
@@ -57,10 +59,11 @@ def auto_answer_repository(
     *,
     router_result: QueryRouterResult,
     generate: GenerateAnswer,
-    limit: int = 5,
+    limit: int = DEFAULT_FINAL_TOP_K,
     chunk_max_lines: int = 80,
     semantic_embed: SemanticEmbed | None = None,
     reranker: Reranker | None = None,
+    semantic_store=None,
 ) -> AutoAnswer:
     """分别检索并回答每个公开子问题，同时记录本地证据覆盖情况。"""
     plan: QueryPlan = router_result.plan
@@ -104,7 +107,9 @@ def auto_answer_repository(
         chunk_max_lines=chunk_max_lines,
         semantic_embed=retrieval_embed,
         semantic_model=embedding_model_id(semantic_embed),
+        require_sparse=True,
     )
+    retrieval_store = semantic_store or prepare_runtime_vector_store(root, semantic_index)
 
     global_ids: dict[tuple[str, int, int], str] = {}
     per_subquestion: list[tuple[SubQuestion, SubQuestionEvidence]] = []
@@ -117,6 +122,7 @@ def auto_answer_repository(
             chunk_max_lines=chunk_max_lines,
             semantic_embed=retrieval_embed,
             semantic_index=semantic_index,
+            semantic_store=retrieval_store,
             search=search_repository,
             reranker=reranker,
         )

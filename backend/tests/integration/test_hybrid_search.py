@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from codeinsight.application.search_repository import search_repository
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +17,13 @@ def _fake_multilingual_embedder(texts):
             vectors.append((1.0, 0.0))
         else:
             vectors.append((0.0, 1.0))
-    return EmbeddingBatch("fake-multilingual", tuple(vectors), 4)
+    return EmbeddingBatch(
+        "fake-multilingual",
+        tuple(vectors),
+        4,
+        tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+        "dense-sparse-v1",
+    )
 
 
 class _FakeReranker:
@@ -41,7 +47,7 @@ def test_hybrid_can_recover_a_semantic_business_phrase() -> None:
     for item in results:
         if item.chunk.relative_path == "src/shop/shipping/workflow.py":
             has_shipping_workflow = True
-        if item.retrieval_reason in {"semantic_match", "hybrid_match"}:
+        if item.retrieval_reason in {"dense_match", "sparse_match", "hybrid_match"}:
             has_semantic_reason = True
     assert has_shipping_workflow
     assert has_semantic_reason

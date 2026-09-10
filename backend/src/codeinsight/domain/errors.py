@@ -15,3 +15,11 @@ class ModelResponseError(ValueError):
 
 class ModelCallError(RuntimeError):
     """已配置的模型请求失败时抛出。"""
+
+
+class QdrantNotConfiguredError(ModelConfigurationError):
+    """生产运行时没有配置 Qdrant 地址。"""
+
+
+class QdrantUnavailableError(ModelCallError):
+    """Qdrant 已配置但当前不可访问。"""

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codeinsight"
-version = "2.0.3"
-description = "基于 Hybrid RAG 与 LangGraph 的多语言代码仓库理解工具"
+version = "2.1.0"
+description = "基于 Provider Dense/Sparse、Qdrant 与 LangGraph 的多语言代码仓库理解工具"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi>=0.116,<1",
@@ -22,7 +22,7 @@ dependencies = [
     "pymysql>=1.1,<2",
     # 可选热点缓存；Redis 故障时 SessionService 回源 Memory/Session Store。
     "redis>=6,<7",
-    # 本地 Step 4 向量后端；local_json exact 仍保留为回退基线。
+    # 2.1 运行时使用 Qdrant Named Dense/Sparse；local_json 仅保留历史/离线对照。
     "qdrant-client>=1.15,<1.16",
     # Step 7：Redis-backed Worker、OTel API 和本地 Prometheus 指标端点。
     "celery>=5.5,<6",

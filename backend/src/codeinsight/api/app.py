@@ -33,7 +33,7 @@ def create_app(
     """组装本地 HTTP 应用，导入时不读取模型配置。"""
     application = FastAPI(
         title="CodeInsight API",
-        version="2.0.3",
+        version="2.1.0",
         description="由 Router 引导、带可核验引用的仓库回答。",
     )
     application.add_middleware(

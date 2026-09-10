@@ -1,13 +1,14 @@
 """Integration tests for multi-question evidence orchestration."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.query_router import QueryRouterResult
 from codeinsight.domain.answer import ModelAnswer
 from codeinsight.domain.query_plan import QueryPlan, SubQuestion
 from codeinsight.domain.retrieval import RankedChunk
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.domain.source import SourceChunk
 from codeinsight.infrastructure.reranker import RerankResult
 
@@ -55,7 +56,13 @@ def _fake_embed(texts):
     vectors = []
     for _ in texts:
         vectors.append((1.0, 0.0))
-    return EmbeddingBatch("fake", tuple(vectors), len(texts))
+    return EmbeddingBatch(
+        "fake",
+        tuple(vectors),
+        len(texts),
+        tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+        "dense-sparse-v1",
+    )
 
 
 class _FakeReranker:
@@ -124,7 +131,13 @@ def test_auto_answer_reports_embedding_input_tokens(monkeypatch) -> None:
         vectors = []
         for _ in texts:
             vectors.append((1.0, 0.0))
-        return EmbeddingBatch("fake", tuple(vectors), 5)
+        return EmbeddingBatch(
+            "fake",
+            tuple(vectors),
+            5,
+            tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+            "dense-sparse-v1",
+        )
 
     def fake_search(_root, _question, **kwargs):
         assert kwargs["semantic_embed"] is None
@@ -173,11 +186,15 @@ def test_each_subquestion_keeps_its_own_candidate_capacity(monkeypatch) -> None:
         fake_retrieve,
     )
     def fake_build_repository_index(*_args, **_kwargs):
-        return object()
+        return SimpleNamespace(metadata=SimpleNamespace(dimensions=2, model="fake"))
 
     monkeypatch.setattr(
         "codeinsight.application.auto_answer_repository.build_repository_semantic_index",
         fake_build_repository_index,
+    )
+    monkeypatch.setattr(
+        "codeinsight.application.auto_answer_repository.prepare_runtime_vector_store",
+        lambda *_args, **_kwargs: object(),
     )
     plan = QueryPlan(
         original_question="first and second",
@@ -232,15 +249,25 @@ def test_auto_answer_passes_model_identity_through_usage_wrapper(monkeypatch) ->
             vectors = []
             for _ in texts:
                 vectors.append((1.0, 0.0))
-            return EmbeddingBatch(self.model, tuple(vectors), len(texts))
+            return EmbeddingBatch(
+                self.model,
+                tuple(vectors),
+                len(texts),
+                tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+                "dense-sparse-v1",
+            )
 
     def fake_build(_root, **kwargs):
         captured.update(kwargs)
-        return object()
+        return SimpleNamespace(metadata=SimpleNamespace(dimensions=2, model="fake"))
 
     monkeypatch.setattr(
         "codeinsight.application.auto_answer_repository.build_repository_semantic_index",
         fake_build,
+    )
+    monkeypatch.setattr(
+        "codeinsight.application.auto_answer_repository.prepare_runtime_vector_store",
+        lambda *_args, **_kwargs: object(),
     )
     def empty_retrieve(*_args, **_kwargs):
         return ()

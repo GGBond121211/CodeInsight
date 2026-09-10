@@ -12,10 +12,12 @@ import sys
 from typing import TextIO
 
 from codeinsight.agent.tool_loop import ToolCall, ToolResult
+from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
+from codeinsight.infrastructure.reranker import OpenAITextReranker
 from codeinsight.infrastructure.tool_executor import ToolExecutor
 from codeinsight.infrastructure.tool_registry import build_default_registry
 
-SERVER_INFO = {"name": "codeinsight-mcp", "version": "step5"}
+SERVER_INFO = {"name": "codeinsight-mcp", "version": "2.1.0"}
 
 
 def serve_stdio(
@@ -157,7 +159,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
     args = parser.parse_args()
-    executor = ToolExecutor(args.root, registry=build_default_registry())
+    executor = ToolExecutor(
+        args.root,
+        registry=build_default_registry(),
+        embedding_factory=OpenAIEmbeddingModel.from_environment,
+        reranker_factory=OpenAITextReranker.from_environment,
+    )
     serve_stdio(sys.stdin, sys.stdout, executor)
 
 

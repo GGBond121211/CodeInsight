@@ -9,7 +9,10 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 ```text
 用户问题 → QueryPlan → 代码检索 → 独立证据 → 回答生成 → 文件与行号引用
 ```
-当前正式发布版本为 `2.0.3`，对外提供 Auto Answer、统一多轮对话、代码变更闭环、本地用量观测和自然范围引导能力。
+当前工作树正在进行 `2.1.0` Q1–Q5 升级；`2.0.3` 仍是上一版正式 Release。
+本次升级把默认检索切换为 Provider Dense/Sparse + Qdrant Named Vectors，增加可控的
+RepositoryMap 分页导航和 LSP/SCIP 只读工具。升级边界与未验证项见
+[`docs/RELEASE_2_1_0_Q1_Q5.md`](docs/RELEASE_2_1_0_Q1_Q5.md)。
 
 ## 2.0 当前发布边界
 
@@ -25,7 +28,7 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 | --- | --- | --- |
 | `general_chat` | Session 上下文 + 普通文本 Prompt + Gateway | 一份自然语言 `assistant_message` |
 | `scope_redirect` | 确定性范围引导，不调用模型、不访问仓库 | 自然承接后引导回代码任务 |
-| `explain` | Query Router + BM25/semantic/Rerank + 证据回答 | 一份代码解释，引用和用量在详情中 |
+| `explain` | Query Router + Dense/Sparse/Rerank + 证据回答 | 一份代码解释，引用和用量在详情中 |
 | `change` | Tool Loop + diff 预览 + approval + 隔离校验 | 修改结果或等待审批，不越过既有门禁 |
 | `clarify` | 返回可执行的澄清问题 | 不扫描仓库、不调用修改工具 |
 
@@ -43,7 +46,7 @@ CodeInsight 把这些步骤拆开处理：
 
 - Router 负责整理问题，并把混合问题拆成最多 8 个可以单独回答的子问题。
 - 每个子问题都有自己的候选、Top-K 证据、回答、outcome 和引用，不共用一个大证据池。
-- BM25 找代码标识符和精确词面，semantic retrieval 补充语义改写。
+- Provider Dense 和 Provider Sparse 分别召回语义与稀疏候选；RRF 融合后再做模型精排。
 - RRF/agreement 合并候选，阿里云 `qwen3.7-text-rerank` 再做模型精排；模型只重排候选，不制造新证据。
 - linear 路径直接逐题回答；Agent 路径多一层 Critic-Reviser，最多修改 5 次。
 - 模型只能引用 `E1/E2/...` 这类证据编号。文件路径和行号由后端映射，模型不能自己编。
@@ -61,10 +64,10 @@ flowchart TD
 
     LINEAR --> RETRIEVE["每个子问题独立检索"]
     AGENT --> RETRIEVE
-    RETRIEVE --> BM25["BM25 候选"]
-    RETRIEVE --> SEM["语义检索候选"]
-    BM25 --> RRF["RRF / agreement 候选融合"]
-    SEM --> RRF
+    RETRIEVE --> DENSE["Provider Dense 候选"]
+    RETRIEVE --> SPARSE["Provider Sparse 候选"]
+    DENSE --> RRF["RRF / agreement 候选融合"]
+    SPARSE --> RRF
     RRF --> RERANK["qwen3.7-text-rerank 模型精排"]
     RERANK --> EVIDENCE["各子问题自己的 Top-K 证据"]
     EVIDENCE --> DRAFT["基于证据生成草稿"]
@@ -92,8 +95,8 @@ Conversation 的业务编排位于同一 API 入口之后：
 - 只读扫描本地仓库，跳过依赖、构建产物和缓存目录。
 - 按固定行数切分源码，保留仓库相对路径和从 1 开始的行号。
 - 整理多语言问题、识别意图并拆分子问题。
-- 使用 BM25 和 semantic 做混合检索。
-- 语义索引构建缓存可复用本地 JSON；Qdrant/HNSW 仍是已验证的显式向量后端路径，当前默认应用组装与本次 Rerank 接入不改变其注入边界。
+- 默认使用 Provider Dense + Provider Sparse，在 Qdrant Named Vectors 中存取向量；BM25 和 local exact 仅作历史/离线对照。
+- Qdrant collection 通过 staging、payload/fingerprint 校验和小型 active manifest 发布；开发环境无 URL 时仅使用 Qdrant 进程内模式。
 - 使用 RRF/agreement 融合，并调用阿里云 `qwen3.7-text-rerank` 做最终精排；服务失败时直接失败，不回退本地代码排序。
 - 每个子问题单独维护证据，最后按 QueryPlan 顺序汇总。
 - 同时保留 linear RAG 和有次数上限的 LangGraph Critic-Reviser 路径。
@@ -143,7 +146,7 @@ $env:CODEINSIGHT_EMBEDDING_BASE_URL="<openai-compatible-embedding-url>"
 
 ### 本地开发调试模式
 
-当前 2.0.3 开发栈可以显式打开两个只面向本地调试的便利开关：自动确认修改预览，
+当前 2.1.0 开发栈可以显式打开两个只面向本地调试的便利开关：自动确认修改预览，
 以及在 Docker 校验环境不可用时跳过固定校验；修改探索会放宽为 12 步、96 次工具调用、
 同类工具错误 5 次，但仍有 120 秒总 deadline。它们不会关闭隔离 workspace、路径与基线
 校验、补丁范围限制、检查产物指纹、危险工具拦截或敏感文件过滤；跳过校验也会在结果中

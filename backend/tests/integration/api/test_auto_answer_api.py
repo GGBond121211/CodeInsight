@@ -14,7 +14,7 @@ from codeinsight.domain.answer import (
     RepositoryAnswer,
     SubQuestionAnswer,
 )
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
 
 BACKEND_ROOT = Path(__file__).resolve().parents[4]
@@ -27,7 +27,13 @@ class _FakeEmbedding:
         vectors = []
         for _ in texts:
             vectors.append((1.0, 0.0))
-        return EmbeddingBatch("fake", tuple(vectors), len(texts))
+        return EmbeddingBatch(
+            "fake",
+            tuple(vectors),
+            len(texts),
+            tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+            "dense-sparse-v1",
+        )
 
 
 class _FakeReranker:
@@ -99,7 +105,7 @@ def test_auto_answer_returns_plan_subquestion_and_router_usage() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["plan"]["execution_route"] == "linear"
-    assert payload["plan"]["subquestions"][0]["retrieval_mode"] == "bm25"
+    assert payload["plan"]["subquestions"][0]["retrieval_mode"] == "hybrid"
     assert payload["subquestions"][0]["outcome"] == "answered"
     assert payload["router_usage"] == {"input_tokens": 7, "output_tokens": 3}
     assert payload["usage"] == {"input_tokens": 12, "output_tokens": 5}
@@ -108,7 +114,7 @@ def test_auto_answer_returns_plan_subquestion_and_router_usage() -> None:
     assert model.answer_calls == 1
 
 
-def test_auto_answer_invalid_router_output_uses_linear_bm25_fallback() -> None:
+def test_auto_answer_invalid_router_output_uses_linear_hybrid_fallback() -> None:
     model = _FakeAutoModel("not-json")
     client = TestClient(
         create_app(_model_factory(model), _FakeEmbedding, reranker_factory=_FakeReranker)
@@ -125,7 +131,7 @@ def test_auto_answer_invalid_router_output_uses_linear_bm25_fallback() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["plan"]["execution_route"] == "linear"
-    assert payload["plan"]["retrieval_modes"] == ["bm25"]
+    assert payload["plan"]["retrieval_modes"] == ["hybrid"]
     assert payload["fallback_reason"] == "router_invalid_or_low_confidence"
     assert model.answer_calls == 1
 

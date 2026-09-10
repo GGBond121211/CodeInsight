@@ -1,4 +1,4 @@
-"""进程内的余弦相似度语义检索，并保留证据映射。"""
+"""Dense 向量检索，并保留证据映射。"""
 
 from __future__ import annotations
 
@@ -6,14 +6,16 @@ import hashlib
 import math
 from collections.abc import Callable, Sequence
 
-from codeinsight.domain.retrieval import SEMANTIC_MATCH_REASON, RankedChunk
+from codeinsight.domain.retrieval import DENSE_MATCH_REASON, RankedChunk
 from codeinsight.domain.semantic import (
     EmbeddingBatch,
     SemanticIndex,
     SemanticIndexEntry,
     SemanticModelMetadata,
+    SparseEmbedding,
 )
 from codeinsight.domain.source import SourceChunk
+from codeinsight.retrieval.sparse import require_sparse_batch
 from codeinsight.retrieval.vector_store import VectorStore
 
 EmbeddingFunction = Callable[[Sequence[str]], EmbeddingBatch]
@@ -61,6 +63,7 @@ def build_semantic_index(
     *,
     language_coverage: str = "multilingual",
     service: str = "openai-compatible",
+    require_sparse: bool = False,
 ) -> SemanticIndex:
     """对 *chunks* 一次性生成 Embedding，并构建保留证据映射的内存索引。"""
     indexable_chunks = filter_indexable_chunks(chunks)
@@ -71,6 +74,12 @@ def build_semantic_index(
         chunk_texts.append(chunk.text)
     batch = embed(tuple(chunk_texts))
     dimensions = _validate_batch(batch, len(indexable_chunks))
+    if require_sparse:
+        sparse_vectors: tuple[SparseEmbedding | None, ...] = require_sparse_batch(
+            batch, len(indexable_chunks)
+        )
+    else:
+        sparse_vectors = batch.sparse_vectors or (None,) * len(indexable_chunks)
     entry_id_list: list[str] = []
     for chunk in indexable_chunks:
         entry_id_list.append(_chunk_id(chunk))
@@ -85,10 +94,11 @@ def build_semantic_index(
         index_id=index_id,
     )
     entry_list: list[SemanticIndexEntry] = []
-    for chunk_id, chunk, vector in zip(
+    for chunk_id, chunk, vector, sparse_vector in zip(
         entry_ids,
         indexable_chunks,
         batch.vectors,
+        sparse_vectors,
         strict=True,
     ):
         entry_list.append(
@@ -98,6 +108,7 @@ def build_semantic_index(
                 embedding=vector,
                 source_fingerprint=_fingerprint(chunk.text),
                 metadata=metadata,
+                sparse_embedding=sparse_vector,
             )
         )
     entries = tuple(entry_list)
@@ -123,7 +134,7 @@ def _cosine_similarity(first: Sequence[float], second: Sequence[float]) -> float
     return dot_product / (first_norm * second_norm)
 
 
-def search_chunks_semantic(
+def search_chunks_dense(
     query: str,
     index: SemanticIndex,
     embed: EmbeddingFunction,
@@ -133,11 +144,10 @@ def search_chunks_semantic(
     vector_store: VectorStore | None = None,
     query_filter: dict[str, object] | None = None,
 ) -> tuple[RankedChunk, ...]:
-    """返回语义匹配结果，同时保留源码证据。
+    """按 Provider Dense 向量返回匹配结果，同时保留源码证据。
 
-    默认使用进程内 exact cosine；传入 ``vector_store`` 时，查询向量交给
-    local_json 或 Qdrant 后端计算，再用 ``SemanticIndex`` 恢复完整源码块。
-    因此切换后端只改变候选计算位置，不改变 Evidence 的路径和行号来源。
+    没有传入后端时仅用于离线/单元测试的 exact cosine；正式 2.1 路径传入
+    Qdrant Named Vector 后端，查询结果仍由 ``SemanticIndex`` 恢复源码 Evidence。
     """
     if limit <= 0:
         raise ValueError("limit 必须是正整数")
@@ -149,7 +159,10 @@ def search_chunks_semantic(
         raise ValueError("查询 Embedding 的维度与语义索引不匹配")
     if vector_store is not None:
         entries_by_id = {entry.chunk_id: entry for entry in index.entries}
-        hits = vector_store.search(
+        search_dense = getattr(vector_store, "search_dense", None)
+        if search_dense is None:
+            search_dense = vector_store.search  # type: ignore[attr-defined]
+        hits = search_dense(
             query_batch.vectors[0],
             limit=limit,
             query_filter=query_filter,
@@ -164,7 +177,7 @@ def search_chunks_semantic(
                     chunk=entry.chunk,
                     score=hit.score,
                     rank=len(ranked_chunks) + 1,
-                    retrieval_reason=SEMANTIC_MATCH_REASON,
+                    retrieval_reason=DENSE_MATCH_REASON,
                 )
             )
         return tuple(ranked_chunks)
@@ -200,7 +213,17 @@ def search_chunks_semantic(
                 chunk=entry.chunk,
                 score=score,
                 rank=rank,
-                retrieval_reason=SEMANTIC_MATCH_REASON,
+                retrieval_reason=DENSE_MATCH_REASON,
             )
         )
     return tuple(ranked_chunks)
+
+
+def search_chunks_semantic(
+    query: str,
+    index: SemanticIndex,
+    embed: EmbeddingFunction,
+    **kwargs,
+) -> tuple[RankedChunk, ...]:
+    """2.0 兼容别名；2.1 新代码应使用 ``search_chunks_dense``。"""
+    return search_chunks_dense(query, index, embed, **kwargs)

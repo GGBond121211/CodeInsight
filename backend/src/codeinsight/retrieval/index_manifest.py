@@ -24,6 +24,8 @@ class IndexManifest:
     chunk_version: str
     source_hash: str
     updated_at: str
+    vector_schema_version: str = "dense-v1"
+    sparse_model: str = ""
 
     @classmethod
     def create(
@@ -38,6 +40,8 @@ class IndexManifest:
         distance: str,
         chunk_version: str,
         source_hash: str,
+        vector_schema_version: str = "dense-v1",
+        sparse_model: str = "",
     ) -> IndexManifest:
         return cls(
             index_version=index_version,
@@ -50,6 +54,8 @@ class IndexManifest:
             chunk_version=chunk_version,
             source_hash=source_hash,
             updated_at=datetime.now(UTC).isoformat(),
+            vector_schema_version=vector_schema_version,
+            sparse_model=sparse_model,
         )
 
     def __post_init__(self) -> None:
@@ -63,6 +69,7 @@ class IndexManifest:
             "chunk_version",
             "source_hash",
             "updated_at",
+            "vector_schema_version",
         ):
             if not getattr(self, name).strip():
                 raise ValueError(f"{name} 不能为空")

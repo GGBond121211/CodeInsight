@@ -4,10 +4,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-RetrievalMode = Literal["lexical", "bm25", "hybrid"]
+RetrievalMode = Literal["lexical", "bm25", "hybrid", "dense", "sparse"]
 RetrievalReason = Literal[
     "direct_match",
     "semantic_match",
+    "dense_match",
+    "sparse_match",
     "hybrid_match",
 ]
 
@@ -15,7 +17,7 @@ RetrievalReason = Literal[
 class SearchRequest(BaseModel):
     repository_root: str = Field(min_length=1)
     question: str = Field(min_length=1)
-    limit: int = Field(default=5, ge=1, le=20)
+    limit: int = Field(default=10, ge=1, le=20)
     retrieval_mode: RetrievalMode = "hybrid"
 
     @field_validator("repository_root", "question")
@@ -30,7 +32,7 @@ class SearchRequest(BaseModel):
 class AnswerRequest(BaseModel):
     repository_root: str = Field(min_length=1)
     question: str = Field(min_length=1)
-    limit: int = Field(default=5, ge=1, le=20)
+    limit: int = Field(default=10, ge=1, le=20)
     retrieval_mode: RetrievalMode = "hybrid"
 
     @field_validator("repository_root", "question")
@@ -49,7 +51,7 @@ class AgentAnswerRequest(AnswerRequest):
 class AutoAnswerRequest(BaseModel):
     repository_root: str = Field(min_length=1)
     question: str = Field(min_length=1)
-    limit: int = Field(default=5, ge=1, le=20)
+    limit: int = Field(default=10, ge=1, le=20)
     force_route: Literal["linear", "agent"] | None = None
 
     @field_validator("repository_root", "question")
@@ -278,7 +280,7 @@ class ChatTurnRequest(BaseModel):
     repository_root: str = Field(min_length=1)
     message: str = Field(min_length=1)
     client_turn_id: str | None = None
-    limit: int = Field(default=5, ge=1, le=20)
+    limit: int = Field(default=10, ge=1, le=20)
     validation_profile: str = "python_compile"
     show_debug_reasoning: bool = False
 

@@ -63,7 +63,7 @@ class StdioMCPClient:
         ).start()
         try:
             initialized = self._request(
-                "initialize", {"clientInfo": {"name": "codeinsight-host", "version": "step5"}}
+                "initialize", {"clientInfo": {"name": "codeinsight-host", "version": "2.1.0"}}
             )
             if "error" in initialized:
                 raise RuntimeError("MCP initialize 失败")

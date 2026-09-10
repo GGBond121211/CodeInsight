@@ -10,7 +10,7 @@ from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
 from codeinsight.api.app import create_app
 from codeinsight.application.change_service import ChangeService
 from codeinsight.domain.answer import ModelCompletion
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
 from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.infrastructure.sandbox import SandboxPreflightResult, SandboxResult
@@ -54,7 +54,13 @@ class FakeChatModel:
 
 class FakeEmbedding:
     def embed(self, texts):
-        return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+        return EmbeddingBatch(
+            "fake",
+            tuple((1.0, 0.0) for _ in texts),
+            len(texts),
+            tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+            "dense-sparse-v1",
+        )
 
 
 class FakeReranker:

@@ -10,15 +10,30 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from codeinsight.agent.tool_loop import ToolCall, ToolResult
-from codeinsight.application.search_repository import search_repository
+from codeinsight.application.search_repository import DEFAULT_FINAL_TOP_K, search_repository
+from codeinsight.domain.code_intelligence import AVAILABLE, CodeIntelligenceResult
+from codeinsight.domain.errors import (
+    ModelCallError,
+    ModelConfigurationError,
+    ModelResponseError,
+    QdrantNotConfiguredError,
+    QdrantUnavailableError,
+)
 from codeinsight.infrastructure.event_log import InMemoryEventLog
+from codeinsight.infrastructure.lsp_client import LspDefinitionService
+from codeinsight.infrastructure.scip_reader import ScipReferenceReader
 from codeinsight.infrastructure.tool_registry import ToolRegistry, build_default_registry
 from codeinsight.ingestion.path_policy import safe_path, safe_relative_path
-from codeinsight.retrieval.repository_map import build_repository_map
+from codeinsight.retrieval.repository_map import (
+    build_repository_map,
+    query_repository_map,
+    repository_fingerprint,
+)
 
 
 class ToolExecutor:
@@ -29,6 +44,8 @@ class ToolExecutor:
         registry: ToolRegistry | None = None,
         run_id: str = "local-run",
         event_log: InMemoryEventLog | None = None,
+        embedding_factory: Callable[[], object] | None = None,
+        reranker_factory: Callable[[], object] | None = None,
     ) -> None:
         root = Path(repository_root).resolve()
         if not root.is_dir():
@@ -38,6 +55,13 @@ class ToolExecutor:
         self.run_id = run_id
         self.event_log = event_log
         self._patches: dict[str, dict[str, object]] = {}
+        # MCP Server main 会显式注入真实模型工厂；直接构造 Executor 的测试和
+        # 本地工具若未注入能力则返回 NOT_CONFIGURED，不会意外发起网络请求。
+        self._embedding_factory = embedding_factory
+        self._reranker_factory = reranker_factory
+        self._map_cache = None
+        self._lsp = LspDefinitionService(self.root)
+        self._scip = ScipReferenceReader(self.root)
 
     def execute(self, call: ToolCall) -> ToolResult:
         spec = self.registry.get(call.name)
@@ -46,6 +70,9 @@ class ToolExecutor:
         validation_error = self._validate_arguments(spec.input_schema, call.arguments)
         if validation_error:
             return ToolResult.failure(call.id, call.name, "VALIDATION", validation_error)
+        cross_validation_error = self._validate_cross_arguments(call)
+        if cross_validation_error:
+            return ToolResult.failure(call.id, call.name, "VALIDATION", cross_validation_error)
         try:
             if call.name == "search_repository":
                 return self._search(call)
@@ -53,6 +80,10 @@ class ToolExecutor:
                 return self._read_file(call)
             if call.name == "get_repository_map":
                 return self._repository_map(call)
+            if call.name == "lsp_definition":
+                return self._lsp_definition(call)
+            if call.name == "scip_references":
+                return self._scip_references(call)
             if call.name == "get_evidence_context":
                 return self._evidence_context(call)
             if call.name == "generate_patch":
@@ -83,8 +114,43 @@ class ToolExecutor:
     def _search(self, call: ToolCall) -> ToolResult:
         args = call.arguments
         question = str(args["question"])
-        limit = int(args.get("limit", 5))
-        hits = search_repository(self.root, question, limit=limit, retrieval_mode="bm25")
+        limit = int(args.get("limit", DEFAULT_FINAL_TOP_K))
+        if self._embedding_factory is None or self._reranker_factory is None:
+            return ToolResult.failure(
+                call.id,
+                call.name,
+                "NOT_CONFIGURED",
+                "MCP Dense/Sparse 检索未配置 Embedding 和 Rerank 能力",
+            )
+        try:
+            embedder = self._embedding_factory()
+            reranker = self._reranker_factory()
+            embed = getattr(embedder, "embed", None)
+            if not callable(embed) or not callable(getattr(reranker, "rerank", None)):
+                return ToolResult.failure(
+                    call.id,
+                    call.name,
+                    "NOT_CONFIGURED",
+                    "MCP Dense/Sparse 检索依赖不满足适配器契约",
+                )
+            hits = search_repository(
+                self.root,
+                question,
+                limit=limit,
+                retrieval_mode="hybrid",
+                semantic_embed=embed,
+                reranker=reranker,
+            )
+        except QdrantNotConfiguredError as error:
+            return ToolResult.failure(call.id, call.name, "QDRANT_NOT_CONFIGURED", str(error))
+        except QdrantUnavailableError as error:
+            return ToolResult.failure(call.id, call.name, "QDRANT_UNAVAILABLE", str(error))
+        except ModelConfigurationError as error:
+            return ToolResult.failure(call.id, call.name, "NOT_CONFIGURED", str(error))
+        except ModelResponseError as error:
+            return ToolResult.failure(call.id, call.name, "INVALID_RESPONSE", str(error))
+        except ModelCallError:
+            return ToolResult.failure(call.id, call.name, "UPSTREAM_5XX", "检索模型请求失败")
         data = {"results": [_serialize_hit(item) for item in hits], "untrusted": True}
         return ToolResult.success(call.id, call.name, data, state_fingerprint=_fingerprint(data))
 
@@ -112,17 +178,48 @@ class ToolExecutor:
         )
 
     def _repository_map(self, call: ToolCall) -> ToolResult:
-        repo_map = build_repository_map(self.root)
-        data = {
-            "repo_id": repo_map.repo_id,
-            "index_version": repo_map.index_version,
-            "symbols": list(repo_map.symbols),
-            "imports": [list(item) for item in repo_map.imports],
-            "file_summaries": [list(item) for item in repo_map.file_summaries],
-            "untrusted": True,
-            "purpose": "navigation_only",
-        }
+        current_fingerprint = repository_fingerprint(self.root)
+        if self._map_cache is None or self._map_cache.repo_fingerprint != current_fingerprint:
+            self._map_cache = build_repository_map(self.root)
+        args = call.arguments
+        include = args.get("include", ["files", "symbols", "imports"])
+        page = query_repository_map(
+            self.root,
+            path_prefix=_optional_string(args.get("path_prefix")),
+            symbol_query=_optional_string(args.get("symbol_query")),
+            include=tuple(include),  # type: ignore[arg-type]
+            max_files=int(args.get("max_files", 200)),
+            max_symbols=int(args.get("max_symbols", 400)),
+            max_imports=int(args.get("max_imports", 400)),
+            cursor=_optional_string(args.get("cursor")),
+            token_budget=int(args.get("token_budget", 8000)),
+            repo_map=self._map_cache,
+        )
+        data = page.as_dict()
         return ToolResult.success(call.id, call.name, data, state_fingerprint=_fingerprint(data))
+
+    def _lsp_definition(self, call: ToolCall) -> ToolResult:
+        args = call.arguments
+        result = self._lsp.definition(
+            path=str(args["path"]),
+            line=int(args["line"]),
+            column=int(args["column"]),
+            language=_optional_string(args.get("language")),
+        )
+        return _code_intelligence_result(call, result)
+
+    def _scip_references(self, call: ToolCall) -> ToolResult:
+        args = call.arguments
+        result = self._scip.references(
+            symbol_id=_optional_string(args.get("symbol_id")),
+            path=_optional_string(args.get("path")),
+            line=_optional_int(args.get("line")),
+            column=_optional_int(args.get("column")),
+            index_version=_optional_string(args.get("index_version")),
+            cursor=_optional_string(args.get("cursor")),
+            limit=int(args.get("limit", 50)),
+        )
+        return _code_intelligence_result(call, result)
 
     def _evidence_context(self, call: ToolCall) -> ToolResult:
         result = self._search(call)
@@ -259,6 +356,9 @@ class ToolExecutor:
                     minimum_length = rule.get("minLength")
                     if isinstance(minimum_length, int) and len(value) < minimum_length:
                         return f"参数 {name} 不能为空"
+                    enum = rule.get("enum")
+                    if isinstance(enum, list) and value not in enum:
+                        return f"参数 {name} 不在允许值范围内"
                 if isinstance(rule, dict) and rule.get("type") == "integer":
                     if not isinstance(value, int) or isinstance(value, bool):
                         return f"参数 {name} 必须是 integer"
@@ -268,6 +368,39 @@ class ToolExecutor:
                         return f"参数 {name} 小于最小值"
                     if isinstance(maximum, int) and value > maximum:
                         return f"参数 {name} 大于最大值"
+                if isinstance(rule, dict) and rule.get("type") == "array":
+                    if not isinstance(value, list):
+                        return f"参数 {name} 必须是 array"
+                    minimum_items = rule.get("minItems")
+                    maximum_items = rule.get("maxItems")
+                    if isinstance(minimum_items, int) and len(value) < minimum_items:
+                        return f"参数 {name} 至少需要 {minimum_items} 项"
+                    if isinstance(maximum_items, int) and len(value) > maximum_items:
+                        return f"参数 {name} 至多允许 {maximum_items} 项"
+                    item_rule = rule.get("items")
+                    if isinstance(item_rule, dict) and item_rule.get("type") == "string":
+                        item_enum = item_rule.get("enum")
+                        for item in value:
+                            if not isinstance(item, str):
+                                return f"参数 {name} 的每一项必须是 string"
+                            if isinstance(item_enum, list) and item not in item_enum:
+                                return f"参数 {name} 含有不允许的值"
+        return None
+
+    @staticmethod
+    def _validate_cross_arguments(call: ToolCall) -> str | None:
+        if call.name == "get_repository_map":
+            include = call.arguments.get("include")
+            if isinstance(include, list) and len(set(include)) != len(include):
+                return "参数 include 不能包含重复项"
+        if call.name == "scip_references":
+            has_symbol = isinstance(call.arguments.get("symbol_id"), str)
+            location_names = ("path", "line", "column")
+            present = [name in call.arguments for name in location_names]
+            if not has_symbol and not all(present):
+                return "scip_references 必须提供 symbol_id，或同时提供 path、line、column"
+            if any(present) and not all(present):
+                return "scip_references 的 path、line、column 必须同时提供"
         return None
 
 
@@ -283,6 +416,29 @@ def _serialize_hit(item: Any) -> dict[str, object]:
         "rank": item.rank,
         "untrusted": True,
     }
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _code_intelligence_result(call: ToolCall, result: CodeIntelligenceResult) -> ToolResult:
+    data = result.as_dict()
+    state = _fingerprint({"status": result.status, "locations": data.get("locations", [])})
+    if result.status == AVAILABLE:
+        return ToolResult.success(call.id, call.name, data, state_fingerprint=state)
+    return ToolResult.failure(
+        call.id,
+        call.name,
+        result.status,
+        result.message or "code intelligence 工具未能返回结果",
+        data=data,
+        state_fingerprint=state,
+    )
 
 
 def _fingerprint(value: object) -> str:

@@ -20,10 +20,14 @@
 #   pending                暂时默认值，尚无足够实验依据
 #   not_implemented        只登记了未来需求，当前尚未实现
 #   user_selected_unverified 用户直接固定但未做 A/B，不能作为最优性证据
+#   incomplete_retest_required 历史结果口径不足，必须先复测
+#   measured_unoptimized 已有测量，但没有参数优化对照
+#   implemented_unoptimized 已实现并有契约，但尚未证明取值最优
 
 schema_version: 1
 created_at: "2026-09-02"
-authority: "docs/BOUNDARIES.md 顶部『2.0 生效边界』"
+authority: "docs/RELEASE_2_1_0_Q1_Q5.md 的当前升级边界；历史 2.0 结果仍只作对照"
+experiment_baseline: "experiments/configs/baseline_2_1_0.yaml"
 
 # ===========================================================================
 # hard_gate —— 安全门禁，实验不得触碰
@@ -125,6 +129,8 @@ tunable:
   - name: chunking_strategy
     current: "fixed_lines"
     step8_selected: "structural_v1"
+    runtime_status: "fixed_lines_is_formal_runtime_default"
+    user_selected_candidate: "structural_v1"
     unit: enum
     candidates: ["fixed_lines", "structural_v1"]
     scope: "ingestion/chunker.py; ingestion/structural_chunker.py"
@@ -132,9 +138,9 @@ tunable:
     evidence: "EXP-001B 2026-09-04：structural_v1 的 Complete Coverage 0.2917、Evidence Recall 0.5279，低于 fixed_lines 的 0.7917、0.9070"
     evidence_status: user_selected_unverified
     priority: high
-    note: "2026-09-04 用户按 JavaGuide 结构切分原则直接采用；不做本轮 A/B，超长/解析失败保留固定行回退。"
+    note: "structural_v1 仍是用户指定候选，但当前正式搜索入口没有调用它；固定行回退不等于结构策略已接入。"
 
-  # --- BM25 ---
+  # --- 2.0 BM25 历史参数（不再由 2.1 正常路由使用） ---
   - name: bm25_k1
     current: 1.2
     unit: dimensionless
@@ -142,6 +148,8 @@ tunable:
     safety_ceiling: 3.0
     scope: "retrieval/bm25.py"
     evidence: "标准默认，DEC-0007 标为暂定"
+    runtime_status: historical_only
+    evidence_status: supported_by_contract
     priority: low
 
   - name: bm25_b
@@ -152,7 +160,19 @@ tunable:
     ceiling_reason: "b 的定义域为 [0,1]"
     scope: "retrieval/bm25.py"
     evidence: "同上"
+    runtime_status: historical_only
+    evidence_status: supported_by_contract
     priority: low
+
+  # --- 2.1 Provider Dense/Sparse 契约 ---
+  - name: embedding_vector_schema
+    current: "dense-sparse-v1"
+    unit: schema
+    candidates: ["dense-sparse-v1"]
+    scope: "domain/semantic.py; infrastructure/embeddings.py"
+    evidence: "Provider Sparse 字段按登记格式解析；缺失或批次不齐时受控失败，不回退 BM25"
+    evidence_status: supported_by_contract
+    priority: high
 
   # --- 融合 ---
   - name: rrf_k
@@ -160,19 +180,31 @@ tunable:
     unit: rank_offset
     candidates: [20, 60, 100]
     safety_ceiling: 1000
-    scope: "retrieval/hybrid.py"
+    scope: "retrieval/hybrid.py:rrf_k"
     experiment: "R-14②"
     evidence: "沿用文献常用值，未做敏感性分析"
     priority: medium
 
-  - name: source_weight_semantic
-    current: 0.8
+  - name: source_weight_dense
+    current: 1.0
     unit: weight
-    candidates: [0.5, 0.8, 1.0]
+    candidates: [1.0]
     safety_ceiling: 2.0
-    scope: "retrieval/hybrid.py（BM25 固定为 1.0 作参照）"
+    scope: "retrieval/hybrid.py（Dense 来源）"
     experiment: "R-14②"
-    evidence: none
+    evidence: "Q-003 固定 Dense 与 Sparse 对称权重"
+    evidence_status: user_selected_unverified
+    priority: medium
+
+  - name: source_weight_sparse
+    current: 1.0
+    unit: weight
+    candidates: [1.0]
+    safety_ceiling: 2.0
+    scope: "retrieval/hybrid.py（Provider Sparse 来源）"
+    experiment: "R-14②"
+    evidence: "Q-003 固定 Dense 与 Sparse 对称权重"
+    evidence_status: user_selected_unverified
     priority: medium
 
   - name: semantic_min_score
@@ -181,33 +213,54 @@ tunable:
     candidates: [0.0, 0.20, 0.35]
     safety_ceiling: 0.60
     ceiling_reason: "阈值过高会把正确证据挡在候选之外，漏召回无法由后续重排挽回"
-    scope: "retrieval/semantic.py:120"
+    scope: "retrieval/semantic.py:search_chunks_dense"
     experiment: "R-14②"
     evidence: none
     priority: medium
 
   # --- 候选与 Top-K ---
   - name: hybrid_candidate_limit
-    current: 20
+    current: 100
     step8_selected: 100
     unit: count
     candidates: [20, 50, 100]
     safety_ceiling: 200
     ceiling_reason: "候选越多重排成本越高，且噪声可能盖过信号"
-    scope: "application/search_repository.py:20"
-    evidence: "2026-09-04 用户直接指定，不做候选池容量实验"
-    evidence_status: user_selected_unverified
+    scope: "application/search_repository.py:23,81,118"
+    evidence: "当前正式搜索入口常量为 100；历史登记的 20 已过期"
+    evidence_status: verified_runtime
     priority: medium
     note: "候选值仍保留为历史记录；本轮固定 100，不做 A/B。"
 
+  - name: dense_candidate_limit
+    current: 40
+    unit: count
+    candidates: [40]
+    safety_ceiling: 200
+    scope: "application/search_repository.py"
+    evidence: "Q-003 固定 Dense 粗召回 40"
+    evidence_status: user_selected_unverified
+    priority: high
+
+  - name: sparse_candidate_limit
+    current: 40
+    unit: count
+    candidates: [40]
+    safety_ceiling: 200
+    scope: "application/search_repository.py"
+    evidence: "Q-003 固定 Provider Sparse 粗召回 40"
+    evidence_status: user_selected_unverified
+    priority: high
+
   - name: final_top_k
-    current: 5
+    current: 10
     step8_selected: 10
+    user_selected_candidate: 10
     unit: count
     candidates: [5, 10, 20]
     safety_ceiling: 50
     ceiling_reason: "直接决定进 Prompt 的证据量与 token 成本"
-    evidence: "2026-09-04 用户直接指定，不做 Top-K 对照"
+    evidence: "2.1 正常搜索和 API 默认 limit=10"
     evidence_status: user_selected_unverified
     priority: medium
 
@@ -314,6 +367,16 @@ tunable:
     priority: medium
     note: "阈值调低会跨问题串答案，须与 R-8 的缓存键规则一起验证。"
 
+  - name: query_rewrite
+    current: false
+    unit: bool
+    candidates: [false, true]
+    scope: "当前正式搜索入口未实现；实验矩阵 EXP-008"
+    status: not_implemented
+    evidence_status: not_implemented
+    priority: medium
+    note: "旧配置中的 on 只是计划值；必须先实现并保留原始 query，再做 off/on 对照。"
+
 # ===========================================================================
 # Step 3 新增参数与决定的证据登记
 #
@@ -356,11 +419,11 @@ step3_evidence_register:
     unit: strategy
     source: "backend/src/codeinsight/application/context_budget.py:16-24"
     basis: "不引入 tokenizer 依赖的确定性工程近似"
-    evidence: "DEC-0045; 2026-09-04 three real DeepSeek probes"
-    evidence_status: measured
+    evidence: "DEC-0045; 2026-09-04 three real DeepSeek probes only verified usage observability"
+    evidence_status: pending
     validation: "对同一批真实 DeepSeek 请求比较估算 prompt tokens 与 API usage.prompt_tokens 的误差"
     owner_step: Step 3 (baseline); Step 8 (calibration)
-    note: "有工程理由，但没有真实模型 tokenizer 误差数据，不能标 measured"
+    note: "有工程理由，但没有足够的真实模型 tokenizer 误差校准数据。"
 
   - id: S3-P04
     kind: parameter
@@ -481,6 +544,18 @@ step3_evidence_register:
     evidence_status: measured
     validation: "Step 7/9 决定是否需要 single-flight/分布式锁，并测锁的延迟与故障代价"
     owner_step: Step 7
+
+  - id: S3-P14
+    kind: validation
+    name: conversation_context_evaluation_dataset
+    current: "conversation_2_1_0: 24 cases / 123 turns"
+    unit: dataset
+    source: "backend/tests/evals/conversation_cases_2_1_0.json; experiments/configs/experiment_splits_2_1_0.yaml"
+    basis: "单轮 Master-200 不能测量同一 Session 的目标延续、上下文保留、范围引导和多轮缓存观测"
+    evidence: "DATASET-READINESS-2.1.0：结构、Evidence、split、hash 和 Agent 源码审查通过"
+    evidence_status: implemented_unoptimized
+    validation: "使用真实 Provider 分层报告 route、required_fact_recall、goal_continuity、compaction、cache 和 usage；holdout 只在最终验证使用"
+    owner_step: Step 8
 
 # ===========================================================================
 # Step 8 Gateway 成熟度登记

@@ -10,6 +10,7 @@ from codeinsight.agent.state import CitationAgentState
 from codeinsight.application.answer_repository import map_model_answer
 from codeinsight.application.search_repository import (
     build_repository_semantic_index,
+    prepare_runtime_vector_store,
     retrieve_subquestion_evidence,
     search_repository,
 )
@@ -234,6 +235,7 @@ def _retrieve_query_plan(
     search: SearchRepository,
     semantic_embed: SemanticEmbed | None,
     semantic_index,
+    semantic_store,
     reranker: Reranker | None,
 ) -> tuple[
     tuple[RankedChunk, ...],
@@ -251,6 +253,7 @@ def _retrieve_query_plan(
             limit=state["limit"],
             semantic_embed=semantic_embed,
             semantic_index=semantic_index,
+            semantic_store=semantic_store,
             reranker=reranker,
             search=search,
         )
@@ -314,12 +317,15 @@ def run_citation_agent(
 
     retrieval_embed = tracked_semantic_embed if semantic_embed is not None else None
     semantic_index = None
+    semantic_store = None
     if retrieval_embed is not None and (retrieval_mode == "hybrid" or query_plan is not None):
         semantic_index = build_repository_semantic_index(
             repository_root,
             semantic_embed=retrieval_embed,
             semantic_model=embedding_model_id(semantic_embed),
+            require_sparse=True,
         )
+        semantic_store = prepare_runtime_vector_store(repository_root, semantic_index)
 
     def retrieve(state: CitationAgentState) -> CitationAgentState:
         if state.get("query_plan"):
@@ -328,6 +334,7 @@ def run_citation_agent(
                 search=search,
                 semantic_embed=retrieval_embed,
                 semantic_index=semantic_index,
+                semantic_store=semantic_store,
                 reranker=reranker,
             )
         else:
@@ -338,6 +345,7 @@ def run_citation_agent(
                 retrieval_mode=state["retrieval_mode"],
                 semantic_embed=retrieval_embed,
                 semantic_index=semantic_index,
+                semantic_store=semantic_store,
                 reranker=reranker,
             )
             groups = ()

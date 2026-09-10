@@ -11,8 +11,9 @@ def test_real_mcp_stdio_discovers_tools_and_executes_through_executor():
         tools = client.list_tools()
         names = {str(item["name"]) for item in tools}
         result = client.call_tool(ToolCall("read-1", "read_file", {"path": "src/shop/models.py"}))
-    assert len(names) == 8
+    assert len(names) == 10
     assert "search_repository" in names
+    assert {"lsp_definition", "scip_references"} <= names
     assert result.ok
     assert result.data["path"] == "src/shop/models.py"
 

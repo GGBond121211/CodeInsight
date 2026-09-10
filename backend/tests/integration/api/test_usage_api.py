@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from codeinsight.api.app import create_app
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
-from codeinsight.domain.semantic import EmbeddingBatch
+from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.model_gateway import GatewayRequest, ModelGateway
 from codeinsight.infrastructure.otel import Telemetry
 from codeinsight.infrastructure.provider_adapters import ProviderResponse
@@ -32,7 +32,13 @@ class FakeModel:
 class FakeEmbedding:
     @staticmethod
     def embed(texts):
-        return EmbeddingBatch("fake", tuple((1.0, 0.0) for _ in texts), len(texts))
+        return EmbeddingBatch(
+            "fake",
+            tuple((1.0, 0.0) for _ in texts),
+            len(texts),
+            tuple(SparseEmbedding((1,), (1.0,)) for _ in texts),
+            "dense-sparse-v1",
+        )
 
 
 class FakeReranker:

@@ -86,6 +86,54 @@ def test_embedding_adapter_maps_vectors_and_usage() -> None:
     assert embeddings.calls == [{"model": "test-embedding", "input": ["first", "second"]}]
 
 
+def test_embedding_adapter_preserves_provider_sparse_vectors_and_order() -> None:
+    embeddings = _FakeEmbeddings(
+        SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    index=1,
+                    embedding=[0.0, 1.0],
+                    sparse_embedding=SimpleNamespace(indices=[3], values=[0.5]),
+                ),
+                SimpleNamespace(
+                    index=0,
+                    embedding=[1.0, 0.0],
+                    sparse_embedding=SimpleNamespace(indices=[1, 4], values=[1.0, 0.2]),
+                ),
+            ],
+            usage=SimpleNamespace(total_tokens=7),
+        )
+    )
+    model = OpenAIEmbeddingModel(client=_fake_client(embeddings), model="test-embedding")  # type: ignore[arg-type]
+
+    result = model.embed(("first", "second"))
+
+    assert result.response_schema_version == "dense-sparse-v1"
+    assert result.sparse_vectors is not None
+    assert result.sparse_vectors[0].indices == (1, 4)
+    assert result.sparse_vectors[1].values == (0.5,)
+
+
+def test_embedding_adapter_rejects_partial_provider_sparse_batch() -> None:
+    embeddings = _FakeEmbeddings(
+        SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    index=0,
+                    embedding=[1.0, 0.0],
+                    sparse_embedding=SimpleNamespace(indices=[1], values=[1.0]),
+                ),
+                SimpleNamespace(index=1, embedding=[0.0, 1.0]),
+            ],
+            usage=None,
+        )
+    )
+    model = OpenAIEmbeddingModel(client=_fake_client(embeddings), model="test-embedding")  # type: ignore[arg-type]
+
+    with pytest.raises(ModelResponseError, match="Dense/Sparse"):
+        model.embed(("first", "second"))
+
+
 def test_embedding_adapter_rejects_incomplete_response() -> None:
     embeddings = _FakeEmbeddings(
         SimpleNamespace(

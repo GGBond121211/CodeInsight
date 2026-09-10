@@ -4,6 +4,7 @@ from codeinsight.domain.semantic import (
     SemanticIndex,
     SemanticIndexEntry,
     SemanticModelMetadata,
+    SparseEmbedding,
 )
 from codeinsight.domain.source import SourceChunk
 from codeinsight.retrieval.index_pipeline import (
@@ -19,7 +20,14 @@ from codeinsight.retrieval.vector_store import LocalJsonVectorStore, VectorPoint
 def _index() -> SemanticIndex:
     metadata = SemanticModelMetadata("embedding-a", 2, "multilingual", "test", "index")
     chunk = SourceChunk("src/app.py", 3, 5, "def run():\n    return 1", "run")
-    entry = SemanticIndexEntry("point-a", chunk, (1.0, 0.0), "chunk-hash", metadata)
+    entry = SemanticIndexEntry(
+        "point-a",
+        chunk,
+        (1.0, 0.0),
+        "chunk-hash",
+        metadata,
+        SparseEmbedding((1,), (0.5,)),
+    )
     return SemanticIndex(metadata, (entry,))
 
 
@@ -32,11 +40,16 @@ def test_vector_points_carry_evidence_and_repository_metadata() -> None:
     )
 
     validate_vector_points(points)
+    validate_vector_points(points, require_sparse=True)
     assert points[0].point_id == "point-a"
     assert points[0].payload["path"] == "src/app.py"
     assert points[0].payload["startLine"] == 3
     assert points[0].payload["language"] == "python"
     assert points[0].payload["module"] == "src.app"
+    assert points[0].payload["indexVersion"] == "index"
+    assert points[0].payload["embeddingModel"] == "embedding-a"
+    assert points[0].payload["vectorSchemaVersion"] == "dense-sparse-v1"
+    assert points[0].sparse_vector == SparseEmbedding((1,), (0.5,))
 
 
 def test_incremental_plan_deletes_changed_file_and_keeps_unchanged_file() -> None:
