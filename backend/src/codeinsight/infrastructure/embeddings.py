@@ -17,9 +17,12 @@ EMBEDDING_BATCH_SIZE = 16
 class OpenAIEmbeddingModel:
     """连接一个已配置的多语言 Embedding 服务的最小适配器。"""
 
-    def __init__(self, *, client: OpenAI, model: str) -> None:
+    def __init__(self, *, client: OpenAI, model: str, output_type: str | None = None) -> None:
         self._client = client
         self.model = model
+        # 部分 Provider 默认只返回 Dense，需要显式请求 dense&sparse 才带稀疏向量。
+        # 未配置时保持请求形状不变，避免把参数发给不支持它的端点。
+        self.output_type = output_type
 
     @classmethod
     def from_environment(
@@ -30,6 +33,7 @@ class OpenAIEmbeddingModel:
         api_key = source.get("CODEINSIGHT_EMBEDDING_API_KEY") or source.get("CODEINSIGHT_API_KEY")
         model = source.get("CODEINSIGHT_EMBEDDING_MODEL")
         base_url = source.get("CODEINSIGHT_EMBEDDING_BASE_URL")
+        output_type = (source.get("CODEINSIGHT_EMBEDDING_OUTPUT_TYPE") or "").strip() or None
         if not base_url:
             base_url = configured_chat_base_url(source)
         if not api_key:
@@ -44,7 +48,7 @@ class OpenAIEmbeddingModel:
             timeout=30.0,
             max_retries=0,
         )
-        return cls(client=client, model=model)
+        return cls(client=client, model=model, output_type=output_type)
 
     def embed(self, texts: Sequence[str]) -> EmbeddingBatch:
         """为非空文本批次生成向量，并保留服务商用量信息。"""
@@ -61,11 +65,11 @@ class OpenAIEmbeddingModel:
         usage_available = True
         for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
             batch = list(texts[start : start + EMBEDDING_BATCH_SIZE])
+            request: dict[str, object] = {"model": self.model, "input": batch}
+            if self.output_type is not None:
+                request["extra_body"] = {"output_type": self.output_type}
             try:
-                response = self._client.embeddings.create(
-                    model=self.model,
-                    input=batch,
-                )
+                response = self._client.embeddings.create(**request)
             except OpenAIError as error:
                 code = getattr(error, "code", None) or type(error).__name__
                 raise ModelCallError(f"Embedding 请求失败（{code}）") from error
@@ -135,17 +139,43 @@ def _parse_sparse_embedding(item: object) -> SparseEmbedding | None:
             return None
         candidate = {"indices": indices, "values": values}
 
+    try:
+        pairs = _sparse_pairs(candidate)
+        # Provider 可能按权重而不是索引返回；domain 的 SparseEmbedding 要求索引升序。
+        pairs.sort(key=lambda pair: pair[0])
+        return SparseEmbedding(
+            tuple(index for index, _ in pairs),
+            tuple(value for _, value in pairs),
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ModelResponseError("Embedding 的 Sparse 结果格式无效") from error
+
+
+def _sparse_pairs(candidate: object) -> list[tuple[int, float]]:
+    """把已登记的两种 Sparse 表示统一成 (index, value) 列表。
+
+    一是 ``{"indices": [...], "values": [...]}``；二是 Provider 实际返回的
+    ``[{"index": 9026, "value": 2.88, "token": "..."}, ...]``（阿里云 MaaS）。
+    """
+
+    if isinstance(candidate, (list, tuple)):
+        pairs: list[tuple[int, float]] = []
+        for entry in candidate:
+            index = _value(entry, "index")
+            value = _value(entry, "value")
+            if index is None or value is None:
+                raise ModelResponseError("Embedding 的 Sparse 项必须包含 index 和 value")
+            pairs.append((int(index), float(value)))
+        return pairs
+
     indices = _value(candidate, "indices")
     values = _value(candidate, "values")
     if not isinstance(indices, (list, tuple)) or not isinstance(values, (list, tuple)):
         raise ModelResponseError("Embedding 的 Sparse 结果必须包含 indices 和 values 数组")
-    try:
-        return SparseEmbedding(
-            tuple(int(index) for index in indices),
-            tuple(float(value) for value in values),
-        )
-    except (TypeError, ValueError, OverflowError) as error:
-        raise ModelResponseError("Embedding 的 Sparse 结果格式无效") from error
+    return [
+        (int(index), float(value))
+        for index, value in zip(indices, values, strict=True)
+    ]
 
 
 def _value(item: object, name: str) -> object | None:

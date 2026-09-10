@@ -114,6 +114,71 @@ def test_embedding_adapter_preserves_provider_sparse_vectors_and_order() -> None
     assert result.sparse_vectors[1].values == (0.5,)
 
 
+def test_embedding_adapter_requests_provider_sparse_when_configured() -> None:
+    embeddings = _FakeEmbeddings(
+        SimpleNamespace(
+            data=[SimpleNamespace(index=0, embedding=[1.0, 0.0])],
+            usage=SimpleNamespace(total_tokens=3),
+        )
+    )
+    model = OpenAIEmbeddingModel(  # type: ignore[arg-type]
+        client=_fake_client(embeddings), model="test-embedding", output_type="dense&sparse"
+    )
+
+    model.embed(("first",))
+
+    assert embeddings.calls == [
+        {
+            "model": "test-embedding",
+            "input": ["first"],
+            "extra_body": {"output_type": "dense&sparse"},
+        }
+    ]
+
+
+def test_embedding_environment_reads_output_type() -> None:
+    model = OpenAIEmbeddingModel.from_environment(
+        {
+            "CODEINSIGHT_EMBEDDING_API_KEY": "key",
+            "CODEINSIGHT_EMBEDDING_MODEL": "test-embedding",
+            "CODEINSIGHT_EMBEDDING_BASE_URL": "https://embedding.example/v1",
+            "CODEINSIGHT_EMBEDDING_OUTPUT_TYPE": "dense&sparse",
+        }
+    )
+
+    assert model.output_type == "dense&sparse"
+
+
+def test_embedding_adapter_parses_provider_term_list_sparse_form() -> None:
+    """阿里云 MaaS 返回 [{index, value, token}]，且按权重而非索引排序。"""
+
+    embeddings = _FakeEmbeddings(
+        SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    index=0,
+                    embedding=[1.0, 0.0],
+                    sparse_embedding=[
+                        {"index": 9026, "value": 2.8855, "token": "添加"},
+                        {"index": 47, "value": 2.662, "token": "def"},
+                    ],
+                )
+            ],
+            usage=SimpleNamespace(total_tokens=5),
+        )
+    )
+    model = OpenAIEmbeddingModel(  # type: ignore[arg-type]
+        client=_fake_client(embeddings), model="test-embedding", output_type="dense&sparse"
+    )
+
+    result = model.embed(("def add",))
+
+    assert result.response_schema_version == "dense-sparse-v1"
+    assert result.sparse_vectors is not None
+    assert result.sparse_vectors[0].indices == (47, 9026)
+    assert result.sparse_vectors[0].values == (2.662, 2.8855)
+
+
 def test_embedding_adapter_rejects_partial_provider_sparse_batch() -> None:
     embeddings = _FakeEmbeddings(
         SimpleNamespace(

@@ -29,7 +29,9 @@ class FixedLspRegistry:
     """只登记项目明确支持的固定 server 命令。"""
 
     _SERVERS: dict[str, tuple[str, tuple[str, ...]]] = {
-        "python": ("pyright", ("--langserver", "--stdio")),
+        # pyright 1.1.4xx 起 language server 是独立入口；旧的
+        # ``pyright --langserver`` 会以 "Unexpected option" 直接退出。
+        "python": ("pyright-langserver", ("--stdio",)),
         "typescript": ("typescript-language-server", ("--stdio",)),
         "typescriptreact": ("typescript-language-server", ("--stdio",)),
     }

@@ -5,6 +5,7 @@ import json
 
 from codeinsight.agent.tool_loop import ToolCall
 from codeinsight.domain.code_intelligence import (
+    AVAILABLE,
     INDEX_NOT_FOUND,
     INDEX_STALE,
     NOT_CONFIGURED,
@@ -21,6 +22,23 @@ def test_fixed_lsp_registry_does_not_accept_unknown_languages(monkeypatch) -> No
 
     assert registry.resolve("ruby").status == UNSUPPORTED_LANGUAGE
     assert registry.resolve("python").status == NOT_CONFIGURED
+
+
+def test_fixed_lsp_registry_uses_modern_pyright_langserver_entrypoint(monkeypatch) -> None:
+    """pyright 1.1.4xx 不再接受 ``pyright --langserver``，会直接退出。"""
+
+    monkeypatch.setattr(
+        "codeinsight.infrastructure.lsp_registry.shutil.which",
+        lambda name: f"C:/tools/{name}.cmd",
+    )
+    registry = FixedLspRegistry()
+
+    python = registry.resolve("python")
+    typescript = registry.resolve("typescriptreact")
+
+    assert python.status == AVAILABLE
+    assert python.command == ("C:/tools/pyright-langserver.cmd", "--stdio")
+    assert typescript.command == ("C:/tools/typescript-language-server.cmd", "--stdio")
 
 
 def test_repository_map_cache_invalidates_after_source_change(tmp_path) -> None:

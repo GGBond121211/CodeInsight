@@ -41,10 +41,12 @@
 
 ## 未在本切片中宣称完成的事项
 
-1. 目标 Embedding Provider 的真实 Sparse 返回、usage 和端到端质量尚未重新取证。
-2. Qdrant 真实服务重启、旧数据迁移、生产 alias/控制表和 rollback 演练尚未形成发布级证据。
-3. 本机 LSP server 安装/版本与 SCIP index 生成器未登记为已验证能力。
-4. 2.1.0 的检索质量、延迟、Token 和成本没有用本切片的契约测试替代正式评测。
+1. 2.1.0 的检索质量、延迟、Token 和成本没有用本切片的契约测试替代正式评测。
+2. Qdrant 旧数据迁移、生产多节点集群和发布级 rollback 演练尚未形成发布级证据。
+3. Python 侧 SCIP 生成器在本机不可用（见下文），Python SCIP 引用只有契约测试，
+   没有本机导出取证。
+4. 仓库指纹只覆盖受支持文本扩展名（`.py/.pyi/.md/.txt/.toml/.yaml/.yml/.json`）；
+   `.ts` 不在其中，纯 TypeScript 源码改动不会把 SCIP 索引导向 `INDEX_STALE`。
 
 ## 2026-09-10 收尾复核
 
@@ -66,3 +68,69 @@
   `ruff check backend/src backend/tests experiments` 通过；`experiments/test_dataset_quality.py`
   与 `backend/tests/evals` 合计 `90 passed, 1 skipped`（含数据集准入回归）。
 - 上述三项环境缺口都没有在本次收尾中关闭，不能因为准入恢复 `PASS` 就扩大 Q1/Q2/Q5 的声明。
+
+## 2026-09-10 真实环境取证（关闭上述三项环境缺口）
+
+本节关闭上一节记录的三个环境缺口。所有真实调用都在 `codex/2.1.0-development` 工作树内进行，
+带请求级输出上限和 `max_retries=0`；没有写入密钥、原始供应商响应、用户隐私或模型隐藏推理。
+
+### Q1：真实 Embedding Provider 返回 Sparse
+
+- 真实端点只有显式声明输出类型时才同时返回 Dense 和 Sparse；不发声明默认只回 Dense。
+  适配器因此新增 `CODEINSIGHT_EMBEDDING_OUTPUT_TYPE`，设为 `dense&sparse` 才拿到稀疏坐标。
+- 供应商按权重降序返回稀疏项，而 `SparseEmbedding` 契约要求索引升序。适配器新增
+  `_sparse_pairs()` 归一化，兼容 `{indices, values}` 和 `[{index, value, token}]` 两种
+  真实存在的格式，并在出口统一排序。
+- 取证结果：`has_sparse=True`、schema `dense-sparse-v1`、`dense_dim=1024`、
+  单请求稀疏项 256/303 个、索引升序、`require_sparse_batch` 通过。
+- 边界：这只证明目标 Provider 会真实返回 Sparse，不构成检索质量证据。
+
+### Q2：真实 Qdrant 全流程与重启持久化
+
+- 真实服务为 `127.0.0.1:6335`（Qdrant 1.15.5，容器 `codeinsight-qdrant`，挂载持久化卷）。
+- 已取证：staging 写入 → publish → active alias 切换；dense 检索 5 hits；sparse 检索 5 hits；
+  改源码产生新 `index_version` 后 rollback 回上一版本成功。
+- 已取证：容器 restart 后 collection、alias、point 数量和 green 状态全部保留。
+- 演练使用独立 drill 前缀并已清理（残留 collection 0、alias 0），没有污染既有集合。
+
+### Q5：本机 LSP / SCIP
+
+| 工具 | 本机版本 | 状态 |
+| --- | --- | --- |
+| `pyright` | 1.1.414 | 可用 |
+| `pyright-langserver` | 1.1.414 | 可用（Python LSP 的正确入口） |
+| `typescript-language-server` | 6.0.0 | 可用 |
+| `typescript` | 5.9.3 | 可用 |
+| `scip-typescript` | 0.4.0 | 可用 |
+| `scip-python` | 0.6.6 | **Windows 不可用** |
+
+- 修复的真实缺陷：`lsp_registry` 原本把 Python 指向 `pyright --langserver --stdio`，
+  但 Pyright 1.1.4xx 已移除 `--langserver`，正确入口是 `pyright-langserver --stdio`；
+  照原样调用只会拿到 `Unexpected option`。注册表已改到正确入口并加回归测试。
+- 真实 LSP 取证：Python 里 `reserve` 的定义正确定位到 `src/shop/inventory.py`，
+  `status=AVAILABLE`、`server=pyright-langserver`；TypeScript 的本文件符号与跨文件符号都能定位。
+- 真实 SCIP 取证：`scip-typescript` 生成二进制索引，再走受控两步导出
+  （`node` 只做反序列化，`python` 落成 `.codeinsight/scip/index.json` 并复用项目自身的
+  `repository_fingerprint`），最后经 `ToolExecutor` 调用 `scip_references`。
+  跨文件符号 `add()` 返回 3 个位置（`math.ts` 定义、`use.ts` import、`use.ts` 调用）；
+  同文件符号返回 2 个位置；按 path/line/column 定位、cursor 分页、`INDEX_STALE`
+  （版本不匹配和指纹不匹配两条）与 `INDEX_NOT_FOUND` 都按契约返回。
+- **`scip-python` 在 Windows 直接崩溃**：`new RegExp(path.sep)` 没有转义反斜杠，
+  生成非法正则 `/\/g/`（Node 报 `Invalid regular expression: /\/g/: \ at end of pattern`）。
+  本机因此没有可用的 Python SCIP 生成器，
+  Python SCIP 引用保持“契约测试已过、无本机导出取证”的边界。
+- **指纹覆盖边界**：`TEXT_EXTENSIONS` 不含 `.ts`，所以只改 TypeScript 源码不会让索引失效。
+  对照实验里改动 `tsconfig.json`（受支持扩展名）会正确触发 `INDEX_STALE`，
+  但只要编辑落在 `.ts` 上守卫就不响。当前 SCIP 过期守卫对纯 TypeScript 仓库是失效的，
+  在扩大 TS 支持声明前必须处理。
+
+### 本节执行的验证
+
+- 受影响窄验证：`test_code_intelligence.py`、`test_embeddings.py`、`tests/unit/retrieval`
+  合计 `45 passed`。
+- 后端全量回归：`639 passed, 46 skipped`（上一节为 `632 passed, 49 skipped`）。
+  差额来自环境缺口关闭后不再跳过的用例：真实 Qdrant 集成测试（`test_qdrant_store.py`）
+  和 Docker 可用时的 compose 契约测试转为真实执行。
+- 剩余跳过项只有三类，都与本次改动无关：未配置 MySQL（44 项）、
+  外部 benchmark 工作树不随公开仓库分发（1 项）、当前 Windows 账户无创建符号链接权限（1 项）。
+- 未执行：2.1.0 检索质量 A/B、Token 成本评测，以及 Qdrant 生产集群/迁移演练。
