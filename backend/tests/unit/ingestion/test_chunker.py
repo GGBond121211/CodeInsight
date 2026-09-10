@@ -3,6 +3,7 @@
 import pytest
 
 from codeinsight.domain.source import ScanResult, SourceChunk, SourceFile
+from codeinsight.domain.tokens import estimate_tokens
 from codeinsight.ingestion.chunker import chunk_scan_result, chunk_source_file
 
 
@@ -125,3 +126,70 @@ def test_chunk_scan_result_preserves_file_order() -> None:
         ("m.py", 1, 2),
         ("m.py", 3, 4),
     ]
+
+
+# --- Q-006：token 上限 -------------------------------------------------------
+
+
+def test_max_tokens_default_is_none_and_changes_nothing() -> None:
+    """不传上限时行为必须与 2.1.0 之前完全一致，否则会静默改变索引身份。"""
+    source = SourceFile("a.py", "\n".join(f"line{index}" for index in range(1, 11)))
+    assert chunk_source_file(source, max_lines=4, max_tokens=None) == chunk_source_file(
+        source, max_lines=4
+    )
+
+
+def test_max_tokens_splits_a_block_that_exceeds_the_budget() -> None:
+    # 每行 8 个字符 -> 估算 2 token，加上换行分隔后 5 行约 11 token。
+    source = SourceFile("a.py", "\n".join("abcdefgh" for _ in range(6)))
+    chunks = chunk_source_file(source, max_lines=6, max_tokens=5)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert estimate_tokens(chunk.text) <= 5
+
+
+def test_max_tokens_keeps_line_numbers_contiguous_and_covering() -> None:
+    """子块必须覆盖原有行范围且不重叠，否则证据引用会错位。"""
+    source = SourceFile("a.py", "\n".join(f"payload_line_{index}" for index in range(1, 21)))
+    chunks = chunk_source_file(source, max_lines=20, max_tokens=12)
+    starts = [chunk.start_line for chunk in chunks]
+    ends = [chunk.end_line for chunk in chunks]
+    assert starts[1:] == [end + 1 for end in ends[:-1]]
+    assert all(start <= end for start, end in zip(starts, ends, strict=True))
+    assert chunks[0].start_line == 1
+    assert chunks[-1].end_line == 20
+
+
+def test_max_tokens_never_splits_a_single_oversized_line() -> None:
+    """整行是原子单位：切出半个语句会让定位和后续读取都失效。"""
+    long_line = "x" * 400
+    source = SourceFile("a.py", f"{long_line}\nshort")
+    chunks = chunk_source_file(source, max_lines=2, max_tokens=5)
+    assert chunks[0] == SourceChunk("a.py", 1, 1, long_line)
+
+
+def test_max_tokens_forces_sub_chunks_per_line_group() -> None:
+    source = SourceFile("a.py", "\n".join("abcdefgh" for _ in range(9)))
+    capped = chunk_source_file(source, max_lines=9, max_tokens=5)
+    uncapped = chunk_source_file(source, max_lines=9)
+    assert len(capped) > len(uncapped)
+    assert all(estimate_tokens(chunk.text) <= 5 for chunk in capped)
+
+
+@pytest.mark.parametrize("max_tokens", [0, -1])
+def test_non_positive_max_tokens_raises(max_tokens: int) -> None:
+    with pytest.raises(ValueError):
+        chunk_source_file(SourceFile("a.py", "x"), max_tokens=max_tokens)
+
+
+def test_chunk_scan_result_validates_max_tokens_without_files() -> None:
+    with pytest.raises(ValueError):
+        chunk_scan_result(ScanResult(files=(), skipped=()), max_tokens=0)
+
+
+def test_chunk_scan_result_passes_max_tokens_to_each_file() -> None:
+    files = (SourceFile("a.py", "\n".join("abcdefgh" for _ in range(6))),)
+    scan_result = ScanResult(files=files, skipped=())
+    capped = chunk_scan_result(scan_result, max_lines=6, max_tokens=5)
+    assert len(capped) > 1
+    assert all(estimate_tokens(chunk.text) <= 5 for chunk in capped)

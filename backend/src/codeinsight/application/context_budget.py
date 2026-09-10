@@ -16,14 +16,16 @@ from codeinsight.domain.memory import (
     ContextBudget,
     ContextSection,
 )
+from codeinsight.domain.tokens import estimate_tokens as domain_estimate_tokens
 
 
 def estimate_tokens(text: str) -> int:
-    """用确定性的保守近似估算 token，不引入 tokenizer 依赖。"""
-    if not text:
-        return 0
-    encoded_length = len(text.encode("utf-8"))
-    return max(1, (encoded_length + 3) // 4)
+    """用确定性的保守近似估算 token，不引入 tokenizer 依赖。
+
+    实体实现已下沉到 domain.tokens，供 ingestion 的切块 token 上限共用。
+    这里保留同名入口，避免既有调用方和登记表 S3-P03 的来源指针失效。
+    """
+    return domain_estimate_tokens(text)
 
 
 @dataclass(frozen=True)

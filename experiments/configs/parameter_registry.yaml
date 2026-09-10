@@ -109,10 +109,20 @@ tunable:
     ceiling_reason: "过大会稀释证据密度并撑爆 Context Budget"
     scope: "ingestion/chunker.py"
     experiment: "R-14① 九格对照"
-    evidence: "EXP-001 2026-09-04：80 行/0% 的探索性 complete coverage 为 0.7917；学习复核发现案例级上下文和 Top-K 合并口径未充分定义，需复测"
-    evidence_status: incomplete_retest_required
+    evidence: >-
+      EXP-001 2026-09-04：80 行/0% 的探索性 complete coverage 为 0.7917；
+      学习复核发现案例级上下文和 Top-K 合并口径未充分定义，需复测。
+      Q-006 2026-09-10（chunk_parameter_probe.py，deterministic）：
+      真实语料 backend/src 110 文件/21431 行的每行 token 均值为 10.55，
+      512 token ≈ 48.5 行，而候选集 [40, 80, 120] 不含该值
+      （40 行实测均值 334 token，80 行实测均值 599 token）。详见
+      experiments/decision_records/Q006-Q007-chunk-parameters.md
+    evidence_status: measured_unoptimized
     priority: high
-    note: "1.0 无依据。会成为后续所有实验的基线，须最先确定。"
+    note: >-
+      1.0 无依据。行候选与「512 token」的建议口径不一致：需要 token 上界时
+      请改用 chunk_max_tokens，不要试图用一个行数近似它。
+      质量 A/B 仍未做，current 保持 80。
 
   - name: chunk_overlap_ratio
     current: 0.0
@@ -122,9 +132,33 @@ tunable:
     ceiling_reason: "重叠越大索引体积与重复召回越多，收益递减"
     scope: "ingestion/chunker.py"
     experiment: "R-14① 九格对照"
-    evidence: "EXP-001 2026-09-04：80 行/0% 的探索性结果中重复上下文为 0；但切分政策整体口径未完成复核，正 overlap 只保留为观察"
-    evidence_status: incomplete_retest_required
+    evidence: >-
+      EXP-001 2026-09-04：80 行/0% 的探索性结果中重复上下文为 0。
+      Q-007 2026-09-10：建议的 100 token 重叠换算成比例是 100/512 = 0.195，
+      与候选 0.20 吻合；比例是无量纲量，不随每行 token 密度漂移，
+      因此这条建议可以按候选值直接表达，不需要新增参数。
+    evidence_status: measured_unoptimized
     priority: high
+
+  - name: chunk_max_tokens
+    current: null
+    unit: tokens
+    candidates: [null, 512]
+    safety_ceiling: 1024
+    ceiling_reason: "块级 token 上界直接决定单块进 Prompt 的占用；上限过高会撑爆 Context Budget"
+    scope: "ingestion/chunker.py:chunk_source_file"
+    experiment: "Q-006 2026-09-10 deterministic 测量"
+    evidence: >-
+      Q-006 2026-09-10：80 行默认配置在真实语料上产生 236 个超过 512 token 的块，
+      最大 1141 token；加上 512 上限后 0 个超限，P90=510、最大=512，
+      块数从 328 增至 568。单行超限时保留整行（不做字符级切分）。
+    evidence_status: implemented_unoptimized
+    priority: high
+    note: >-
+      current=null 表示运行时默认未启用，行为与 2.1.0 之前一致。
+      启用需要同时升 chunking_version（当前 fixed-lines-v1）并重建索引。
+      512 是工程上界，不是质量结论；估算器 utf8_bytes_div_4 对中文偏低，
+      若要真实硬保证应下压到约 480。
 
   - name: chunking_strategy
     current: "fixed_lines"

@@ -56,6 +56,7 @@ def build_repository_semantic_index(
     *,
     chunk_max_lines: int = 80,
     chunk_overlap_ratio: float = 0.0,
+    chunk_max_tokens: int | None = None,
     semantic_embed: SemanticEmbed,
     require_sparse: bool = True,
 ) -> SemanticIndex:
@@ -65,6 +66,7 @@ def build_repository_semantic_index(
         scan_result,
         max_lines=chunk_max_lines,
         overlap_ratio=chunk_overlap_ratio,
+        max_tokens=chunk_max_tokens,
     )
     return build_semantic_index(
         chunks,
