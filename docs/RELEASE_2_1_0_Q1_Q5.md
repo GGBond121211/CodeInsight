@@ -45,3 +45,24 @@
 2. Qdrant 真实服务重启、旧数据迁移、生产 alias/控制表和 rollback 演练尚未形成发布级证据。
 3. 本机 LSP server 安装/版本与 SCIP index 生成器未登记为已验证能力。
 4. 2.1.0 的检索质量、延迟、Token 和成本没有用本切片的契约测试替代正式评测。
+
+## 2026-09-10 收尾复核
+
+- **数据集准入恢复 `PASS`**：Q-001 删除 BM25 后，`temporary_30` 清单的 `primary_sparse_mode`
+  由 `ast-bm25`/`graph-bm25` 改为 `sparse`；清单内容已用
+  `backend/tests/evals/build_temporary_30_ablation_manifest.py` 重建比对（字节一致），随后在
+  `baseline_2_1_0.yaml` 与 `dataset_quality_policy_2_1_0.yaml` 中重新登记 `sha256`。
+  这次是带原因、带日期的事实登记更新，不是放宽门禁：路径、数量、证据区间和结构校验不变。
+- **基线口径修正**：`final_top_k=10` 已按用户 Q-003 决定成为运行时默认
+  （`search_repository.py:38`），基线文件把它从“用户候选”改登记为 `runtime_actual`，
+  并保留 `5 vs 10` 为未完成的 A/B；旧值 5 改写为“2026-09-10 之前的运行时默认”。
+- **本机环境事实（只读检查，不代表能力结论）**：
+  - `CODEINSIGHT_EMBEDDING_MODEL` 与 `CODEINSIGHT_EMBEDDING_BASE_URL` 为空，本机没有可用
+    Embedding Provider，Q1 的“真实 Provider 返回 Sparse”闸门仍未闭合；
+  - `127.0.0.1:6335` 无 Qdrant 响应，Docker 守护进程当前不可访问，Q2 的真实服务行为仍未验证；
+  - 本机未安装 `pyright`、`typescript-language-server`、`scip-python`、`scip-typescript`，
+    Q5 的两个工具在未配置环境只返回结构化状态，没有本机 `AVAILABLE` 取证。
+- **本次复核运行的测试**：后端全量回归 `632 passed, 49 skipped`；
+  `ruff check backend/src backend/tests experiments` 通过；`experiments/test_dataset_quality.py`
+  与 `backend/tests/evals` 合计 `90 passed, 1 skipped`（含数据集准入回归）。
+- 上述三项环境缺口都没有在本次收尾中关闭，不能因为准入恢复 `PASS` 就扩大 Q1/Q2/Q5 的声明。
