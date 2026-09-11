@@ -17,6 +17,10 @@ from threading import Event
 from typing import Protocol
 
 from codeinsight.agent.tool_lifecycle import ToolLifecycleRecorder
+from codeinsight.application.tool_result_pruner import (
+    PruneOutcome,
+    ToolResultPruner,
+)
 from codeinsight.domain.trace import RunEvent
 
 TOOL_ERROR_CODES = frozenset(
@@ -207,12 +211,18 @@ class ToolLoopConfig:
     token_budget: int | None = None
     repeated_call_limit: int = 2
     repeated_error_limit: int = 2
+    # 每轮模型调用前按工具类型裁剪旧工具结果。默认开启：不裁剪的话消息会
+    # 一直单调增长，直到某次调用直接撞上上游上下文上限。
+    prune_tool_results: bool = True
+    keep_recent_tool_results: int = 2
 
     def __post_init__(self) -> None:
         if self.max_steps < 1 or self.max_tool_calls < 1:
             raise ValueError("Tool Loop 的步数和工具调用预算必须为正")
         if self.deadline_seconds <= 0:
             raise ValueError("deadline_seconds 必须为正")
+        if self.keep_recent_tool_results < 0:
+            raise ValueError("keep_recent_tool_results 不能为负")
 
 
 @dataclass(frozen=True)
@@ -227,6 +237,8 @@ class ToolLoopResult:
     output_tokens: int
     reason: str | None = None
     lifecycle_events: tuple[RunEvent, ...] = ()
+    # 每轮实际发生的裁剪；用于回答「模型这一轮到底看到了什么」。
+    prune_events: tuple[PruneOutcome, ...] = ()
 
 
 class ToolLoop:
@@ -241,6 +253,7 @@ class ToolLoop:
         run_id: str = "local-run",
         event_log=None,
         outcome_controller: ToolOutcomeController | None = None,
+        result_pruner: ToolResultPruner | None = None,
     ) -> None:
         self._model = model
         self._mcp = mcp_client
@@ -248,6 +261,15 @@ class ToolLoop:
         self._lifecycle = ToolLifecycleRecorder(run_id, event_log)
         # 不传控制层时行为与之前完全一致：循环只在模型的 tool_calls 上推进。
         self._controller = outcome_controller
+        if result_pruner is not None:
+            self._pruner: ToolResultPruner | None = result_pruner
+        elif self._config.prune_tool_results:
+            self._pruner = ToolResultPruner(
+                keep_recent_results=self._config.keep_recent_tool_results
+            )
+        else:
+            self._pruner = None
+        self._prune_events: list[PruneOutcome] = []
 
     def run(
         self,
@@ -271,6 +293,7 @@ class ToolLoop:
         input_tokens = 0
         output_tokens = 0
         start = time.monotonic()
+        self._prune_events = []
 
         for step in range(1, self._config.max_steps + 1):
             if cancel_event is not None and cancel_event.is_set():
@@ -296,7 +319,9 @@ class ToolLoop:
                     "总 deadline 已到",
                 )
             try:
-                response = self._model.complete_with_tools(tuple(messages), tools)
+                response = self._model.complete_with_tools(
+                    self._visible_messages(messages), tools
+                )
             except Exception:
                 return self._result(
                     "FAILED",
@@ -487,6 +512,21 @@ class ToolLoop:
             "达到最大步骤数",
         )
 
+    def _visible_messages(
+        self, messages: list[Mapping[str, object]]
+    ) -> tuple[Mapping[str, object], ...]:
+        """本轮发给模型的消息视图。
+
+        裁剪只作用于这一次调用，``messages`` 本身仍是完整记录：审计和回放要
+        看的是模型真实收到过什么，而不是被裁剪后的副本。
+        """
+        if self._pruner is None:
+            return tuple(messages)
+        outcome = self._pruner.prune(messages)
+        if outcome.pruned:
+            self._prune_events.append(outcome)
+        return outcome.messages
+
     def _execute_batch(
         self,
         calls: Sequence[ToolCall],
@@ -622,6 +662,7 @@ class ToolLoop:
             output_tokens,
             reason,
             self._lifecycle.events,
+            tuple(self._prune_events),
         )
 
     def _stuck(

@@ -168,3 +168,103 @@ def test_model_provider_failure_is_a_safe_failed_result():
     assert result.status == "FAILED"
     assert result.reason == "模型 Provider 调用失败"
     assert "secret" not in (result.reason or "")
+
+
+class RecordingModel:
+    """记录每次收到什么，用来验证裁剪只作用于发给模型的视图。"""
+
+    def __init__(self, steps):
+        self._steps = steps
+        self.seen = []
+
+    def complete_with_tools(self, messages, tools):
+        self.seen.append([dict(message) for message in messages])
+        if len(self.seen) > self._steps:
+            return ToolModelResponse("完成", (), "fake", 1, 1)
+        return ToolModelResponse(
+            None,
+            (
+                ToolCall(
+                    f"c{len(self.seen)}",
+                    "read_file",
+                    {"path": f"src/app{len(self.seen)}.py"},
+                ),
+            ),
+            "fake",
+            1,
+            1,
+        )
+
+
+class BigResultHost:
+    def __init__(self):
+        self.tools = build_default_registry().list_tools()
+
+    def list_tools(self):
+        return self.tools
+
+    def call_tool(self, call):
+        return ToolResult.success(
+            call.id,
+            "read_file",
+            {
+                "path": "src/app.py",
+                "start_line": 1,
+                "end_line": 200,
+                "text": "def handler(): pass\n" * 300,
+                "untrusted": True,
+            },
+            state_fingerprint="fp-app",
+        )
+
+
+def test_tool_loop_prunes_old_results_only_in_the_model_view() -> None:
+    model = RecordingModel(steps=5)
+    loop = ToolLoop(model, BigResultHost(), config=ToolLoopConfig(max_steps=8))
+
+    result = loop.run("system", "解释入口")
+
+    assert len(result.prune_events) >= 1
+    pruned = result.prune_events[-1]
+    assert pruned.tokens_saved > 0
+    assert {item.tool_name for item in pruned.pruned} == {"read_file"}
+    assert len(pruned.pruned) >= 1
+
+    # 模型看到的视图确实变小了。
+    last_seen = model.seen[-1]
+    seen_tools = [item for item in last_seen if item.get("role") == "tool"]
+    assert "text_excerpt" in str(seen_tools[0].get("content"))
+
+    # 但完整记录仍留在结果里，审计和回放不受影响。
+    full_tools = [item for item in result.messages if item.get("role") == "tool"]
+    assert "text_excerpt" not in str(full_tools[0].get("content"))
+
+
+def test_pruning_can_be_switched_off() -> None:
+    model = RecordingModel(steps=4)
+    loop = ToolLoop(
+        model,
+        BigResultHost(),
+        config=ToolLoopConfig(max_steps=6, prune_tool_results=False),
+    )
+
+    result = loop.run("system", "解释入口")
+
+    assert result.prune_events == ()
+    for seen in model.seen:
+        for message in seen:
+            if message.get("role") == "tool":
+                assert "text_excerpt" not in str(message.get("content"))
+
+
+def test_keep_recent_tool_results_controls_the_window() -> None:
+    model = RecordingModel(steps=3)
+    loop = ToolLoop(
+        model,
+        BigResultHost(),
+        config=ToolLoopConfig(max_steps=6, keep_recent_tool_results=3),
+    )
+
+    result = loop.run("system", "解释入口")
+
+    assert result.prune_events == ()
