@@ -10,6 +10,13 @@ from typing import Any
 
 from redis import Redis
 
+# Agent Run 不在这条队列上：它走 Celery（codeinsight.run_agent），状态事实在
+# domain.agent_run 与 AgentRunStore 里。下面这组类型会被拒收 payload——消息里
+# 一旦出现正文、源码或凭据，队列就成了第二份事实，恢复时两处必然对不上。
+AGENT_RUN_TASK_TYPES: frozenset[str] = frozenset(
+    {"agent_run", "resume_after_approval", "resume_after_validation"}
+)
+
 QUEUED = "QUEUED"
 RUNNING = "RUNNING"
 COMPLETED = "COMPLETED"
@@ -37,6 +44,11 @@ class TaskEnvelope:
             raise ValueError("TaskEnvelope 标识不能为空")
         if self.max_attempts < 1:
             raise ValueError("max_attempts 至少为 1")
+        if self.task_type in AGENT_RUN_TASK_TYPES and self.payload:
+            raise ValueError(
+                f"Agent Run 任务（{self.task_type}）不得携带 payload："
+                "队列消息只传标识与版本，其余从事实 Store 读取。"
+            )
 
 
 class InMemoryTaskQueue:
