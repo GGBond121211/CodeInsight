@@ -22,23 +22,19 @@ from codeinsight.application.auto_answer_repository import auto_answer_repositor
 from codeinsight.application.code_understanding_route import (
     run_code_understanding_answer,
     to_auto_answer,
+    uses_code_understanding,
 )
 from codeinsight.application.conversation_router import (
     ChatTaskClassification,
     classify_chat_task,
 )
-from codeinsight.application.query_router import QueryRouterResult, route_question
+from codeinsight.application.query_router import route_question
 from codeinsight.application.scope_redirect import (
     SCOPE_REDIRECT_VERSION,
     build_scope_redirect_message,
 )
 from codeinsight.application.session_service import SessionContext, SessionService
-from codeinsight.domain.agent import AgentRepositoryAnswer
-from codeinsight.domain.answer import (
-    AutoAnswer,
-    AutoAnswerEvent,
-    SubQuestionAnswer,
-)
+from codeinsight.domain.answer import AutoAnswer
 from codeinsight.domain.change import MODE_ISOLATED_WRITE, MODE_READ_ONLY, TenantScope
 from codeinsight.domain.chat import (
     CHAT_COMPLETED,
@@ -71,6 +67,10 @@ from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.infrastructure.run_store import InMemorySessionStore
 from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
 from codeinsight.ingestion.scanner import scan_repository
+
+# 2026-09-11：旧 LangGraph 路线整体冻结后，本文件不再需要这些符号；保留原名
+# 以便回退：AgentRepositoryAnswer、QueryRouterResult、AutoAnswerEvent、
+# SubQuestionAnswer。
 
 INDEX_VERSION = "conversation-scan-v1"
 ModelFactory = Callable[[], object]
@@ -606,29 +606,31 @@ class ConversationService:
                 "fallback": str(router_result.used_fallback).lower(),
             },
         )
-        embedding_model = (
-            self._embedding_factory()
-            if router_result.plan.execution_route != "insufficient"
-            else None
-        )
-        reranker = (
-            self._reranker_factory()
-            if router_result.plan.execution_route != "insufficient"
-            else None
-        )
-        if router_result.plan.execution_route == "agent":
-            # 2026-09-10 起 explain 只有这一条路径；旧的 LangGraph 路线已封闭。
+        # 2026-09-11：linear 也归并进只读 Tool Loop 后，父进程不再需要自己
+        # 构造 Embedding / Rerank——检索在 MCP Server 子进程里按环境变量自建。
+        # 保留原实现以便回退：
+        # embedding_model = (
+        #     self._embedding_factory()
+        #     if router_result.plan.execution_route != "insufficient"
+        #     else None
+        # )
+        # reranker = (
+        #     self._reranker_factory()
+        #     if router_result.plan.execution_route != "insufficient"
+        #     else None
+        # )
+        if uses_code_understanding(router_result.plan.execution_route):
+            # explain 只有这一条路径：linear 与 agent 都在这里收敛到只读 Tool Loop。
             result, tool_loop_payload = self._run_code_understanding(
                 turn, turn_input, model, router_result
             )
         else:
+            # 只剩 insufficient：不检索、不调用工具，直接返回证据不足。
             result = auto_answer_repository(
                 turn_input.repository_root,
                 router_result=router_result,
                 generate=model.generate,
                 limit=turn_input.limit,
-                semantic_embed=embedding_model.embed if embedding_model else None,
-                reranker=reranker,
             )
             tool_loop_payload = None
         self.runtime.emit(
@@ -1126,51 +1128,53 @@ def _goal_action(task_type: str, active_goal) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 旧 LangGraph 路线的映射辅助（2026-09-10 起已停用）
+# 旧 LangGraph 路线的映射辅助（2026-09-10 停用，2026-09-11 整块注释冻结）
 #
 # run_citation_agent 与 agent/workflow.py 保留在仓库里作为历史实现，
 # 但没有任何运行入口再调用它们：explain 一律走只读 Tool Loop。
-# 下面的映射函数只为历史对照与阅读保留，不参与任何默认路径。
+# 用户 2026-09-11 的要求是「相关代码全部注释掉，但不要删除」，
+# 所以下面整块保持原样注释，不参与任何默认路径，也不参与测试。
+# 需要回退时取消注释即可。
 # ---------------------------------------------------------------------------
-def _auto_from_agent(
-    router_result: QueryRouterResult, agent_result: AgentRepositoryAnswer
-) -> AutoAnswer:
-    result = agent_result.result
-    subquestions = agent_result.subquestions
-    if not subquestions:
-        subquestions = tuple(
-            SubQuestionAnswer(
-                question=item.question,
-                intent=item.intent,
-                retrieval_mode=item.retrieval_mode,
-                outcome=result.outcome,
-                answer=result.answer,
-                citations=result.citations,
-            )
-            for item in router_result.plan.subquestions
-        )
-    return AutoAnswer(
-        outcome=result.outcome,
-        answer=result.answer,
-        citations=result.citations,
-        retrieval_mode="auto",
-        model=result.model,
-        prompt_version=result.prompt_version,
-        input_tokens=agent_result.input_tokens,
-        output_tokens=agent_result.output_tokens,
-        embedding_input_tokens=agent_result.embedding_input_tokens,
-        plan=router_result.plan,
-        subquestions=subquestions,
-        router_model=router_result.model,
-        router_input_tokens=router_result.input_tokens,
-        router_output_tokens=router_result.output_tokens,
-        router_elapsed_milliseconds=router_result.elapsed_milliseconds,
-        fallback_reason=router_result.fallback_reason,
-        events=tuple(
-            AutoAnswerEvent(item.sequence, item.step, item.summary)
-            for item in agent_result.events
-        ),
-    )
+# def _auto_from_agent(
+#     router_result: QueryRouterResult, agent_result: AgentRepositoryAnswer
+# ) -> AutoAnswer:
+#     result = agent_result.result
+#     subquestions = agent_result.subquestions
+#     if not subquestions:
+#         subquestions = tuple(
+#             SubQuestionAnswer(
+#                 question=item.question,
+#                 intent=item.intent,
+#                 retrieval_mode=item.retrieval_mode,
+#                 outcome=result.outcome,
+#                 answer=result.answer,
+#                 citations=result.citations,
+#             )
+#             for item in router_result.plan.subquestions
+#         )
+#     return AutoAnswer(
+#         outcome=result.outcome,
+#         answer=result.answer,
+#         citations=result.citations,
+#         retrieval_mode="auto",
+#         model=result.model,
+#         prompt_version=result.prompt_version,
+#         input_tokens=agent_result.input_tokens,
+#         output_tokens=agent_result.output_tokens,
+#         embedding_input_tokens=agent_result.embedding_input_tokens,
+#         plan=router_result.plan,
+#         subquestions=subquestions,
+#         router_model=router_result.model,
+#         router_input_tokens=router_result.input_tokens,
+#         router_output_tokens=router_result.output_tokens,
+#         router_elapsed_milliseconds=router_result.elapsed_milliseconds,
+#         fallback_reason=router_result.fallback_reason,
+#         events=tuple(
+#             AutoAnswerEvent(item.sequence, item.step, item.summary)
+#             for item in agent_result.events
+#         ),
+#     )
 
 
 def _citation_payload(citation) -> dict[str, object]:

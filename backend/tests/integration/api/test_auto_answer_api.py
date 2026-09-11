@@ -1,4 +1,9 @@
-"""HTTP contract tests for the optional Smart Answer endpoint."""
+"""HTTP contract tests for the optional Smart Answer endpoint.
+
+2026-09-11 起 explain 只有一条路线：Router 判 linear 或 agent 都收敛到只读
+MCP Tool Loop（`application/code_understanding_route.py`），只有 insufficient
+不检索、不调用工具。下面几个用例分别守住这三件事。
+"""
 
 import json
 from pathlib import Path
@@ -6,10 +11,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from codeinsight.api.app import create_app
-from codeinsight.domain.answer import (
-    ModelAnswer,
-    ModelCompletion,
-)
+from codeinsight.domain.answer import ModelAnswer, ModelCompletion
 from codeinsight.domain.semantic import EmbeddingBatch, SparseEmbedding
 from codeinsight.infrastructure.reranker import RerankResult
 
@@ -37,114 +39,64 @@ class _FakeReranker:
         return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
 
 
-class _FakeAutoModel:
-    def __init__(self, router_content: str) -> None:
-        self.router_content = router_content
-        self.router_calls = 0
-        self.answer_calls = 0
-
-    def complete(self, _system: str, _user: str) -> ModelCompletion:
-        self.router_calls += 1
-        return ModelCompletion(self.router_content, "fake-router", 7, 3)
-
-    def generate(self, _system: str, _user: str) -> ModelAnswer:
-        self.answer_calls += 1
-        return ModelAnswer(
-            "answered",
-            "checkout validates input.",
-            ("E1",),
-            "fake-answer",
-            12,
-            5,
-        )
-
-
-def _router_payload() -> str:
-    return json.dumps(
-        {
-            "language": "en",
-            "normalized_question": "Where is checkout validation implemented?",
-            "subquestions": [
-                {
-                    "question": "Where is checkout validation implemented?",
-                    "intent": "implementation",
-                    "retrieval_mode": "hybrid",
-                }
-            ],
-            "execution_route": "linear",
-            "confidence": 0.92,
-        }
-    )
+# ---------------------------------------------------------------------------
+# 旧 linear「直接回答」路线的假模型（2026-09-11 起 explain 不再走它）
+#
+# 保留以便回退；当前用例不再使用这几个定义。
+# ---------------------------------------------------------------------------
+# class _FakeAutoModel:
+#     def __init__(self, router_content: str) -> None:
+#         self.router_content = router_content
+#         self.router_calls = 0
+#         self.answer_calls = 0
+#
+#     def complete(self, _system: str, _user: str) -> ModelCompletion:
+#         self.router_calls += 1
+#         return ModelCompletion(self.router_content, "fake-router", 7, 3)
+#
+#     def generate(self, _system: str, _user: str) -> ModelAnswer:
+#         self.answer_calls += 1
+#         return ModelAnswer(
+#             "answered",
+#             "checkout validates input.",
+#             ("E1",),
+#             "fake-answer",
+#             12,
+#             5,
+#         )
 
 
-def _model_factory(model):
-    def factory():
-        return model
-
-    return factory
-
-
-def test_auto_answer_returns_plan_subquestion_and_router_usage() -> None:
-    model = _FakeAutoModel(_router_payload())
-    client = TestClient(
-        create_app(_model_factory(model), _FakeEmbedding, reranker_factory=_FakeReranker)
-    )  # type: ignore[arg-type]
-
-    response = client.post(
-        "/api/v1/auto/answer",
-        json={
-            "repository_root": str(FIXTURE_ROOT),
-            "question": "Where is checkout validation implemented?",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["plan"]["execution_route"] == "linear"
-    assert payload["plan"]["subquestions"][0]["retrieval_mode"] == "hybrid"
-    assert payload["subquestions"][0]["outcome"] == "answered"
-    assert payload["router_usage"] == {"input_tokens": 7, "output_tokens": 3}
-    assert payload["usage"] == {"input_tokens": 12, "output_tokens": 5}
-    assert payload["embedding_input_tokens"] > 0
-    assert model.router_calls == 1
-    assert model.answer_calls == 1
+def _router_payload(execution_route: str, **overrides: object) -> str:
+    payload: dict[str, object] = {
+        "language": "en",
+        "normalized_question": "Explain validation and pricing.",
+        "subquestions": [
+            {
+                "question": "How is input validated?",
+                "intent": "implementation",
+                "retrieval_mode": "hybrid",
+            }
+        ],
+        "execution_route": execution_route,
+        "confidence": 0.95,
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
 
 
-def test_auto_answer_invalid_router_output_uses_linear_hybrid_fallback() -> None:
-    model = _FakeAutoModel("not-json")
-    client = TestClient(
-        create_app(_model_factory(model), _FakeEmbedding, reranker_factory=_FakeReranker)
-    )  # type: ignore[arg-type]
-
-    response = client.post(
-        "/api/v1/auto/answer",
-        json={
-            "repository_root": str(FIXTURE_ROOT),
-            "question": "Where is checkout defined?",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["plan"]["execution_route"] == "linear"
-    assert payload["plan"]["retrieval_modes"] == ["hybrid"]
-    assert payload["fallback_reason"] == "router_invalid_or_low_confidence"
-    assert model.answer_calls == 1
-
-
-class _AgentRouteModel:
-    """agent 路线用的脚本模型：第一轮检索，第二轮给最终答案。"""
+class _ToolLoopModel:
+    """脚本模型：第一轮检索，第二轮给最终答案；Router 也由它回答。"""
 
     def __init__(self, router_content: str) -> None:
         self.router_content = router_content
-        self.model = "fake-agent-route"
+        self.model = "fake-tool-loop"
         self.tool_rounds = 0
 
     def complete(self, _system: str, _user: str) -> ModelCompletion:
         return ModelCompletion(self.router_content, "fake-router", 7, 3)
 
     def generate(self, _system: str, _user: str) -> ModelAnswer:
-        raise AssertionError("agent 路线不应调用 generate")
+        raise AssertionError("explain 路线不应调用 generate，只读 Tool Loop 走工具契约")
 
     def complete_with_tools(self, _messages, _tools):
         from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
@@ -174,7 +126,7 @@ class _AgentRouteModel:
         )
 
 
-class _AgentRouteClient:
+class _ToolLoopClient:
     """按项目契约返回两条命中，让证据评估判定为 sufficient。"""
 
     def __init__(self, root: str) -> None:
@@ -221,13 +173,51 @@ class _AgentRouteClient:
         return ToolResult.success(call.id, call.name, {"ok": True})
 
 
-def test_agent_route_runs_the_readonly_tool_loop() -> None:
-    """2026-09-10 起 agent 路线走只读 Tool Loop，不再走旧 LangGraph。"""
-    router_payload = json.dumps(
-        {
-            "language": "en",
-            "normalized_question": "Explain validation and pricing.",
-            "subquestions": [
+def _client(model: _ToolLoopModel) -> TestClient:
+    return TestClient(
+        create_app(
+            lambda: model,
+            _FakeEmbedding,
+            reranker_factory=_FakeReranker,
+            mcp_client_factory=_ToolLoopClient,
+        )
+    )  # type: ignore[arg-type]
+
+
+def _ask(client: TestClient, question: str) -> dict:
+    response = client.post(
+        "/api/v1/auto/answer",
+        json={"repository_root": str(FIXTURE_ROOT), "question": question},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_linear_plan_also_runs_the_readonly_tool_loop() -> None:
+    """Router 判 linear 也收敛到只读 Tool Loop（2026-09-11 收口）。"""
+    model = _ToolLoopModel(_router_payload("linear"))
+    payload = _ask(_client(model), "How is input validated?")
+
+    assert payload["plan"]["execution_route"] == "linear"
+    assert payload["outcome"] == "answered"
+    assert payload["answer"] == "Validation happens in checkout."
+    assert payload["citations"][0]["relative_path"] == "src/shop/checkout.py"
+    # 证据编号由应用分配，模型只返回编号。
+    assert payload["citations"][0]["evidence_id"] == "E1"
+    assert payload["usage"] == {"input_tokens": 50, "output_tokens": 15}
+    # Tool Loop 的 Embedding 在 MCP Server 子进程内发生，父进程不回流用量。
+    assert payload["embedding_input_tokens"] == 0
+    assert payload["router_usage"] == {"input_tokens": 7, "output_tokens": 3}
+    assert model.tool_rounds == 2
+    assert payload["events"]
+
+
+def test_agent_plan_runs_the_readonly_tool_loop() -> None:
+    """agent 路线同样走只读 Tool Loop，每个 Router 子问题都得到映射。"""
+    model = _ToolLoopModel(
+        _router_payload(
+            "agent",
+            subquestions=[
                 {
                     "question": "How is input validated?",
                     "intent": "implementation",
@@ -239,36 +229,37 @@ def test_agent_route_runs_the_readonly_tool_loop() -> None:
                     "retrieval_mode": "hybrid",
                 },
             ],
-            "execution_route": "agent",
-            "confidence": 0.95,
-        }
-    )
-    model = _AgentRouteModel(router_payload)
-    client = TestClient(
-        create_app(
-            _model_factory(model),
-            _FakeEmbedding,
-            reranker_factory=_FakeReranker,
-            mcp_client_factory=_AgentRouteClient,
         )
-    )  # type: ignore[arg-type]
-
-    response = client.post(
-        "/api/v1/auto/answer",
-        json={
-            "repository_root": str(FIXTURE_ROOT),
-            "question": "Explain validation and pricing.",
-        },
     )
+    payload = _ask(_client(model), "Explain validation and pricing.")
 
-    assert response.status_code == 200
-    payload = response.json()
+    assert payload["plan"]["execution_route"] == "agent"
     assert payload["outcome"] == "answered"
-    assert payload["citations"][0]["relative_path"] == "src/shop/checkout.py"
-    # 证据编号由应用分配，模型只返回编号。
-    assert payload["citations"][0]["evidence_id"] == "E1"
-    # 每个 Router 子问题都得到一条映射，但内容来自同一次只读运行。
     assert len(payload["subquestions"]) == 2
     assert {item["outcome"] for item in payload["subquestions"]} == {"answered"}
-    assert payload["usage"]["input_tokens"] == 20 + 30
     assert model.tool_rounds == 2
+
+
+def test_router_fallback_plan_also_runs_the_tool_loop() -> None:
+    """Router 返回无效 JSON 时回退成 linear 计划，同样收敛到 Tool Loop。"""
+    model = _ToolLoopModel("not-json")
+    payload = _ask(_client(model), "Where is checkout defined?")
+
+    assert payload["plan"]["execution_route"] == "linear"
+    assert payload["plan"]["retrieval_modes"] == ["hybrid"]
+    assert payload["fallback_reason"] == "router_invalid_or_low_confidence"
+    assert payload["outcome"] == "answered"
+    assert model.tool_rounds == 2
+
+
+def test_insufficient_plan_skips_retrieval_and_tools() -> None:
+    """insufficient 不检索、不调用工具，也不调用 generate。"""
+    model = _ToolLoopModel(_router_payload("insufficient", subquestions=[]))
+    payload = _ask(_client(model), "今天天气怎么样？")
+
+    assert payload["plan"]["execution_route"] == "insufficient"
+    assert payload["outcome"] == "insufficient_evidence"
+    assert payload["subquestions"] == []
+    assert payload["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert model.tool_rounds == 0
+

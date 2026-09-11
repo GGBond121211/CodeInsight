@@ -25,6 +25,9 @@ class FakeChatModel:
     def __init__(self) -> None:
         self.prompts: list[str] = []
         self.text_prompts: list[str] = []
+        # 2026-09-11 起 explain 走只读 Tool Loop：上下文注入断言要看工具消息。
+        self.tool_prompts: list[str] = []
+        self.tool_rounds = 0
 
     def complete(self, _system_prompt: str, user_prompt: str) -> ModelCompletion:
         self.prompts.append(user_prompt)
@@ -43,6 +46,38 @@ class FakeChatModel:
             18,
             7,
             reasoning_content="正在根据证据组织回答",
+        )
+
+    def complete_with_tools(self, messages, _tools):
+        """只读 Tool Loop 的两轮脚本：先检索，再给最终答案。"""
+        from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
+
+        for message in reversed(list(messages)):
+            if message.get("role") == "user":
+                self.tool_prompts.append(str(message.get("content", "")))
+                break
+        self.tool_rounds += 1
+        if self.tool_rounds % 2 == 1:
+            return ToolModelResponse(
+                None,
+                (
+                    ToolCall(
+                        f"search-{self.tool_rounds}",
+                        "search_repository",
+                        {"question": "checkout 如何校验输入？"},
+                    ),
+                ),
+                self.model,
+                20,
+                5,
+            )
+        return ToolModelResponse(
+            '{"outcome":"answered","answer":"checkout 在入口处完成输入校验。",'
+            '"citations":["E1","E2"]}',
+            (),
+            self.model,
+            18,
+            7,
         )
 
     def complete_text(self, _system_prompt: str, user_prompt: str) -> ModelCompletion:
@@ -68,6 +103,53 @@ class FakeReranker:
         return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
 
 
+class FakeToolLoopClient:
+    """只读 Tool Loop 的假 MCP Client：两条命中，证据评估判 sufficient。"""
+
+    def __init__(self, root: str) -> None:
+        self.root = root
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def list_tools(self):
+        from codeinsight.infrastructure.tool_registry import build_default_registry
+
+        return build_default_registry().list_tools()
+
+    def call_tool(self, call):
+        from codeinsight.agent.tool_loop import ToolResult
+
+        if call.name == "search_repository":
+            return ToolResult.success(
+                call.id,
+                call.name,
+                {
+                    "results": [
+                        {
+                            "relative_path": "src/shop/validation.py",
+                            "start_line": 1,
+                            "end_line": 20,
+                            "text": "def validate(): pass",
+                            "rank": 1,
+                        },
+                        {
+                            "relative_path": "src/shop/api.py",
+                            "start_line": 5,
+                            "end_line": 25,
+                            "text": "def checkout(): pass",
+                            "rank": 2,
+                        },
+                    ],
+                    "untrusted": True,
+                },
+            )
+        return ToolResult.success(call.id, call.name, {"ok": True})
+
+
 def _wait_for_terminal(client: TestClient, turn_id: str) -> dict:
     # The chat worker is intentionally asynchronous; GitHub-hosted runners can
     # take longer than the local fast path while starting the next session turn.
@@ -88,6 +170,7 @@ def test_chat_turns_stream_reasoning_and_restore_multi_turn_context() -> None:
             lambda: model,
             FakeEmbedding,
             reranker_factory=FakeReranker,
+            mcp_client_factory=FakeToolLoopClient,
         )  # type: ignore[arg-type]
     )
     session = client.post(
@@ -140,7 +223,9 @@ def test_chat_turns_stream_reasoning_and_restore_multi_turn_context() -> None:
     )
     assert duplicate.status_code == 202
     assert duplicate.json()["turn_id"] == first["turn_id"]
-    assert len(model.prompts) == 2
+    # 只读 Tool Loop 只有 Router 走 complete，答案走工具契约。
+    assert len(model.prompts) == 1
+    assert model.tool_rounds == 2
 
     second_accepted = client.post(
         "/api/v2/chat/turns",
@@ -153,8 +238,8 @@ def test_chat_turns_stream_reasoning_and_restore_multi_turn_context() -> None:
     assert second_accepted.status_code == 202
     second = _wait_for_terminal(client, second_accepted.json()["turn_id"])
     assert second["status"] == "COMPLETED"
-    assert any("turn 1 user" in prompt for prompt in model.prompts)
-    assert any("turn 2 assistant" in prompt for prompt in model.prompts)
+    assert any("turn 1 user" in prompt for prompt in model.tool_prompts)
+    assert any("turn 2 assistant" in prompt for prompt in model.tool_prompts)
 
     restored = client.get(
         f"/api/v2/chat/sessions/{session_id}",
@@ -317,6 +402,7 @@ def test_active_code_goal_keeps_pronoun_followup_on_code_route() -> None:
             lambda: model,
             FakeEmbedding,
             reranker_factory=FakeReranker,
+            mcp_client_factory=FakeToolLoopClient,
         )  # type: ignore[arg-type]
     )
     session_id = client.post(
@@ -386,6 +472,7 @@ class FakeChangeModel:
 
     def __init__(self) -> None:
         self.round = 0
+        self.read_only_round = 0
 
     def complete(self, system_prompt: str, _user_prompt: str) -> ModelCompletion:
         if "查询规划器" in system_prompt:
@@ -402,7 +489,13 @@ class FakeChangeModel:
             )
         return ModelCompletion(content, self.model, 18, 7)
 
-    def complete_with_tools(self, _messages, _tools):
+    def complete_with_tools(self, _messages, tools):
+        # 只读 explain 循环的工具目录里没有 generate_patch；change 循环才有。
+        # 2026-09-11 起同一个 Session 里两种循环都可能出现，因此按目录分流。
+        # 注意：ToolLoop 传给模型的是 OpenAI tools 形状，名字在 function.name。
+        names = {tool.get("function", {}).get("name") for tool in tools}
+        if "generate_patch" not in names:
+            return self._read_only_round()
         self.round += 1
         if self.round == 1:
             return ToolModelResponse(
@@ -422,6 +515,34 @@ class FakeChangeModel:
             )
         return ToolModelResponse("已生成修改预览。", (), self.model)
 
+    def _read_only_round(self):
+        """只读 Tool Loop 的两轮脚本：先检索，再给最终答案。"""
+        from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
+
+        self.read_only_round += 1
+        if self.read_only_round == 1:
+            return ToolModelResponse(
+                None,
+                (
+                    ToolCall(
+                        "search-followup",
+                        "search_repository",
+                        {"question": "派送线路函数是否还有 bug"},
+                    ),
+                ),
+                self.model,
+                20,
+                5,
+            )
+        return ToolModelResponse(
+            '{"outcome":"answered","answer":"当前代码未发现需要继续处理的 bug。",'
+            '"citations":["E1","E2"]}',
+            (),
+            self.model,
+            18,
+            7,
+        )
+
 
 def test_change_turn_stops_at_preview_until_chat_approval(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
@@ -439,6 +560,7 @@ def test_change_turn_stops_at_preview_until_chat_approval(tmp_path: Path) -> Non
             FakeEmbedding,
             changes,
             reranker_factory=FakeReranker,
+            mcp_client_factory=FakeToolLoopClient,
         )  # type: ignore[arg-type]
     )
     session_id = client.post(

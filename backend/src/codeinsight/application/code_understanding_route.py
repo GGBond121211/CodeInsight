@@ -4,6 +4,11 @@
 已停用：代码保留在仓库里作为历史实现，但没有任何运行入口再调用它，
 ``explain` 一律走这里的只读 Tool Loop。
 
+2026-09-11 起，Router 的 ``linear`` 分支也不再走「直接回答」：
+``linear`` 与 ``agent`` 都收敛到只读 Tool Loop，只有 ``insufficient``
+不检索。用户的决定是产品决定，不是实验结果——本文不声称新路质量
+优于被替换的路线。
+
 为什么把三个入口收成一个函数：
     对话（conversation_service）、HTTP（api/routes）、CLI（cli/main）原本各自
     抄了一份 ``execution_route == "agent"` 分支。三份分支意味着三次漂移机会——
@@ -31,6 +36,15 @@ from codeinsight.domain.answer import (
 )
 
 MCPClientFactory = Callable[[str], object]
+
+# explain 的唯一路线集合：linear 与 agent 都走只读 Tool Loop，只有
+# insufficient 不检索。判断集中在这里，三条入口共用同一份事实。
+CODE_UNDERSTANDING_ROUTES: frozenset[str] = frozenset({"linear", "agent"})
+
+
+def uses_code_understanding(execution_route: str) -> bool:
+    """explain 是否要跑只读 Tool Loop（``insufficient`` 除外）。"""
+    return execution_route in CODE_UNDERSTANDING_ROUTES
 
 
 def default_mcp_client_factory() -> MCPClientFactory:

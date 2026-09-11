@@ -12,6 +12,12 @@ FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
 
 
 class FakeModel:
+    model = "fake-router"
+
+    def __init__(self) -> None:
+        # 2026-09-11 起 explain 都走只读 Tool Loop：先检索，再给最终答案。
+        self.tool_rounds = 0
+
     def complete(self, _system_prompt: str, _user_prompt: str) -> ModelCompletion:
         return ModelCompletion(
             '{"language":"en","normalized_question":"Where is checkout?",'
@@ -24,6 +30,29 @@ class FakeModel:
 
     def generate(self, _system_prompt: str, _user_prompt: str) -> ModelAnswer:
         return ModelAnswer("answered", "checkout is defined here.", ("E1",), "fake-answer", 8, 3)
+
+    def complete_with_tools(self, _messages, _tools):
+        from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse
+
+        self.tool_rounds += 1
+        if self.tool_rounds == 1:
+            return ToolModelResponse(
+                None,
+                (
+                    ToolCall(
+                        "call-1",
+                        "search_repository",
+                        {"question": "Where is checkout?"},
+                    ),
+                ),
+                self.model,
+            )
+        return ToolModelResponse(
+            '{"outcome":"answered","answer":"checkout is defined here.",'
+            '"citations":["E1","E2"]}',
+            (),
+            self.model,
+        )
 
 
 class FakeEmbedding:
@@ -46,9 +75,61 @@ class FakeReranker:
         return tuple(RerankResult(index, float(top_n - index)) for index in range(top_n))
 
 
+class FakeMCPClient:
+    """只读 Tool Loop 的假 MCP Client：两条命中，证据评估判 sufficient。"""
+
+    def __init__(self, root: str) -> None:
+        self.root = root
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def list_tools(self):
+        from codeinsight.infrastructure.tool_registry import build_default_registry
+
+        return build_default_registry().list_tools()
+
+    def call_tool(self, call):
+        from codeinsight.agent.tool_loop import ToolResult
+
+        if call.name == "search_repository":
+            return ToolResult.success(
+                call.id,
+                call.name,
+                {
+                    "results": [
+                        {
+                            "relative_path": "src/shop/validation.py",
+                            "start_line": 1,
+                            "end_line": 20,
+                            "text": "def validate(): pass",
+                            "rank": 1,
+                        },
+                        {
+                            "relative_path": "src/shop/api.py",
+                            "start_line": 5,
+                            "end_line": 25,
+                            "text": "def checkout(): pass",
+                            "rank": 2,
+                        },
+                    ],
+                    "untrusted": True,
+                },
+            )
+        return ToolResult.success(call.id, call.name, {"ok": True})
+
+
 def test_health_auto_answer_and_usage_are_the_registered_product_routes() -> None:
     client = TestClient(
-        create_app(FakeModel, FakeEmbedding, reranker_factory=FakeReranker)
+        create_app(
+            FakeModel,
+            FakeEmbedding,
+            reranker_factory=FakeReranker,
+            mcp_client_factory=FakeMCPClient,
+        )
     )  # type: ignore[arg-type]
 
     assert client.get("/api/v1/health").status_code == 200

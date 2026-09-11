@@ -3,6 +3,9 @@
 2026-09-10 起 explain 只走只读 Tool Loop。旧的 ``run_citation_agent`` 与
 ``agent/workflow.py`` 保留在仓库中作为历史实现，但不接受任何运行入口调用。
 本文件既验证新路径的映射，也验证三条入口都没有把旧路接回来。
+
+2026-09-11 起进一步收口：Router 的 ``linear`` 与 ``agent`` 都收敛到只读
+Tool Loop，只有 ``insufficient`` 不检索。
 """
 
 from pathlib import Path
@@ -12,6 +15,7 @@ from codeinsight.agent.tool_loop import ToolCall, ToolModelResponse, ToolResult
 from codeinsight.application.code_understanding_route import (
     run_code_understanding_answer,
     to_auto_answer,
+    uses_code_understanding,
 )
 from codeinsight.domain.answer import ANSWERED, INSUFFICIENT_EVIDENCE
 from codeinsight.infrastructure.tool_registry import build_default_registry
@@ -218,6 +222,23 @@ def test_public_events_carry_counts_not_reasoning() -> None:
 # --- 封闭守卫：旧 LangGraph 路线不得被接回 ------------------------------------
 
 
+def test_explain_routes_collapse_to_the_readonly_tool_loop() -> None:
+    """linear 与 agent 都走 Tool Loop，只有 insufficient 例外。"""
+    assert uses_code_understanding("linear")
+    assert uses_code_understanding("agent")
+    assert not uses_code_understanding("insufficient")
+
+    for relative in (
+        "application/conversation_service.py",
+        "api/routes.py",
+        "cli/main.py",
+    ):
+        text = (SOURCE_ROOT / relative).read_text(encoding="utf-8")
+        # 三条入口都不许再出现「只有 agent 才走新路」的旧判断。
+        assert 'execution_route == "agent"' not in text, relative
+        assert "uses_code_understanding(" in text, relative
+
+
 def test_entry_points_do_not_reference_the_legacy_agent() -> None:
     """三条入口都不得导入或调用 ``run_citation_agent``。
 
@@ -236,10 +257,13 @@ def test_entry_points_do_not_reference_the_legacy_agent() -> None:
 
 
 def test_legacy_implementation_still_exists_for_history() -> None:
-    """封闭不等于删除：旧实现按用户要求保留在仓库里。"""
+    """封闭不等于删除：旧实现按用户要求整块注释保留在仓库里。"""
     workflow = SOURCE_ROOT / "agent" / "workflow.py"
     assert workflow.is_file()
-    assert "def run_citation_agent" in workflow.read_text(encoding="utf-8")
+    text = workflow.read_text(encoding="utf-8")
+    # 2026-09-11 起整块注释：函数定义行仍在，但行首带 "# "。
+    assert "# def run_citation_agent" in text
+    assert "\ndef run_citation_agent" not in text
 
 
 def test_legacy_agent_is_not_imported_by_the_new_path() -> None:

@@ -10,6 +10,7 @@ from codeinsight.application.auto_answer_repository import auto_answer_repositor
 from codeinsight.application.code_understanding_route import (
     run_code_understanding_answer,
     to_auto_answer,
+    uses_code_understanding,
 )
 from codeinsight.application.context_assembler import ContextAssembler
 from codeinsight.application.query_router import route_question
@@ -18,9 +19,10 @@ from codeinsight.domain.errors import (
     ModelConfigurationError,
     ModelResponseError,
 )
-from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.model_gateway import GatewayChatModel as OpenAIChatModel
-from codeinsight.infrastructure.reranker import OpenAITextReranker
+
+# 2026-09-11：linear 归并进只读 Tool Loop 后，CLI 不再直接构造 Embedding 与
+# Rerank 适配器；保留原名以便回退：OpenAIEmbeddingModel、OpenAITextReranker。
 
 PROJECT_DESCRIPTION = "CodeInsight 理解源码仓库，并提供可核验的文件和行号证据。"
 
@@ -71,18 +73,21 @@ def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) 
                 used_fallback=False,
                 fallback_reason="forced_route",
             )
-        embedding_model = (
-            OpenAIEmbeddingModel.from_environment()
-            if router_result.plan.execution_route != "insufficient"
-            else None
-        )
-        reranker = (
-            OpenAITextReranker.from_environment()
-            if router_result.plan.execution_route != "insufficient"
-            else None
-        )
-        if router_result.plan.execution_route == "agent":
-            # 2026-09-10 起 explain 只有这一条路径；旧的 LangGraph 路线已封闭。
+        # 2026-09-11：linear 也归并进只读 Tool Loop，CLI 不再自建
+        # Embedding / Rerank（检索在 MCP Server 子进程里按环境变量自建）。
+        # 保留原实现以便回退：
+        # embedding_model = (
+        #     OpenAIEmbeddingModel.from_environment()
+        #     if router_result.plan.execution_route != "insufficient"
+        #     else None
+        # )
+        # reranker = (
+        #     OpenAITextReranker.from_environment()
+        #     if router_result.plan.execution_route != "insufficient"
+        #     else None
+        # )
+        if uses_code_understanding(router_result.plan.execution_route):
+            # explain 只有这一条路径：linear 与 agent 都收敛到只读 Tool Loop。
             loop_result = run_code_understanding_answer(
                 repo, question, model=model
             )
@@ -91,13 +96,12 @@ def _auto_answer(repo: str, question: str, limit: int, force_route: str | None) 
             )
             events = result.events
         else:
+            # 只剩 insufficient：不检索、不调用工具，直接返回证据不足。
             auto_result = auto_answer_repository(
                 repo,
                 router_result=router_result,
                 generate=model.generate,
                 limit=limit,
-                semantic_embed=embedding_model.embed if embedding_model else None,
-                reranker=reranker,
             )
             result = auto_result
             events = auto_result.events

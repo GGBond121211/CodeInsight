@@ -32,9 +32,10 @@ from codeinsight.application.code_understanding_route import (
     MCPClientFactory,
     run_code_understanding_answer,
     to_auto_answer,
+    uses_code_understanding,
 )
-from codeinsight.application.query_router import QueryRouterResult, route_question
-from codeinsight.domain.answer import AutoAnswer, AutoAnswerEvent, SubQuestionAnswer
+from codeinsight.application.query_router import route_question
+from codeinsight.domain.answer import AutoAnswer
 from codeinsight.domain.errors import (
     ModelCallError,
     ModelConfigurationError,
@@ -43,6 +44,9 @@ from codeinsight.domain.errors import (
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.openai_chat import OpenAIChatModel
 from codeinsight.infrastructure.reranker import OpenAITextReranker, Reranker
+
+# 旧 LangGraph 路线冻结后，这些符号只剩注释里的历史实现会用到；保留原名
+# 以便回退：QueryRouterResult、AutoAnswerEvent、SubQuestionAnswer。
 
 ModelFactory = Callable[[], OpenAIChatModel]
 EmbeddingFactory = Callable[[], OpenAIEmbeddingModel]
@@ -63,48 +67,54 @@ def _citation_responses(citations):
     return responses
 
 
-def _auto_from_agent(router_result: QueryRouterResult, agent_result) -> AutoAnswer:
-    result = agent_result.result
-    subquestions = agent_result.subquestions
-    if not subquestions:
-        fallback_subquestions: list[SubQuestionAnswer] = []
-        for item in router_result.plan.subquestions:
-            fallback_subquestions.append(
-                SubQuestionAnswer(
-                    question=item.question,
-                    intent=item.intent,
-                    retrieval_mode=item.retrieval_mode,
-                    outcome=result.outcome,
-                    answer=result.answer,
-                    citations=result.citations,
-                )
-            )
-        subquestions = tuple(fallback_subquestions)
-    events_list: list[AutoAnswerEvent] = []
-    for event in agent_result.events:
-        events_list.append(
-            AutoAnswerEvent(event.sequence, event.step, event.summary)
-        )
-    events = tuple(events_list)
-    return AutoAnswer(
-        outcome=result.outcome,
-        answer=result.answer,
-        citations=result.citations,
-        retrieval_mode="auto",
-        model=result.model,
-        prompt_version=result.prompt_version,
-        input_tokens=agent_result.input_tokens,
-        output_tokens=agent_result.output_tokens,
-        plan=router_result.plan,
-        subquestions=subquestions,
-        router_model=router_result.model,
-        router_input_tokens=router_result.input_tokens,
-        router_output_tokens=router_result.output_tokens,
-        router_elapsed_milliseconds=router_result.elapsed_milliseconds,
-        embedding_input_tokens=agent_result.embedding_input_tokens,
-        fallback_reason=router_result.fallback_reason,
-        events=events,
-    )
+# ---------------------------------------------------------------------------
+# 旧 LangGraph 路线的映射辅助（2026-09-11 整块注释冻结）
+#
+# 这个函数在上一次收口后就已没有调用方；用户 2026-09-11 要求把老路相关
+# 代码全部注释掉但不删除，因此保持原样注释。需要回退时取消注释即可。
+# ---------------------------------------------------------------------------
+# def _auto_from_agent(router_result: QueryRouterResult, agent_result) -> AutoAnswer:
+#     result = agent_result.result
+#     subquestions = agent_result.subquestions
+#     if not subquestions:
+#         fallback_subquestions: list[SubQuestionAnswer] = []
+#         for item in router_result.plan.subquestions:
+#             fallback_subquestions.append(
+#                 SubQuestionAnswer(
+#                     question=item.question,
+#                     intent=item.intent,
+#                     retrieval_mode=item.retrieval_mode,
+#                     outcome=result.outcome,
+#                     answer=result.answer,
+#                     citations=result.citations,
+#                 )
+#             )
+#         subquestions = tuple(fallback_subquestions)
+#     events_list: list[AutoAnswerEvent] = []
+#     for event in agent_result.events:
+#         events_list.append(
+#             AutoAnswerEvent(event.sequence, event.step, event.summary)
+#         )
+#     events = tuple(events_list)
+#     return AutoAnswer(
+#         outcome=result.outcome,
+#         answer=result.answer,
+#         citations=result.citations,
+#         retrieval_mode="auto",
+#         model=result.model,
+#         prompt_version=result.prompt_version,
+#         input_tokens=agent_result.input_tokens,
+#         output_tokens=agent_result.output_tokens,
+#         plan=router_result.plan,
+#         subquestions=subquestions,
+#         router_model=router_result.model,
+#         router_input_tokens=router_result.input_tokens,
+#         router_output_tokens=router_result.output_tokens,
+#         router_elapsed_milliseconds=router_result.elapsed_milliseconds,
+#         embedding_input_tokens=agent_result.embedding_input_tokens,
+#         fallback_reason=router_result.fallback_reason,
+#         events=events,
+#     )
 
 
 def _auto_response(result: AutoAnswer) -> AutoAnswerResponse:
@@ -200,18 +210,21 @@ def create_router(
                     used_fallback=False,
                     fallback_reason="forced_route",
                 )
-            embedding_model = (
-                embedding_factory()
-                if router_result.plan.execution_route != "insufficient"
-                else None
-            )
-            reranker = (
-                reranker_factory()
-                if router_result.plan.execution_route != "insufficient"
-                else None
-            )
-            if router_result.plan.execution_route == "agent":
-                # 2026-09-10 起 explain 只有这一条路径；旧的 LangGraph 路线已封闭。
+            # 2026-09-11：linear 也归并进只读 Tool Loop，父进程不再自建
+            # Embedding / Rerank（检索在 MCP Server 子进程里按环境变量自建）。
+            # 保留原实现以便回退：
+            # embedding_model = (
+            #     embedding_factory()
+            #     if router_result.plan.execution_route != "insufficient"
+            #     else None
+            # )
+            # reranker = (
+            #     reranker_factory()
+            #     if router_result.plan.execution_route != "insufficient"
+            #     else None
+            # )
+            if uses_code_understanding(router_result.plan.execution_route):
+                # explain 只有这一条路径：linear 与 agent 都收敛到只读 Tool Loop。
                 loop_result = run_code_understanding_answer(
                     request.repository_root,
                     request.question,
@@ -222,13 +235,12 @@ def create_router(
                     loop_result, router_result, model_name=getattr(model, "model", None)
                 )
             else:
+                # 只剩 insufficient：不检索、不调用工具，直接返回证据不足。
                 result = auto_answer_repository(
                     request.repository_root,
                     router_result=router_result,
                     generate=model.generate,
                     limit=request.limit,
-                    semantic_embed=embedding_model.embed if embedding_model else None,
-                    reranker=reranker,
                 )
         except ModelConfigurationError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
