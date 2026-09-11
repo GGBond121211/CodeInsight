@@ -305,6 +305,10 @@ class AgentRunRecord:
     error_class: str | None = None
     event_sequence: int = 0
     options: RunRequestOptions = RunRequestOptions()
+    # 续跑任务要用到的审批事实。令牌是一次性、短时的，本来也存在 approvals
+    # 事实表里；这里保存的是同一个事实的引用，好让另一个进程的 Worker 找到它。
+    patch_id: str | None = None
+    approval_token: str | None = None
 
     def __post_init__(self) -> None:
         for value, label in (
@@ -401,7 +405,12 @@ class AgentRunRecord:
         lease_until_epoch_ms: int | None = None,
         event_sequence: int | None = None,
         task_id: str | None = None,
+        task_kind: str | None = None,
         attempt: int | None = None,
+        max_attempts: int | None = None,
+        patch_id: str | None = None,
+        approval_token: str | None = None,
+        deadline_epoch_ms: int | None = None,
     ) -> AgentRunRecord:
         """派生一个新状态；迁移非法时抛错，而不是写下自相矛盾的事实。"""
 
@@ -409,8 +418,23 @@ class AgentRunRecord:
         return replace(
             self,
             task_id=task_id or self.task_id,
+            # 任务类型必须跟着一起走：事实层说这还是一开始的 Run，恢复逻辑就会
+            # 按「可以重新开始的 Run」去重放一次已经批准的续跑。
+            task_kind=task_kind or self.task_kind,
             status=checked,
             attempt=self.attempt if attempt is None else attempt,
+            max_attempts=self.max_attempts if max_attempts is None else max_attempts,
+            # deadline 只在续跑时由发放 continuation 的那一方显式刷新；不改动时
+            # 沿用原值，避免状态写入顺手把 Run 的执行预算改掉。
+            deadline_epoch_ms=(
+                self.deadline_epoch_ms
+                if deadline_epoch_ms is None
+                else deadline_epoch_ms
+            ),
+            # 这两个字段只在显式给出时改写：None 表示「沿用已有事实」，
+            # 因为终态写入不应该顺手把补丁标识抹掉。
+            patch_id=patch_id or self.patch_id,
+            approval_token=approval_token or self.approval_token,
             worker_id=worker_id,
             lease_until_epoch_ms=lease_until_epoch_ms,
             error_class=error_class,

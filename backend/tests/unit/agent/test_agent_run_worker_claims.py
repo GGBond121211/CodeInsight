@@ -12,6 +12,7 @@ from dataclasses import replace
 from codeinsight.agent.agent_run_worker import (
     RESUME_TASK_NOT_WIRED,
     RUN_RECORD_MISSING,
+    STALE_RUN_MESSAGE,
     AgentRunWorker,
 )
 from codeinsight.application.agent_run_executor import (
@@ -329,3 +330,46 @@ def test_same_run_id_can_be_advanced_by_a_second_attempt() -> None:
     assert stored.status == COMPLETED
     assert stored.attempt == 1
 
+
+def test_resume_task_with_credentials_is_claimed() -> None:
+    """凭据齐全的续跑是正常路径：Worker 领下来，并且不把凭据丢掉。"""
+
+    record = _record(
+        task_kind=TASK_RESUME_AFTER_APPROVAL,
+        patch_id="patch-1",
+        approval_token="token-1",
+    )
+    worker, store, _ = _build(record=record)
+
+    outcome = worker.handle(_task(task_kind=TASK_RESUME_AFTER_APPROVAL), runner=_ok_runner)
+
+    assert outcome.claimed is True
+    stored = store.get_run("run-1")
+    assert stored is not None
+    assert stored.status == COMPLETED
+    assert stored.task_kind == TASK_RESUME_AFTER_APPROVAL
+    assert stored.patch_id == "patch-1"
+    assert stored.approval_token == "token-1"
+
+
+def test_stale_message_does_not_touch_the_run() -> None:
+    """事实层已经走到续跑，队列里迟到的旧消息不能拿过期入口执行。"""
+
+    record = _record(
+        task_id="task-2",
+        task_kind=TASK_RESUME_AFTER_APPROVAL,
+        patch_id="patch-1",
+        approval_token="token-1",
+    )
+    worker, store, events = _build(record=record)
+
+    outcome = worker.handle(_task(), runner=_ok_runner)
+
+    assert outcome.claimed is False
+    assert outcome.execution is None
+    assert outcome.error_class == STALE_RUN_MESSAGE
+    assert events == []
+    stored = store.get_run("run-1")
+    assert stored is not None
+    assert stored.status == QUEUED
+    assert stored.task_id == "task-2"

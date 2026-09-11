@@ -128,6 +128,49 @@ class AgentRunDispatcher:
         self._store.save_run(record)
         return self._publish(task, record)
 
+    def dispatch_continuation(
+        self,
+        task: AgentRunTask,
+        *,
+        expected_status: str,
+        patch_id: str,
+        approval_token: str | None = None,
+    ) -> AgentRunRecord:
+        """把一个续跑任务接到已有的 Run 上。
+
+        与 dispatch 的区别是它不新建 Run，而是先确认这个 Run 确实停在预期状态
+        （例如还在等审批），然后换 task_id、递增 attempt、记下补丁与审批令牌，
+        再把消息投出去。审批恢复走这条路。
+
+        为什么要换 task_id 而不是复用：一次 Run 可以由多个后台任务推进，
+        任务标识变了，才看得出「这是同一个 Run 的第二次尝试」。
+        """
+
+        record = self._store.get_run(task.run_id)
+        if record is None:
+            raise TransportRejected(f"Run {task.run_id} 不在事实层，无法续跑")
+        if record.status != expected_status:
+            raise TransportRejected(
+                f"Run {task.run_id} 当前是 {record.status}，不是 {expected_status}，不能续跑"
+            )
+        next_attempt = record.attempt + 1
+        queued = record.advanced(
+            status=QUEUED,
+            updated_at_epoch_ms=self._clock_ms(),
+            task_id=task.task_id,
+            task_kind=task.task_kind,
+            attempt=next_attempt,
+            # 每次续跑都是一次新的合法尝试，额度跟着涨；否则第一次续跑就会撞上限。
+            max_attempts=max(record.max_attempts, next_attempt),
+            patch_id=patch_id,
+            approval_token=approval_token,
+            # 用户看 diff 花的时间不属于执行预算：续跑从登记这一刻重新计时，
+            # 否则「想清楚再点」会把 Run 直接推到 deadline 超时。
+            deadline_epoch_ms=task.deadline_epoch_ms,
+        )
+        self._store.save_run(queued)
+        return self._publish(task, queued)
+
     def _publish(self, task: AgentRunTask, record: AgentRunRecord) -> AgentRunRecord:
         try:
             self._transport.publish(task)

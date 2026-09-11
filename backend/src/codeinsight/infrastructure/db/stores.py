@@ -912,6 +912,8 @@ def _apply_agent_run_to_row(row: AgentRunRow, record: AgentRunRecord) -> None:
     row.validation_profile = record.options.validation_profile
     row.result_limit = record.options.result_limit
     row.show_debug_reasoning = record.options.show_debug_reasoning
+    row.patch_id = record.patch_id
+    row.approval_token = record.approval_token
 
 
 def _agent_run_from_row(row: AgentRunRow) -> AgentRunRecord:
@@ -937,6 +939,8 @@ def _agent_run_from_row(row: AgentRunRow) -> AgentRunRecord:
             result_limit=row.result_limit,
             show_debug_reasoning=row.show_debug_reasoning,
         ),
+        patch_id=row.patch_id,
+        approval_token=row.approval_token,
     )
 
 

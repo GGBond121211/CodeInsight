@@ -362,6 +362,9 @@ class AgentRunRow(Base):
     show_debug_reasoning: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # 续跑任务（审批恢复 / 校验恢复）要用到的补丁与审批令牌。
+    patch_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
+    approval_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class CheckpointRow(Base):

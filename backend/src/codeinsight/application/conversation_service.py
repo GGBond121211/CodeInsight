@@ -56,6 +56,7 @@ from codeinsight.domain.agent_run import (
     QUEUED,
     RUNNING,
     TASK_AGENT_RUN,
+    TASK_RESUME_AFTER_APPROVAL,
     UNKNOWN,
     WAITING_APPROVAL,
     WAITING_VALIDATION,
@@ -345,6 +346,10 @@ class ConversationService:
         self._session_workspaces: dict[str, _SessionWorkspace] = {}
         self._session_workspace_lock = threading.RLock()
         self._change_recoveries: dict[str, _ChangeRecovery] = {}
+        # 同一轮上「正在登记审批」的占位。重复点击必须在动 approval token 之前
+        # 就被挡住，否则第二下会带着自己的 task_id 覆盖掉第一下已经写好的续跑。
+        self._approvals_in_flight: set[str] = set()
+        self._approval_lock = threading.RLock()
         add_event_sink = getattr(self.change_service, "add_event_sink", None)
         if callable(add_event_sink):
             add_event_sink(self._mirror_change_event)
@@ -526,6 +531,8 @@ class ConversationService:
             context = self.agent_run_context_loader.load(task, record)
         except AgentRunContextError as error:
             raise TransportRejected(error.error_class) from error
+        if task.task_kind == TASK_RESUME_AFTER_APPROVAL:
+            return self._resume_existing_turn(task, context)
         try:
             turn = self.runtime.submit(
                 session_id=task.session_id,
@@ -545,26 +552,68 @@ class ConversationService:
     def _execute_loaded_run(
         self, task: AgentRunTask, turn: ChatTurn, show_debug_reasoning: bool
     ) -> ChatExecution:
-        """把一轮执行交给 AgentRunWorker，并如实报告它没有产出回答的情况。
+        """把一个执行结果交给 AgentRunWorker，让事实层和用户没有第二种说法。
 
-        Worker 负责领取租约、重建上下文、落状态；这里只把执行体接上去。
+        Worker 负责领取租约、重建上下文、写状态；这里只回答「这一轮该跑什么」。
+        分流只看任务类型：新建 Run 跑一次对话，续跑只做已经批准的那个补丁。
         """
 
-        outcome = self.agent_run_worker.handle(
-            task,
-            runner=lambda loaded: self._execute_turn(
-                turn,
-                _turn_input_from_context(loaded),
-                loaded.classification,
-                show_debug_reasoning,
-            ),
-        )
+        if task.task_kind == TASK_RESUME_AFTER_APPROVAL:
+
+            def runner(loaded: AgentRunContext) -> ChatExecution:
+                return self._resume_change(turn, _turn_input_from_context(loaded), task)
+
+        else:
+
+            def runner(loaded: AgentRunContext) -> ChatExecution:
+                return self._execute_turn(
+                    turn,
+                    _turn_input_from_context(loaded),
+                    loaded.classification,
+                    show_debug_reasoning,
+                )
+
+        outcome = self.agent_run_worker.handle(task, runner=runner)
         if outcome.execution is None:
             raise ChatRuntimeError(
-                f"Agent Run 未产出回答：{outcome.error_class or outcome.status}"
+                f"Agent Run 未返回答复：{outcome.error_class or outcome.status}"
             )
         return outcome.execution
 
+    def _resume_existing_turn(self, task: AgentRunTask, context: AgentRunContext) -> str:
+        """续跑投递：复用停在等待审批的那一轮，而不是新开一轮对话。
+
+        审批续跑和一次新消息共用 run_id / turn_id，区别只在执行体，所以这里
+        不能走 submit——submit 会因为同一会话已有活跃轮次而拒绝。真正把状态从
+        等待审批推走的动作在 runtime.resume 里，重复投递会在那里输掉。
+        """
+
+        try:
+            turn = self.runtime.resume(
+                task.turn_id,
+                show_debug_reasoning=context.options.show_debug_reasoning,
+                worker=lambda current, debug: self._execute_loaded_run(task, current, debug),
+            )
+        except ChatRuntimeError as error:
+            raise TransportRejected(str(error)) from error
+        return turn.turn_id
+
+    def _resume_change(
+        self, turn: ChatTurn, turn_input: _TurnInput, task: AgentRunTask
+    ) -> ChatExecution:
+        """续跑执行体：凭 run_id 从事实层取回补丁标识与一次性审批令牌再 apply。
+
+        令牌既不放队列载荷，也不留在 API 进程内存里，Worker 侧读事实层拿。
+        这样 API 重启或换一台机器跑 Worker，续跑照样能执行，也不需要把秘密
+        塞进消息队列。
+        """
+
+        record = self.agent_run_store.get_run(task.run_id)
+        patch_id = (record.patch_id or "").strip() if record is not None else ""
+        token = (record.approval_token or "").strip() if record is not None else ""
+        if not patch_id or not token:
+            raise ValueError("续跑缺少补丁标识或审批令牌")
+        return self._apply_change(turn, turn_input, patch_id, token)
 
     def _resolve_session_repository(
         self,
@@ -637,36 +686,63 @@ class ConversationService:
             )
 
     def approve_turn(self, turn_id: str) -> ChatTurn:
-        turn = self.runtime.get_turn(turn_id)
-        if turn.status != CHAT_WAITING_APPROVAL:
-            raise ValueError("当前轮次不在等待审批状态")
-        turn_input = self._turn_inputs.get(turn_id)
-        if turn_input is None:
-            raise ValueError("当前轮次的本地执行上下文已失效")
-        preview = _preview_from_result(turn.result)
-        token = self.change_service.approve(
-            turn.run_id,
-            str(preview["patch_id"]),
-        )
-        if not callable(getattr(self.change_service, "add_event_sink", None)):
-            self.runtime.emit(
-                turn.run_id,
-                APPROVAL_GRANTED,
-                {"patch_id": str(preview["patch_id"]), "source": "chat_ui"},
-            )
-        def worker(current: ChatTurn, _debug: bool) -> ChatExecution:
-            return self._apply_change(
-                current,
-                turn_input,
-                str(preview["patch_id"]),
-                token,
-            )
+        """登记一次审批续跑，不在 API 线程里应用补丁。
 
-        return self.runtime.resume(
-            turn_id,
-            show_debug_reasoning=False,
-            worker=worker,
-        )
+        这里只做三件事：确认这一轮确实停在等待审批、把审批换成一次性令牌、
+        把续跑任务写进事实层并投给后台 Worker。真正写 workspace 的 apply /
+        reconcile / validation 全部发生在 Worker 里——API 线程一旦开始改磁盘，
+        超时、断线或重复点击都会变成「不知道改到哪儿了」。
+
+        同一轮的重复点击由 _approvals_in_flight 挡住：第二下在动令牌之前就
+        失败，而不是等 Worker 侧才发现自己输了。
+        """
+
+        with self._approval_lock:
+            if turn_id in self._approvals_in_flight:
+                raise ValueError("这一轮的审批正在处理中")
+            self._approvals_in_flight.add(turn_id)
+        try:
+            turn = self.runtime.get_turn(turn_id)
+            if turn.status != CHAT_WAITING_APPROVAL:
+                raise ValueError("当前轮次不在等待审批状态")
+            record = self.agent_run_store.get_run(turn.run_id)
+            if record is None:
+                raise ValueError("当前轮次没有对应的 Run 事实，无法登记续跑")
+            if record.status != WAITING_APPROVAL:
+                raise ValueError(f"Run 当前是 {record.status}，不接受审批")
+            preview = _preview_from_result(turn.result)
+            patch_id = str(preview["patch_id"])
+            token = self.change_service.approve(turn.run_id, patch_id)
+            if not callable(getattr(self.change_service, "add_event_sink", None)):
+                self.runtime.emit(
+                    turn.run_id,
+                    APPROVAL_GRANTED,
+                    {"patch_id": patch_id, "source": "chat_ui"},
+                )
+            task = AgentRunTask(
+                task_id=f"task-{uuid4().hex[:16]}",
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                run_id=turn.run_id,
+                task_kind=TASK_RESUME_AFTER_APPROVAL,
+                idempotency_key=f"{record.idempotency_key}:approval:{patch_id}",
+                policy_version=record.policy_version,
+                deadline_epoch_ms=int(time.time() * 1000) + DEFAULT_RUN_DEADLINE_MS,
+                options=record.options,
+            )
+            try:
+                self.agent_run_dispatcher.dispatch_continuation(
+                    task,
+                    expected_status=WAITING_APPROVAL,
+                    patch_id=patch_id,
+                    approval_token=token,
+                )
+            except TransportRejected as error:
+                raise ChatDispatchError(str(error)) from error
+            return self.runtime.get_turn(turn_id)
+        finally:
+            with self._approval_lock:
+                self._approvals_in_flight.discard(turn_id)
 
     def cancel_turn(self, turn_id: str) -> ChatTurn:
         turn = self.runtime.get_turn(turn_id)

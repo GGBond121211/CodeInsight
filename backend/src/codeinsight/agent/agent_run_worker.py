@@ -8,8 +8,14 @@
 
     1. 用租约领取 Run——重复投递的第二条消息在这里被挡掉，不会跑第二遍模型
     2. 只凭事实 Store 重建上下文（AgentRunContextLoader）
-    3. 执行只读路径，把结果翻译成 Run 状态
+    3. 执行，把结果翻译成 Run 状态
     4. 把状态写回事实层，并留下可回放的事件
+
+失败分类按「有没有可能已经产生副作用」分开：
+
+    只读任务      失败就是失败，重试或交人都不会写坏任何东西
+    续跑任务      可能已经写过隔离工作区，状态不明时必须进 UNKNOWN 等人工对账，
+                  自动重放等于把补丁应用两次
 
 失败路径由 Worker 自己关闭（run_failed / run_unknown），成功路径的 run_finished
 目前由 ChatRuntime 在应用执行结果时补上。两条都会写，含义不同：一条说「Worker
@@ -38,6 +44,7 @@ from codeinsight.domain.agent_run import (
     FAILED,
     MANUAL_REQUIRED,
     RUNNING,
+    TASK_RESUME_AFTER_APPROVAL,
     UNKNOWN,
     WAITING_APPROVAL,
     WAITING_VALIDATION,
@@ -64,9 +71,11 @@ DEFAULT_LEASE_MS = 60_000
 
 # 公开错误类别。只记类别，不记异常消息——消息里可能带供应商响应或路径。
 RUN_RECORD_MISSING = "RUN_RECORD_MISSING"
-UNEXPECTED_ERROR = "UNEXPECTED_ERROR"
-# 续跑任务会写隔离工作区，属于计划 Task 6/7 的范围。宁可明确停住，也不猜着跑。
+# 续跑消息缺凭据：既不能猜它要应用哪个补丁，也不能当普通失败让重投再试一遍。
 RESUME_TASK_NOT_WIRED = "RESUME_TASK_NOT_WIRED"
+# 消息与事实层对不上：事实层已经走到更新的一次尝试，这条消息属于上一手。
+STALE_RUN_MESSAGE = "STALE_RUN_MESSAGE"
+UNEXPECTED_ERROR = "UNEXPECTED_ERROR"
 
 _RUN_STATUS_BY_CHAT_STATUS: dict[str, str] = {
     CHAT_COMPLETED: COMPLETED,
@@ -84,8 +93,8 @@ _RUN_STATUS_BY_CHAT_STATUS: dict[str, str] = {
 class AgentRunOutcome:
     """一次 handle 的结果。execution 为 None 表示这一轮没有产出回答。
 
-    claimed 回答的是「这次有没有真的开始跑」：没领到租约、或者任务类型根本不在
-    本 Worker 职责范围内时，它是 False——调用方据此判断该不该报告失败。
+    claimed 回答的是「这次有没有真的开始跑」：没领到租约时它是 False，
+    调用方据此判断该不该报告失败。
     """
 
     run_id: str
@@ -148,13 +157,27 @@ class AgentRunWorker:
                 error_class=RUN_RECORD_MISSING,
                 claimed=False,
             )
-        if task.may_have_side_effects:
-            # 续跑任务不在本 Worker 的职责范围内；没有领取租约就要如实说没跑。
+        # 拒绝发生在领租约之前：消息本身不值得执行时，不该在事实层留下
+        # 「某个 Worker 曾经领过它」的痕迹。
+        if task.task_kind == TASK_RESUME_AFTER_APPROVAL and not _has_resume_credentials(
+            record
+        ):
             return self._stop(
                 task.run_id,
                 status=MANUAL_REQUIRED,
                 error_class=RESUME_TASK_NOT_WIRED,
                 event_type=RUN_UNKNOWN,
+                claimed=False,
+            )
+        if task.task_kind != record.task_kind or task.task_id != record.task_id:
+            # 典型场景：审批续跑已经登记，队列里迟到的旧消息才被投出来。它描述
+            # 的是上一手尝试，跑它等于拿过期入口执行当前状态，还会把已经登记
+            # 的新尝试挤掉——所以只拒绝，一个字段都不回写。
+            return AgentRunOutcome(
+                run_id=task.run_id,
+                status=record.status,
+                execution=None,
+                error_class=STALE_RUN_MESSAGE,
                 claimed=False,
             )
         claimed = self._store.claim_run(
@@ -178,13 +201,15 @@ class AgentRunWorker:
                 "worker_id": self._worker_id,
                 "attempt": str(claimed.attempt),
                 "task_id": task.task_id,
+                "task_kind": task.task_kind,
                 "deadline_epoch_ms": str(claimed.deadline_epoch_ms),
             },
         )
         if self._clock_ms() >= claimed.deadline_epoch_ms:
+            # 续跑任务过了期限要人工重新批准：光重投一次并不能让审批重新生效。
             return self._stop(
                 task.run_id,
-                status=FAILED,
+                status=MANUAL_REQUIRED if task.may_have_side_effects else FAILED,
                 error_class=DEADLINE_EXCEEDED,
                 event_type=RUN_FAILED,
                 claimed=True,
@@ -194,7 +219,7 @@ class AgentRunWorker:
         except AgentRunContextError as error:
             return self._stop(
                 task.run_id,
-                status=FAILED,
+                status=self._failure_status(task),
                 error_class=error.error_class,
                 event_type=RUN_FAILED,
                 claimed=True,
@@ -204,17 +229,20 @@ class AgentRunWorker:
         except AgentRunExecutionError as error:
             return self._stop(
                 task.run_id,
-                status=FAILED,
+                status=self._failure_status(task),
                 error_class=error.error_class,
                 event_type=RUN_FAILED,
                 claimed=True,
             )
         except Exception as error:  # noqa: BLE001 - Worker 边界：任何异常都要落成事实
+            # 续跑任务可能已经把补丁写进隔离工作区。状态不明就进 UNKNOWN，
+            # 由人工对账，而不是让重试去赌「这次应该没写进去」。
+            ambiguous = task.may_have_side_effects
             return self._stop(
                 task.run_id,
-                status=MANUAL_REQUIRED,
+                status=UNKNOWN if ambiguous else MANUAL_REQUIRED,
                 error_class=f"{UNEXPECTED_ERROR}:{type(error).__name__}",
-                event_type=RUN_UNKNOWN,
+                event_type=RUN_UNKNOWN if ambiguous else RUN_UNKNOWN,
                 claimed=True,
             )
         status = _RUN_STATUS_BY_CHAT_STATUS.get(execution.status, FAILED)
@@ -229,6 +257,12 @@ class AgentRunWorker:
             error_class=error_class,
             claimed=True,
         )
+
+    @staticmethod
+    def _failure_status(task: AgentRunTask) -> str:
+        """执行前的失败：续跑任务交人工，只读任务就是失败。"""
+
+        return MANUAL_REQUIRED if task.may_have_side_effects else FAILED
 
     def _stop(
         self,
@@ -271,6 +305,14 @@ class AgentRunWorker:
             event_sequence=record.event_sequence,
         )
         self._store.save_run(stopped)
+
+
+def _has_resume_credentials(record: AgentRunRecord) -> bool:
+    """续跑必须有补丁标识和一次性审批令牌，两者缺一不可。"""
+
+    patch_id = (record.patch_id or "").strip()
+    approval_token = (record.approval_token or "").strip()
+    return bool(patch_id) and bool(approval_token)
 
 
 def _now_ms() -> int:

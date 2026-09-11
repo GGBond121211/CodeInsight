@@ -172,6 +172,16 @@ def _apply_additive_compatibility_migrations(engine: Engine) -> None:
             "ALTER TABLE agent_runs ADD COLUMN show_debug_reasoning "
             "TINYINT(1) NOT NULL DEFAULT 0",
         ),
+        (
+            "agent_runs",
+            "patch_id",
+            "ALTER TABLE agent_runs ADD COLUMN patch_id VARCHAR(64) NULL",
+        ),
+        (
+            "agent_runs",
+            "approval_token",
+            "ALTER TABLE agent_runs ADD COLUMN approval_token VARCHAR(255) NULL",
+        ),
     )
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())

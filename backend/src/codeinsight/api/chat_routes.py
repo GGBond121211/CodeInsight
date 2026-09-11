@@ -94,6 +94,10 @@ def create_chat_router(conversation_service: ConversationService) -> APIRouter:
             turn = conversation_service.approve_turn(turn_id)
         except ChatRuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except ChatDispatchError as error:
+            # 审批本身已经登记过，但没有任何 Worker 接手这次续跑。返回 503 而
+            # 不是 2xx：不能给用户一个「已经批准并开始了」的姿态。
+            raise HTTPException(status_code=503, detail=str(error)) from error
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return ChatTurnResponse(**turn.as_dict())
