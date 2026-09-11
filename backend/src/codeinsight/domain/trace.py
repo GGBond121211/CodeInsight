@@ -61,6 +61,10 @@ SESSION_LOADED = "session_loaded"
 INTENT_CLASSIFIED = "intent_classified"
 CONTEXT_ASSEMBLED = "context_assembled"
 CONTEXT_COMPACTED = "context_compacted"
+# Q-010：95% 触发点的安全代价必须可观测，不能只靠本地断言。
+# 只记录窗口、估算值和结论，不记录被拒绝的正文。
+CONTEXT_OVERFLOW = "context_overflow"
+COMPACTION_FAILED = "compaction_failed"
 RETRIEVAL_STARTED = "retrieval_started"
 RETRIEVAL_FINISHED = "retrieval_finished"
 MODEL_GENERATING = "model_generating"
@@ -107,6 +111,8 @@ SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
         INTENT_CLASSIFIED,
         CONTEXT_ASSEMBLED,
         CONTEXT_COMPACTED,
+        CONTEXT_OVERFLOW,
+        COMPACTION_FAILED,
         RETRIEVAL_STARTED,
         RETRIEVAL_FINISHED,
         MODEL_GENERATING,

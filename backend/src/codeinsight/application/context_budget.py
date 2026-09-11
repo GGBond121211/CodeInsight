@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import ROUND_FLOOR, Decimal
 
 from codeinsight.domain.memory import (
     CONTEXT_SECTION_PRIORITY,
@@ -26,6 +27,88 @@ def estimate_tokens(text: str) -> int:
     这里保留同名入口，避免既有调用方和登记表 S3-P03 的来源指针失效。
     """
     return domain_estimate_tokens(text)
+
+
+CONTEXT_LIFECYCLE_POLICY_VERSION = "deepseek-harness-adapted-v1-95"
+
+# 单次模型调用的输出预留。它同时是 ContextAssembler 的输入硬上限扣减项和
+# Provider 请求的 max_tokens，因此只能有一个来源：以前 assembler 默认 1000、
+# Gateway 默认 40960，等于同一件事有两套口径。
+DEFAULT_MAX_OUTPUT_TOKENS = 40_960
+
+
+def scale_tokens(total: int, ratio: float) -> int:
+    """按比例换算 token 阈值。
+
+    用十进制定点而不是浮点乘法：128000 * 0.95 必须恰好落在 121600，
+    任何一位漂移都会让压缩提前或推迟一整轮，进而让回归结果不稳定。
+    """
+    if total < 0:
+        raise ValueError("token 数不能为负")
+    scaled = Decimal(total) * Decimal(str(ratio))
+    return int(scaled.to_integral_value(rounding=ROUND_FLOOR))
+
+
+@dataclass(frozen=True)
+class ContextLifecyclePolicy:
+    """版本化的上下文生命周期策略。
+
+    触发比例是**压缩的压力阈值**：达到它就执行压缩，不是压缩后只剩余额。
+    0.95 比参考实现的 0.80 更晚，留给下一轮输出和工具结果的空间更少，
+    因此必须和 overflow guard、工具结果裁剪一起使用，不能单独生效。
+    """
+
+    context_window_tokens: int = 128_000
+    compaction_threshold_ratio: float = 0.95
+    retain_recent_ratio: float = 0.16
+    summary_max_output_tokens: int = 8_192
+    compaction_retries: int = 1
+    overflow_retries: int = 1
+    version: str = CONTEXT_LIFECYCLE_POLICY_VERSION
+
+    def __post_init__(self) -> None:
+        if self.context_window_tokens <= 0:
+            raise ValueError("context_window_tokens 必须为正")
+        if not 0 < self.compaction_threshold_ratio <= 1:
+            raise ValueError("compaction_threshold_ratio 必须落在 (0, 1]")
+        if not 0 < self.retain_recent_ratio < 1:
+            raise ValueError("retain_recent_ratio 必须落在 (0, 1)")
+        if self.summary_max_output_tokens <= 0:
+            raise ValueError("summary_max_output_tokens 必须为正")
+        if self.compaction_retries < 0 or self.overflow_retries < 0:
+            raise ValueError("重试预算不能为负")
+        if not self.version.strip():
+            raise ValueError("策略版本不能为空")
+
+    @property
+    def compaction_trigger_tokens(self) -> int:
+        """开始执行压缩的输入压力阈值；达到即触发。"""
+        return scale_tokens(self.context_window_tokens, self.compaction_threshold_ratio)
+
+    @property
+    def retained_recent_tokens(self) -> int:
+        """压缩后按原文保留的最近上下文预算。"""
+        return scale_tokens(self.context_window_tokens, self.retain_recent_ratio)
+
+    def should_compact(self, input_tokens: int) -> bool:
+        if input_tokens < 0:
+            raise ValueError("input_tokens 不能为负")
+        return input_tokens >= self.compaction_trigger_tokens
+
+    def input_allowance(self, reserved_output_tokens: int) -> int:
+        """输出预留之后的输入硬上限。"""
+        if reserved_output_tokens < 0:
+            raise ValueError("reserved_output_tokens 不能为负")
+        allowance = self.context_window_tokens - reserved_output_tokens
+        if allowance <= 0:
+            raise ValueError("输出预留不能占满整个上下文窗口")
+        return allowance
+
+    def exceeds_window(self, input_tokens: int, reserved_output_tokens: int) -> bool:
+        """overflow guard：请求整体超出窗口，必须在调用前拒绝或降级。"""
+        if input_tokens < 0 or reserved_output_tokens < 0:
+            raise ValueError("token 数不能为负")
+        return input_tokens + reserved_output_tokens > self.context_window_tokens
 
 
 @dataclass(frozen=True)

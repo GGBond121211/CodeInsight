@@ -8,7 +8,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import lru_cache
@@ -16,16 +16,21 @@ from functools import lru_cache
 from openai import OpenAI
 
 from codeinsight.agent.tool_loop import ToolModelResponse
-from codeinsight.application.context_budget import estimate_tokens
+from codeinsight.application.context_budget import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    ContextLifecyclePolicy,
+    estimate_tokens,
+)
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
 from codeinsight.domain.errors import ModelConfigurationError
-from codeinsight.domain.trace import MODEL_CALLED, MODEL_RESULT, RunEvent
+from codeinsight.domain.trace import CONTEXT_OVERFLOW, MODEL_CALLED, MODEL_RESULT, RunEvent
 from codeinsight.infrastructure.chat_endpoint import configured_chat_base_url
 from codeinsight.infrastructure.event_log import InMemoryEventLog
 from codeinsight.infrastructure.gateway_errors import (
     BackpressureError,
     BudgetExceededError,
     CircuitOpenError,
+    ContextOverflowGatewayError,
     GatewayError,
     InvalidResponseGatewayError,
     NoCapableModelError,
@@ -47,14 +52,65 @@ from codeinsight.infrastructure.provider_adapters import (
 )
 from codeinsight.infrastructure.request_fingerprint import request_fingerprints
 
-DEFAULT_MAX_OUTPUT_TOKENS = 40_960
-DEFAULT_CONTEXT_INPUT_TOKENS = 70_000
 MIN_CONFIGURED_OUTPUT_TOKENS = 256
 MAX_CONFIGURED_OUTPUT_TOKENS = 100_000
 # 2.1.0 多轮会话的单次输出预算已扩大；组合预算和短时令牌桶必须同步扩大，
 # 否则一个正常的 4~12 轮 Session 会在模型实际返回前被旧的 200k 门禁拦截。
 DEFAULT_TENANT_TOKEN_LIMIT = 2_000_000
 DEFAULT_RATE_LIMIT_CAPACITY = 2_000_000
+
+
+def estimate_messages_tokens(messages: Sequence[Mapping[str, object]]) -> int:
+    """按最终待发送的 messages 估算输入 token。
+
+    用序列化后的整体长度，而不是拼接前的粗略字符串：角色信封、工具 schema
+    和 JSON 转义都真实占用上下文。分开算正是「本地认为装得下、上游实际
+    溢出」这类三方口径不一致的来源。
+    """
+    return estimate_tokens(json.dumps(list(messages), ensure_ascii=False, default=str))
+
+
+@dataclass(frozen=True)
+class RouteBudget:
+    """一条路由的最终预算：共享上下文窗口 + 本路线输出上限。
+
+    窗口来自生命周期策略，是所有路线共用的工作预算；输出上限按场景解析。
+    模型注册表里的 context_window_tokens 是供应商能力目录，不等于每次请求
+    的工作预算，因此不在这里直接取用。
+    """
+
+    scene: str
+    context_window_tokens: int
+    reserved_output_tokens: int
+    policy_version: str
+
+    def __post_init__(self) -> None:
+        if not self.scene.strip():
+            raise ValueError("路由预算必须绑定场景")
+        if self.context_window_tokens <= 0 or self.reserved_output_tokens <= 0:
+            raise ValueError("路由预算必须为正")
+        if self.reserved_output_tokens >= self.context_window_tokens:
+            raise ValueError("输出预留不能占满整个上下文窗口")
+        if not self.policy_version.strip():
+            raise ValueError("路由预算必须带策略版本")
+
+    @property
+    def input_allowance(self) -> int:
+        """扣掉输出预留之后的输入硬上限。"""
+        return self.context_window_tokens - self.reserved_output_tokens
+
+
+def resolve_route_budget(
+    scene: str, *, policy: ContextLifecyclePolicy | None = None
+) -> RouteBudget:
+    """解析场景预算；窗口取共享策略，输出上限取当前配置。"""
+    selected = policy or ContextLifecyclePolicy()
+    return RouteBudget(
+        scene=scene,
+        context_window_tokens=selected.context_window_tokens,
+        reserved_output_tokens=configured_max_output_tokens(),
+        policy_version=selected.version,
+    )
 
 
 @dataclass(frozen=True)
@@ -81,6 +137,9 @@ class GatewayRequest:
     response_format: Mapping[str, object] | None = None
     cache_context: CacheContext | None = None
     run_id: str | None = None
+    # 本次请求的工作上下文窗口。None 表示调用方没有声明预算，此时不做
+    # overflow guard；应用入口一律通过 resolve_route_budget 显式传入。
+    context_window_tokens: int | None = None
     # 聊天 Run 可把 Gateway 生命周期事件送入自己的实时事件流。
     event_log: object | None = None
 
@@ -89,6 +148,17 @@ class GatewayRequest:
             raise ValueError("request_id/tenant_id/user_id 不能为空")
         if self.estimated_input_tokens < 0 or self.reserved_output_tokens < 0:
             raise ValueError("Token 估算不能为负")
+        if self.context_window_tokens is not None and self.context_window_tokens <= 0:
+            raise ValueError("context_window_tokens 必须为正")
+
+    @property
+    def overflow_guard_result(self) -> str:
+        """overflow guard 结论：fits / overflow / not_checked。"""
+        if self.context_window_tokens is None:
+            return "not_checked"
+        if self.estimated_input_tokens + self.reserved_output_tokens > self.context_window_tokens:
+            return "overflow"
+        return "fits"
 
 
 @dataclass(frozen=True)
@@ -374,6 +444,8 @@ class ModelGateway:
         if not candidates:
             raise NoCapableModelError("没有满足当前能力要求的模型")
 
+        self._guard_context_window(request)
+
         with self._stats_lock:
             self.requests_total += 1
         primary_cache_key = self.semantic_cache.key_for(request, candidates[0])
@@ -495,6 +567,35 @@ class ModelGateway:
         finally:
             self.admission.release()
 
+    def _guard_context_window(self, request: GatewayRequest) -> None:
+        """调用前拒绝整体超出工作窗口的请求。
+
+        ContextAssembler 只能保证「按自己的口径装得下」；这里用同一个窗口对
+        完整请求再算一次，使装配、Gateway 和上游不会出现三套结论。拒绝时先
+        发公开事件再抛错，日志里只留计数，不留被拒绝的正文。
+        """
+        window = request.context_window_tokens
+        if window is None:
+            return
+        total = request.estimated_input_tokens + request.reserved_output_tokens
+        if total <= window:
+            return
+        self._emit(
+            request,
+            CONTEXT_OVERFLOW,
+            {
+                "scene": request.scene,
+                "context_window_tokens": str(window),
+                "estimated_input_tokens": str(request.estimated_input_tokens),
+                "reserved_output_tokens": str(request.reserved_output_tokens),
+                "overflow_tokens": str(total - window),
+                "guard_result": request.overflow_guard_result,
+            },
+        )
+        raise ContextOverflowGatewayError(
+            f"请求需要 {total} token，超出工作上下文窗口 {window}"
+        )
+
     def _attempt(
         self, request: GatewayRequest, profile: ModelProfile, *, fallback_reason: str | None
     ) -> tuple[ProviderResponse, AttemptTrace, CostRecord]:
@@ -520,6 +621,13 @@ class ModelGateway:
                 "model": profile.model_id,
                 "fallback_reason": fallback_reason or "none",
                 "max_output_tokens": str(request.reserved_output_tokens),
+                "estimated_input_tokens": str(request.estimated_input_tokens),
+                "context_window_tokens": (
+                    str(request.context_window_tokens)
+                    if request.context_window_tokens is not None
+                    else "unspecified"
+                ),
+                "overflow_guard_result": request.overflow_guard_result,
                 "request_fingerprint": fingerprints.request,
                 "stable_prefix_fingerprint": fingerprints.stable_prefix,
             },
@@ -986,6 +1094,28 @@ class GatewayChatModel:
     def from_environment(cls, *, context_assembler=None) -> GatewayChatModel:
         return cls(default_gateway_from_environment(), context_assembler=context_assembler)
 
+    def _assemble_user_prompt(
+        self, system_prompt: str, user_prompt: str, budget: RouteBudget
+    ) -> str:
+        """按场景预算装配用户侧上下文；不配置 assembler 时保持原文。"""
+        if self._context_assembler is None:
+            return user_prompt
+        from codeinsight.application.context_assembler import ContextRequest
+
+        assembly = self._context_assembler.assemble(
+            ContextRequest(
+                system_safety=system_prompt,
+                user_goal="",
+                user_code_task=user_prompt,
+                model_version=self.model,
+                strategy_version="context-assembler-v1",
+                max_tokens=budget.context_window_tokens,
+                reserved_output_tokens=budget.reserved_output_tokens,
+                policy_version=budget.policy_version,
+            )
+        )
+        return assembly.user_text
+
     def complete(
         self,
         system_prompt: str,
@@ -995,25 +1125,13 @@ class GatewayChatModel:
         event_log=None,
         cache_context: CacheContext | None = None,
     ) -> ModelCompletion:
-        output_budget = configured_max_output_tokens()
-        request_user_prompt = user_prompt
-        estimated = estimate_tokens(system_prompt + user_prompt)
-        if self._context_assembler is not None:
-            from codeinsight.application.context_assembler import ContextRequest
-
-            assembly = self._context_assembler.assemble(
-                ContextRequest(
-                    system_safety=system_prompt,
-                    user_goal="",
-                    user_code_task=user_prompt,
-                    model_version=self.model,
-                    strategy_version="context-assembler-v1",
-                    max_tokens=DEFAULT_CONTEXT_INPUT_TOKENS + output_budget,
-                    reserved_output_tokens=output_budget,
-                )
-            )
-            request_user_prompt = assembly.user_text
-            estimated = assembly.fitted.estimate.input_tokens
+        budget = resolve_route_budget("explain")
+        request_user_prompt = self._assemble_user_prompt(system_prompt, user_prompt, budget)
+        messages = (
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request_user_prompt},
+        )
+        estimated = estimate_messages_tokens(messages)
         response = self.gateway.complete(
             GatewayRequest(
                 uuid.uuid4().hex,
@@ -1021,17 +1139,15 @@ class GatewayChatModel:
                 "local",
                 "explain",
                 _prompt_version(system_prompt),
-                (
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": request_user_prompt},
-                ),
+                messages,
                 estimated,
-                output_budget,
+                budget.reserved_output_tokens,
                 frozenset({"text"}),
                 response_format={"type": "json_object"},
                 run_id=run_id,
                 event_log=event_log,
                 cache_context=cache_context,
+                context_window_tokens=budget.context_window_tokens,
             )
         )
         return ModelCompletion(
@@ -1084,25 +1200,13 @@ class GatewayChatModel:
         """
         from codeinsight.prompts.general_chat import PROMPT_VERSION
 
-        output_budget = configured_max_output_tokens()
-        request_user_prompt = user_prompt
-        estimated = estimate_tokens(system_prompt + user_prompt)
-        if self._context_assembler is not None:
-            from codeinsight.application.context_assembler import ContextRequest
-
-            assembly = self._context_assembler.assemble(
-                ContextRequest(
-                    system_safety=system_prompt,
-                    user_goal="",
-                    user_code_task=user_prompt,
-                    model_version=self.model,
-                    strategy_version="context-assembler-v1",
-                    max_tokens=DEFAULT_CONTEXT_INPUT_TOKENS + output_budget,
-                    reserved_output_tokens=output_budget,
-                )
-            )
-            request_user_prompt = assembly.user_text
-            estimated = assembly.fitted.estimate.input_tokens
+        budget = resolve_route_budget("general-chat")
+        request_user_prompt = self._assemble_user_prompt(system_prompt, user_prompt, budget)
+        messages = (
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request_user_prompt},
+        )
+        estimated = estimate_messages_tokens(messages)
         response = self.gateway.complete(
             GatewayRequest(
                 request_id=uuid.uuid4().hex,
@@ -1110,16 +1214,14 @@ class GatewayChatModel:
                 user_id="local",
                 scene="general-chat",
                 prompt_version=PROMPT_VERSION,
-                messages=(
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": request_user_prompt},
-                ),
+                messages=messages,
                 estimated_input_tokens=estimated,
-                reserved_output_tokens=output_budget,
+                reserved_output_tokens=budget.reserved_output_tokens,
                 required_capabilities=frozenset({"text"}),
                 run_id=run_id,
                 event_log=event_log,
                 cache_context=cache_context,
+                context_window_tokens=budget.context_window_tokens,
             )
         )
         return ModelCompletion(
@@ -1140,7 +1242,8 @@ class GatewayChatModel:
         event_log=None,
         cache_context: CacheContext | None = None,
     ) -> ToolModelResponse:
-        output_budget = configured_max_output_tokens()
+        budget = resolve_route_budget("change-plan")
+        messages = tuple(messages)
         response = self.gateway.complete(
             GatewayRequest(
                 uuid.uuid4().hex,
@@ -1148,14 +1251,15 @@ class GatewayChatModel:
                 "local",
                 "change-plan",
                 "tool-loop-v1",
-                tuple(messages),
-                estimate_tokens(json.dumps(messages, ensure_ascii=False, default=str)),
-                output_budget,
+                messages,
+                estimate_messages_tokens(messages),
+                budget.reserved_output_tokens,
                 frozenset({"text", "tools", "structured_output"}),
                 tuple(tools),
                 run_id=run_id,
                 event_log=event_log,
                 cache_context=cache_context,
+                context_window_tokens=budget.context_window_tokens,
             )
         )
         return ToolModelResponse(

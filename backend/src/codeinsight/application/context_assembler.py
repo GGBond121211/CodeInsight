@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from codeinsight.application.context_budget import FittedContext, fit_context, make_section
+from codeinsight.application.context_budget import (
+    CONTEXT_LIFECYCLE_POLICY_VERSION,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    ContextLifecyclePolicy,
+    FittedContext,
+    fit_context,
+    make_section,
+)
 from codeinsight.domain.memory import (
     SECTION_CURRENT_DIFF,
     SECTION_EVIDENCE,
@@ -43,8 +50,11 @@ class ContextRequest:
     session_summary: str = ""
     repository_map: str = ""
     output_schema: str = ""
-    max_tokens: int = 8_000
-    reserved_output_tokens: int = 1_000
+    # 默认预算直接来自生命周期策略，不再单独维护第二套常量。调用方仍可
+    # 显式注入 route-level 输出上限，但窗口只能有一个来源。
+    max_tokens: int = ContextLifecyclePolicy().context_window_tokens
+    reserved_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    policy_version: str = CONTEXT_LIFECYCLE_POLICY_VERSION
     prompt_name: str | None = None
     prompt_environment: str = "local"
     tenant_id: str = "default"

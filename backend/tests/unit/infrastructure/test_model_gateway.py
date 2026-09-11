@@ -4,11 +4,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from codeinsight.application.context_budget import (
+    CONTEXT_LIFECYCLE_POLICY_VERSION,
+    ContextLifecyclePolicy,
+)
 from codeinsight.domain.errors import ModelConfigurationError
+from codeinsight.domain.trace import CONTEXT_OVERFLOW
+from codeinsight.infrastructure.event_log import InMemoryEventLog
 from codeinsight.infrastructure.gateway_errors import (
     AuthenticationGatewayError,
     BackpressureError,
     BudgetExceededError,
+    ContextOverflowGatewayError,
     InvalidResponseGatewayError,
     RateLimitGatewayError,
     TimeoutGatewayError,
@@ -22,10 +29,13 @@ from codeinsight.infrastructure.model_gateway import (
     GatewayRequest,
     InMemoryBudgetLedger,
     ModelGateway,
+    RouteBudget,
     TokenBucketRateLimiter,
     configured_max_output_tokens,
     configured_routes_from_environment,
     default_gateway_from_environment,
+    estimate_messages_tokens,
+    resolve_route_budget,
 )
 from codeinsight.infrastructure.model_profiles import default_model_registry, default_routes
 from codeinsight.infrastructure.provider_adapters import (
@@ -53,6 +63,173 @@ def _request(**overrides: object) -> GatewayRequest:
 
 def _success(model: str, content: str = '{"ok":true}') -> ProviderResponse:
     return ProviderResponse(content, (), model, 80, 20, 0, "stop")
+
+
+def test_route_budget_shares_one_window_and_one_output_cap(monkeypatch) -> None:
+    monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "40960")
+
+    explain = resolve_route_budget("explain")
+    tool_loop = resolve_route_budget("change-plan")
+
+    assert explain.context_window_tokens == 128_000
+    assert tool_loop.context_window_tokens == 128_000
+    assert explain.reserved_output_tokens == 40_960
+    assert tool_loop.reserved_output_tokens == 40_960
+    assert explain.input_allowance == 128_000 - 40_960
+    assert explain.policy_version == CONTEXT_LIFECYCLE_POLICY_VERSION
+
+
+def test_route_budget_refuses_a_reservation_that_fills_the_window() -> None:
+    with pytest.raises(ValueError):
+        RouteBudget("explain", 100, 100, CONTEXT_LIFECYCLE_POLICY_VERSION)
+    with pytest.raises(ValueError):
+        RouteBudget("  ", 100, 10, CONTEXT_LIFECYCLE_POLICY_VERSION)
+
+
+def test_messages_estimate_covers_roles_tools_and_json_escaping() -> None:
+    single = ({"role": "user", "content": "inspect the repository"},)
+    with_tools = (
+        {"role": "user", "content": "inspect the repository"},
+        {"role": "tool", "content": '{"path": "src/a.py", "line": 1}'},
+    )
+
+    assert estimate_messages_tokens(single) > 0
+    assert estimate_messages_tokens(with_tools) > estimate_messages_tokens(single)
+
+
+def test_overflow_guard_rejects_before_any_provider_call() -> None:
+    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    gateway = ModelGateway(provider=provider)
+
+    with pytest.raises(ContextOverflowGatewayError, match="超出工作上下文窗口"):
+        gateway.complete(
+            _request(
+                context_window_tokens=100,
+                estimated_input_tokens=80,
+                reserved_output_tokens=50,
+            )
+        )
+
+    assert provider.called_models == []
+
+
+def test_overflow_guard_reports_the_numbers_without_the_request_body() -> None:
+    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    event_log = InMemoryEventLog()
+    gateway = ModelGateway(provider=provider, event_log=event_log)
+
+    with pytest.raises(ContextOverflowGatewayError):
+        gateway.complete(
+            _request(
+                run_id="run-overflow",
+                event_log=event_log,
+                context_window_tokens=100,
+                estimated_input_tokens=80,
+                reserved_output_tokens=50,
+            )
+        )
+
+    events = event_log.read_events("run-overflow")
+    overflow = [event for event in events if event.event_type == CONTEXT_OVERFLOW]
+    assert len(overflow) == 1
+    payload = overflow[0].payload
+    assert payload["context_window_tokens"] == "100"
+    assert payload["estimated_input_tokens"] == "80"
+    assert payload["reserved_output_tokens"] == "50"
+    assert payload["overflow_tokens"] == "30"
+    assert payload["guard_result"] == "overflow"
+    assert "inspect the repository" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_overflow_guard_lets_a_request_that_fits_through() -> None:
+    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    gateway = ModelGateway(provider=provider)
+
+    response = gateway.complete(
+        _request(
+            context_window_tokens=100,
+            estimated_input_tokens=50,
+            reserved_output_tokens=50,
+        )
+    )
+
+    assert response.content == '{"ok":true}'
+    assert provider.called_models == ["deepseek-v4-flash"]
+
+
+def test_request_without_a_declared_window_is_not_guarded() -> None:
+    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    gateway = ModelGateway(provider=provider)
+    request = _request()
+
+    assert request.overflow_guard_result == "not_checked"
+    gateway.complete(request)
+
+    assert provider.called_models == ["deepseek-v4-flash"]
+
+
+def test_gateway_chat_model_estimates_from_the_serialized_messages() -> None:
+    class ExpandingAssembler:
+        def assemble(self, request):
+            return SimpleNamespace(
+                user_text="expanded context block " * 200,
+                fitted=SimpleNamespace(estimate=SimpleNamespace(input_tokens=1)),
+            )
+
+    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    completion = GatewayChatModel(
+        ModelGateway(provider=provider), context_assembler=ExpandingAssembler()
+    ).complete("system-v1", "hello")
+
+    # 估算必须跟着最终要发出去的 messages，而不是装配前的粗略字符串。
+    assert completion.estimated_input_tokens is not None
+    assert completion.estimated_input_tokens > 500
+
+
+def test_gateway_chat_model_declares_the_shared_working_window() -> None:
+    seen: list[GatewayRequest] = []
+
+    class RecordingGateway:
+        def complete(self, request: GatewayRequest) -> object:
+            seen.append(request)
+            return SimpleNamespace(
+                content="{}",
+                tool_calls=(),
+                model="deepseek-v4-flash",
+                input_tokens=1,
+                output_tokens=1,
+                reasoning_content=None,
+            )
+
+    model = GatewayChatModel(RecordingGateway())  # type: ignore[arg-type]
+    model.complete("system-v1", "hello")
+    model.complete_text("system-v1", "hello")
+    model.complete_with_tools(({"role": "user", "content": "hi"},), ())
+
+    assert [request.context_window_tokens for request in seen] == [128_000, 128_000, 128_000]
+    assert [request.overflow_guard_result for request in seen] == ["fits", "fits", "fits"]
+
+
+def test_structured_output_truncated_at_max_tokens_is_recognized() -> None:
+    truncated = ProviderResponse("{", (), "deepseek-v4-flash", 80, 20, 0, "length")
+    provider = FakeProviderAdapter(
+        {
+            "deepseek-v4-flash": [truncated, truncated],
+            "gpt-5.4-mini": [truncated, truncated],
+            "gpt-5.4": [truncated, truncated],
+        }
+    )
+    gateway = ModelGateway(provider=provider)
+
+    with pytest.raises(InvalidResponseGatewayError):
+        gateway.complete(_request(response_format={"type": "json_object"}))
+
+    details = [
+        event.payload.get("error_detail")
+        for event in gateway.event_log.read_events("req-1")
+        if event.event_type == "model_result"
+    ]
+    assert "structured_output_truncated" in details
 
 
 def test_registry_uses_deepseek_as_best_and_cheapest_capable_fallback() -> None:
@@ -154,8 +331,10 @@ def test_gateway_chat_model_expands_context_budget_for_reasoning_and_answer(monk
         "system-v1", "hello"
     )
 
-    assert assembler.request.max_tokens == 70_000 + 40_960
+    # 工作窗口从生命周期策略取，不再由 Gateway 单独拼一个第二套默认值。
+    assert assembler.request.max_tokens == ContextLifecyclePolicy().context_window_tokens
     assert assembler.request.reserved_output_tokens == 40_960
+    assert assembler.request.policy_version == CONTEXT_LIFECYCLE_POLICY_VERSION
 
 
 def test_gateway_chat_model_records_content_derived_prompt_version() -> None:
