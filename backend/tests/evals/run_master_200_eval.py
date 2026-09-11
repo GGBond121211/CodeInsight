@@ -14,7 +14,6 @@ from statistics import mean, median
 from time import perf_counter
 from typing import Any
 
-from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.query_router import route_question
 from codeinsight.domain.answer import AutoAnswer, RepositoryAnswer, SubQuestionAnswer
@@ -27,6 +26,9 @@ from codeinsight.evaluation.answer_metrics import (
 )
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.openai_chat import OpenAIChatModel
+
+# 2026-09-11：旧 LangGraph 路线的导入已冻结；保留原名以便回退：
+# from codeinsight.agent.workflow import run_citation_agent
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_ROOT.parent
@@ -277,40 +279,41 @@ def run_case(case: dict[str, Any], repository: dict[str, Any], chat, embedding) 
     root = PROJECT_ROOT / repository["local_root"]
     try:
         router_result = route_question(case["input"]["question"], complete=tracker.complete)
-        if router_result.plan.execution_route == "agent":
-            agent_result = run_citation_agent(
-                root,
-                case["input"]["question"],
-                complete=tracker.complete,
-                retrieval_mode="auto",
-                semantic_embed=tracker.embed,
-                query_plan=router_result.plan,
-            )
-            result = agent_result.result
-            result = type(
-                "EvaluatedAgentResult",
-                (),
-                {
-                    **result.__dict__,
-                    "subquestions": agent_result.subquestions,
-                },
-            )()
-            revisions = agent_result.revisions
-            events = []
-            for item in agent_result.events:
-                events.append(asdict(item))
-        else:
-            result = auto_answer_repository(
-                root,
-                router_result=router_result,
-                generate=tracker.generate,
-                semantic_embed=tracker.embed
-                if router_result.plan.execution_route != "insufficient"
-                else None,
-            )
-            events = []
-            for item in result.events:
-                events.append(asdict(item))
+        # 2026-09-11：旧 LangGraph agent 分支已冻结，原实现保留：
+        # if router_result.plan.execution_route == "agent":
+        #     agent_result = run_citation_agent(
+        #         root,
+        #         case["input"]["question"],
+        #         complete=tracker.complete,
+        #         retrieval_mode="auto",
+        #         semantic_embed=tracker.embed,
+        #         query_plan=router_result.plan,
+        #     )
+        #     result = agent_result.result
+        #     result = type(
+        #         "EvaluatedAgentResult",
+        #         (),
+        #         {
+        #             **result.__dict__,
+        #             "subquestions": agent_result.subquestions,
+        #         },
+        #     )()
+        #     revisions = agent_result.revisions
+        #     events = []
+        #     for item in agent_result.events:
+        #         events.append(asdict(item))
+        # 2026-09-11：agent 分支冻结后，这里只剩线性/证据不足路线。
+        result = auto_answer_repository(
+            root,
+            router_result=router_result,
+            generate=tracker.generate,
+            semantic_embed=tracker.embed
+            if router_result.plan.execution_route != "insufficient"
+            else None,
+        )
+        events = []
+        for item in result.events:
+            events.append(asdict(item))
     except Exception as caught:  # noqa: BLE001 - each case is an isolation boundary
         error = f"{type(caught).__name__}: {caught}"
 

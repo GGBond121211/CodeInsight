@@ -11,16 +11,18 @@ from pathlib import Path
 from time import perf_counter
 from urllib.parse import urlsplit
 
-from codeinsight.agent.workflow import run_citation_agent
 from codeinsight.application.answer_repository import answer_repository
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.query_router import route_question
-from codeinsight.domain.agent import AgentRepositoryAnswer
 from codeinsight.domain.answer import AutoAnswer, RepositoryAnswer
 from codeinsight.domain.semantic import EmbeddingBatch
 from codeinsight.evaluation.answer_metrics import citation_covers, citation_is_valid
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.openai_chat import OpenAIChatModel
+
+# 2026-09-11：旧 LangGraph 路线的导入已冻结；保留原名以便回退：
+# from codeinsight.agent.workflow import run_citation_agent
+# from codeinsight.domain.agent import AgentRepositoryAnswer
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 CASES_PATH = BACKEND_ROOT / "tests" / "evals" / "multilingual_cases_fusion.json"
@@ -182,7 +184,9 @@ def run_case(case: dict, mode: str, model, embedding_model) -> dict:
     router_result = None
     original_router_plan = None
     result: RepositoryAnswer | AutoAnswer | None = None
-    agent_result: AgentRepositoryAnswer | None = None
+    # 2026-09-11：旧 LangGraph 路线的结果对象已冻结，这里恒为 None。
+    # agent_result: AgentRepositoryAnswer | None = None
+    agent_result = None
     error: str | None = None
 
     def tracked_complete(system_prompt: str, user_prompt: str):
@@ -208,32 +212,32 @@ def run_case(case: dict, mode: str, model, embedding_model) -> dict:
                 retrieval_mode="hybrid",
                 semantic_embed=tracked_embed,
             )
-        else:
+        elif mode == "router-linear":
             router_result = route_question(case["input"]["question"], complete=tracked_complete)
             original_router_plan = router_result.plan
             plan = replace(
                 router_result.plan,
-                execution_route="linear" if mode == "router-linear" else "agent",
+                execution_route="linear",
             )
             router_result = replace(router_result, plan=plan)
             semantic_embed = tracked_embed if embedding_model else None
-            if mode == "router-linear":
-                result = auto_answer_repository(
-                    FIXTURE_ROOT,
-                    router_result=router_result,
-                    generate=tracked_generate,
-                    semantic_embed=semantic_embed,
-                )
-            else:
-                agent_result = run_citation_agent(
-                    FIXTURE_ROOT,
-                    case["input"]["question"],
-                    complete=tracked_complete,
-                    retrieval_mode="auto",
-                    semantic_embed=semantic_embed,
-                    query_plan=router_result.plan,
-                )
-                result = agent_result.result
+            result = auto_answer_repository(
+                FIXTURE_ROOT,
+                router_result=router_result,
+                generate=tracked_generate,
+                semantic_embed=semantic_embed,
+            )
+        # 2026-09-11：router-agent 模式已冻结（旧 LangGraph 路线），原实现保留：
+        # else:
+        #     agent_result = run_citation_agent(
+        #         FIXTURE_ROOT,
+        #         case["input"]["question"],
+        #         complete=tracked_complete,
+        #         retrieval_mode="auto",
+        #         semantic_embed=semantic_embed,
+        #         query_plan=router_result.plan,
+        #     )
+        #     result = agent_result.result
     except Exception as caught:  # noqa: BLE001 - evaluation records per-case boundaries
         error = f"{type(caught).__name__}: {caught}"
 
@@ -416,6 +420,9 @@ def main() -> int:
     parser.add_argument("--count", type=int)
     parser.add_argument("--output-suffix")
     args = parser.parse_args()
+    if args.mode == "router-agent":
+        # 2026-09-11：旧 LangGraph 路线冻结，router-agent 不再运行。
+        parser.error("router-agent 模式已冻结：旧 LangGraph 代码理解路线不再运行")
     document = json.loads(CASES_PATH.read_text(encoding="utf-8"))
     cases = document["cases"]
     if args.source_set:
