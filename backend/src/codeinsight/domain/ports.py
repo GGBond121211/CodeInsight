@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from codeinsight.domain.agent_run import AgentRunRecord
 from codeinsight.domain.change import (
     ChangeApproval,
     CodeGoal,
@@ -190,3 +191,25 @@ class CacheStore(Protocol):
     def set(self, key: str, value: str, *, ttl_seconds: int) -> None: ...
 
     def delete(self, key: str) -> None: ...
+
+
+@runtime_checkable
+class AgentRunStore(Protocol):
+    """Agent Run 与后台任务的持久化契约。
+
+    只存标识、状态、版本、attempt、deadline 与租约。对话正文、源码、凭据与
+    模型隐藏推理都不在这里——恢复流程需要知道的是「上一次做到哪一步」，
+    不是「上一次说了什么」。
+    """
+
+    def save_run(self, record: AgentRunRecord) -> None: ...
+
+    def get_run(self, run_id: str) -> AgentRunRecord | None: ...
+
+    def find_run_by_turn(self, turn_id: str) -> AgentRunRecord | None: ...
+
+    def list_open_runs(self, *, limit: int = 50) -> tuple[AgentRunRecord, ...]: ...
+
+    def claim_run(
+        self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int
+    ) -> AgentRunRecord | None: ...

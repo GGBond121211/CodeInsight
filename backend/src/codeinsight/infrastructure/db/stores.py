@@ -17,12 +17,19 @@
 from __future__ import annotations
 
 import json
+import time
 
-from sqlalchemy import Engine, delete, insert, select, update
+from sqlalchemy import Engine, and_, delete, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
 
+from codeinsight.domain.agent_run import (
+    OPEN_AGENT_RUN_STATUSES,
+    QUEUED,
+    RUNNING,
+    AgentRunRecord,
+)
 from codeinsight.domain.change import (
     ChangeApproval,
     CodeGoal,
@@ -34,6 +41,7 @@ from codeinsight.domain.change import (
 from codeinsight.domain.memory import MemoryRecord
 from codeinsight.domain.trace import AuditRecord, IdempotencyKey, RunEvent, TraceContext
 from codeinsight.infrastructure.db.schema import (
+    AgentRunRow,
     ApprovalRow,
     AuditRecordRow,
     GatewayCostRow,
@@ -46,6 +54,7 @@ from codeinsight.infrastructure.db.schema import (
 )
 from codeinsight.infrastructure.event_log import EventSequenceError
 from codeinsight.infrastructure.run_store import (
+    AgentRunTurnConflictError,
     ApprovalAlreadyConsumedError,
     ApprovalExpiredError,
     ApprovalNotFoundError,
@@ -774,6 +783,138 @@ class MySqlGatewayCostStore:
                 )
                 for row in db.scalars(statement)
             )
+
+
+class MySqlAgentRunStore:
+    """Agent Run 事实的 MySQL 实现。与内存实现跑同一套语义测试。
+
+    claim_run 用一条带条件的 UPDATE 加 rowcount 完成 CAS，与 ApprovalStore.consume
+    同一种做法：先 SELECT 再判断再 UPDATE，会让两个 Worker 同时读到 QUEUED，
+    两边都以为自己领到了。租约过期是「上一个 Worker 没了」的唯一信号，
+    所以它和状态一起写在 WHERE 里，由数据库判定。
+    """
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def save_run(self, record: AgentRunRecord) -> None:
+        with self._session_factory() as db:
+            row = db.get(AgentRunRow, record.run_id)
+            if row is None:
+                row = AgentRunRow(run_id=record.run_id)
+                db.add(row)
+            _apply_agent_run_to_row(row, record)
+            try:
+                db.commit()
+            except IntegrityError as error:
+                db.rollback()
+                raise AgentRunTurnConflictError(
+                    f"turn {record.turn_id} 已经属于另一个 Agent Run。"
+                    "同一条用户消息重发时应当命中已有 Run，而不是新开一条。"
+                ) from error
+
+    def get_run(self, run_id: str) -> AgentRunRecord | None:
+        with self._session_factory() as db:
+            row = db.get(AgentRunRow, run_id)
+            if row is None:
+                return None
+            return _agent_run_from_row(row)
+
+    def find_run_by_turn(self, turn_id: str) -> AgentRunRecord | None:
+        statement = select(AgentRunRow).where(AgentRunRow.turn_id == turn_id)
+        with self._session_factory() as db:
+            row = db.scalars(statement).first()
+            if row is None:
+                return None
+            return _agent_run_from_row(row)
+
+    def list_open_runs(self, *, limit: int = 50) -> tuple[AgentRunRecord, ...]:
+        statement = (
+            select(AgentRunRow)
+            .where(AgentRunRow.status.in_(sorted(OPEN_AGENT_RUN_STATUSES)))
+            .order_by(AgentRunRow.updated_at_epoch_ms)
+            .limit(limit)
+        )
+        with self._session_factory() as db:
+            return tuple(_agent_run_from_row(row) for row in db.scalars(statement))
+
+    def claim_run(
+        self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int
+    ) -> AgentRunRecord | None:
+        """QUEUED 随时可领；RUNNING 只有在租约过期后才允许被接管。"""
+
+        now_epoch_ms = int(time.time() * 1000)
+        statement = (
+            update(AgentRunRow)
+            .where(
+                AgentRunRow.run_id == run_id,
+                or_(
+                    AgentRunRow.status == QUEUED,
+                    and_(
+                        AgentRunRow.status == RUNNING,
+                        or_(
+                            AgentRunRow.lease_until_epoch_ms.is_(None),
+                            AgentRunRow.lease_until_epoch_ms <= now_epoch_ms,
+                        ),
+                    ),
+                ),
+            )
+            .values(
+                status=RUNNING,
+                worker_id=worker_id,
+                lease_until_epoch_ms=lease_until_epoch_ms,
+                updated_at_epoch_ms=now_epoch_ms,
+            )
+        )
+        with self._session_factory() as db:
+            result = db.execute(statement)
+            if result.rowcount != 1:
+                db.rollback()
+                return None
+            db.commit()
+            row = db.get(AgentRunRow, run_id)
+            if row is None:
+                return None
+            return _agent_run_from_row(row)
+
+
+def _apply_agent_run_to_row(row: AgentRunRow, record: AgentRunRecord) -> None:
+    row.turn_id = record.turn_id
+    row.session_id = record.session_id
+    row.task_id = record.task_id
+    row.task_kind = record.task_kind
+    row.status = record.status
+    row.policy_version = record.policy_version
+    row.idempotency_key = record.idempotency_key
+    row.attempt = record.attempt
+    row.max_attempts = record.max_attempts
+    row.worker_id = record.worker_id
+    row.lease_until_epoch_ms = record.lease_until_epoch_ms
+    row.deadline_epoch_ms = record.deadline_epoch_ms
+    row.error_class = record.error_class
+    row.event_sequence = record.event_sequence
+    row.updated_at_epoch_ms = record.updated_at_epoch_ms
+
+
+def _agent_run_from_row(row: AgentRunRow) -> AgentRunRecord:
+    return AgentRunRecord(
+        run_id=row.run_id,
+        turn_id=row.turn_id,
+        session_id=row.session_id,
+        task_id=row.task_id,
+        task_kind=row.task_kind,
+        status=row.status,
+        policy_version=row.policy_version,
+        idempotency_key=row.idempotency_key,
+        deadline_epoch_ms=row.deadline_epoch_ms,
+        updated_at_epoch_ms=row.updated_at_epoch_ms,
+        attempt=row.attempt,
+        max_attempts=row.max_attempts,
+        worker_id=row.worker_id,
+        lease_until_epoch_ms=row.lease_until_epoch_ms,
+        error_class=row.error_class,
+        event_sequence=row.event_sequence,
+    )
 
 
 def truncate_all_tables(engine: Engine) -> None:

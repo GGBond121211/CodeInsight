@@ -29,6 +29,7 @@ from codeinsight.infrastructure.db.engine import (
     MySqlConfig,
 )
 from codeinsight.infrastructure.db.schema import (
+    AgentRunRow,
     ApprovalRow,
     AuditRecordRow,
     Base,
@@ -88,6 +89,7 @@ def test_no_other_table_claims_optimistic_locking() -> None:
         ApprovalRow,
         IdempotencyRow,
         MemoryRecordRow,
+        AgentRunRow,
     ],
 )
 def test_every_table_is_innodb(model: type) -> None:
@@ -106,6 +108,7 @@ def test_every_table_is_innodb(model: type) -> None:
         ApprovalRow,
         IdempotencyRow,
         MemoryRecordRow,
+        AgentRunRow,
     ],
 )
 def test_every_table_is_utf8mb4(model: type) -> None:
@@ -143,6 +146,21 @@ def test_idempotency_primary_key_is_composite() -> None:
 def test_approval_consumed_column_is_nullable() -> None:
     """NULL 表示未消费。这是「带条件 UPDATE」那条语句的判定依据。"""
     assert ApprovalRow.__table__.c.consumed_at_epoch_ms.nullable is True
+
+
+def test_agent_run_turn_is_unique() -> None:
+    """turn_id 唯一：重发不能新开一条 Run 并再跑一次模型。"""
+
+    ddl = _mysql_ddl(AgentRunRow)
+    assert "UNIQUE" in ddl
+    assert "uq_agent_runs_turn" in ddl
+
+
+def test_agent_run_lease_column_is_nullable() -> None:
+    """NULL 表示没有租约，它是可以被接管的判定依据之一。"""
+
+    assert AgentRunRow.__table__.c.lease_until_epoch_ms.nullable is True
+    assert AgentRunRow.__table__.c.worker_id.nullable is True
 
 
 def test_audit_and_event_are_separate_tables() -> None:

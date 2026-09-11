@@ -312,6 +312,48 @@ class WorkspaceRow(Base):
     is_disposed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+class AgentRunRow(Base):
+    """后台 Agent Run 的调度事实，与 run_events 一起支撑重启后恢复。
+
+    与 runs 的分工：runs 保存一次执行的状态版本与步数（带乐观锁），这张表保存
+    调度层的事实——谁在领、第几次 attempt、租约什么时候过期。它们是两类问题，
+    合成一张表会让乐观锁去管租约，两套版本号迟早打架。
+
+    UNIQUE(turn_id) 是「同一条用户消息不会创建两个 Run」的最后防线：重发的
+    请求只能命中已有记录，不能新开一条并再跑一次模型。
+\n+    attempt 与 task_id 合起来就是计划里的 task_attempt_id：第几次尝试由这两个
+    字段共同确定，单独再存一个 ID 只会多一处可能对不上的事实。
+
+    这里没有 tenant_id / user_id：本表不含任何内容字段，租户归属由 session_id
+    指向的 sessions 决定，重复一份维度只会带来两处不一致的可能。
+    """
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        UniqueConstraint("turn_id", name="uq_agent_runs_turn"),
+        Index("ix_agent_runs_status", "status"),
+        Index("ix_agent_runs_session", "session_id"),
+        TABLE_ARGS,
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    task_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_until_epoch_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deadline_epoch_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at_epoch_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class CheckpointRow(Base):
     """workspace 的可回滚点。"""
 

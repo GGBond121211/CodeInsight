@@ -13,8 +13,14 @@ MySQL 实现必须通过同一套测试。任何在内存实现里不成立的�
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 
+from codeinsight.domain.agent_run import (
+    OPEN_AGENT_RUN_STATUSES,
+    RUNNING,
+    AgentRunRecord,
+)
 from codeinsight.domain.change import (
     ChangeApproval,
     CodeGoal,
@@ -23,6 +29,15 @@ from codeinsight.domain.change import (
     StateVersionConflictError,
 )
 from codeinsight.domain.trace import IdempotencyKey
+
+
+class AgentRunTurnConflictError(ValueError):
+    """同一个 turn_id 上已经挂着另一个 Agent Run。
+
+    正常路径不该看到它：重发的同一条用户消息应当先 find_run_by_turn 命中已有
+    Run 并直接返回它。这个异常是「没查就新建」被挡下来的信号——两个 Run
+    抢同一条消息，意味着同一句话会跑两次模型、写两次工具副作用。
+    """
 
 
 class ApprovalNotFoundError(Exception):
@@ -137,6 +152,72 @@ class InMemoryRunStore:
                     found.append(run)
         found.sort(key=lambda item: item.run_id)
         return tuple(found)
+
+
+class InMemoryAgentRunStore:
+    """与 MySqlAgentRunStore 同语义的内存实现，供单元测试与单进程模式使用。
+
+    只保留「同一个 run 只能被一个有效租约持有」这一条并发语义：进程内用一把锁，
+    跨进程由 MySQL 的条件更新保证。两边跑同一套测试。
+    """
+
+    def __init__(self) -> None:
+        self._runs: dict[str, AgentRunRecord] = {}
+        self._lock = threading.RLock()
+
+    def save_run(self, record: AgentRunRecord) -> None:
+        with self._lock:
+            for existing in self._runs.values():
+                if existing.turn_id != record.turn_id:
+                    continue
+                if existing.run_id != record.run_id:
+                    raise AgentRunTurnConflictError(
+                        f"turn {record.turn_id} 已经属于 {existing.run_id}，"
+                        f"不能再挂上 {record.run_id}。"
+                        "重发的同一条消息应当命中已有 Run。"
+                    )
+            self._runs[record.run_id] = record
+
+    def get_run(self, run_id: str) -> AgentRunRecord | None:
+        with self._lock:
+            return self._runs.get(run_id)
+
+    def find_run_by_turn(self, turn_id: str) -> AgentRunRecord | None:
+        with self._lock:
+            for record in self._runs.values():
+                if record.turn_id == turn_id:
+                    return record
+            return None
+
+    def list_open_runs(self, *, limit: int = 50) -> tuple[AgentRunRecord, ...]:
+        with self._lock:
+            opened = [
+                record
+                for record in self._runs.values()
+                if record.status in OPEN_AGENT_RUN_STATUSES
+            ]
+        opened.sort(key=lambda item: item.updated_at_epoch_ms)
+        return tuple(opened[:limit])
+
+    def claim_run(
+        self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int
+    ) -> AgentRunRecord | None:
+        with self._lock:
+            record = self._runs.get(run_id)
+            if record is None:
+                return None
+            now_epoch_ms = int(time.time() * 1000)
+            if not record.can_be_claimed(now_epoch_ms=now_epoch_ms):
+                return None
+            claimed = replace(
+                record,
+                status=RUNNING,
+                worker_id=worker_id,
+                lease_until_epoch_ms=lease_until_epoch_ms,
+                updated_at_epoch_ms=now_epoch_ms,
+            )
+            self._runs[run_id] = claimed
+            return claimed
 
 
 class InMemoryApprovalStore:

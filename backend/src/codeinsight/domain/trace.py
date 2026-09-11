@@ -74,6 +74,18 @@ ANSWER_READY = "answer_ready"
 EVIDENCE_ASSESSED = "evidence_assessed"
 EVIDENCE_REPAIR_STARTED = "evidence_repair_started"
 EVIDENCE_REPAIR_FINISHED = "evidence_repair_finished"
+# Q-011：后台 Agent Run 的调度事实。命名与已有事件对齐——计划里的
+# model_started / model_finished / tool_finished 分别复用既有的
+# MODEL_CALLED / MODEL_RESULT / TOOL_RESULT，不为同一件事再添一套同义名：
+# 两套名字并行后，回放与指标会按写入方分叉。
+TASK_QUEUED = "task_queued"
+WORKER_CLAIMED = "worker_claimed"
+CONTEXT_LOADED = "context_loaded"
+WAITING_APPROVAL_EVENT = "waiting_approval"
+VALIDATION_QUEUED = "validation_queued"
+RUN_FAILED = "run_failed"
+RUN_UNKNOWN = "run_unknown"
+RUN_MANUAL_REQUIRED = "run_manual_required"
 
 SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
     {
@@ -120,6 +132,14 @@ SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
         EVIDENCE_ASSESSED,
         EVIDENCE_REPAIR_STARTED,
         EVIDENCE_REPAIR_FINISHED,
+        TASK_QUEUED,
+        WORKER_CLAIMED,
+        CONTEXT_LOADED,
+        WAITING_APPROVAL_EVENT,
+        VALIDATION_QUEUED,
+        RUN_FAILED,
+        RUN_UNKNOWN,
+        RUN_MANUAL_REQUIRED,
     }
 )
 
