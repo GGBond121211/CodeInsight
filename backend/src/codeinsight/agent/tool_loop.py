@@ -368,7 +368,7 @@ class ToolLoop:
                 )
             try:
                 response = self._model.complete_with_tools(visible, tools)
-            except Exception:
+            except Exception as error:  # noqa: BLE001 - 任何 Provider 异常都必须停在本地
                 return self._result(
                     "FAILED",
                     None,
@@ -378,7 +378,9 @@ class ToolLoop:
                     step,
                     input_tokens,
                     output_tokens,
-                    "模型 Provider 调用失败",
+                    # 只带异常类型，不带消息：类型足以区分「预算/限流/上游拒绝」
+                    # 和「协议解析失败」，而 Provider 原始文本可能含敏感内容。
+                    f"模型 Provider 调用失败：{type(error).__name__}",
                 )
             input_tokens += response.input_tokens or 0
             output_tokens += response.output_tokens or 0

@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "dataset_id": "codeinsight-context-lifecycle-long-horizon",
+  "dataset_version": "2.1.0-q010-v1",
+  "source_commit": "b923101",
+  "description": "Q-010 长会话上下文生命周期评测。fake 模式验证链路结构；real 模式只跑小批量，用来证明同一套压缩/保留/恢复链路在真实模型下成立。",
+  "metrics": [
+    "compaction_trigger_rate",
+    "compaction_events",
+    "summary_present_turns",
+    "overflow_rate",
+    "provider_prompt_cache_read_ratio",
+    "semantic_response_cache_hit_ratio",
+    "session_restore_hit_turns",
+    "context_retention_pass",
+    "latency_p50_ms",
+    "latency_p95_ms"
+  ],
+  "fixture_root": "backend/tests/fixtures/sample_repo",
+  "runtime": {
+    "eval_recent_turns_default": 4,
+    "note": "线上公开 Session 默认 24 轮保留；评测刻意调小以在 20 轮内触发多次压缩。session_recent_turns 可按 case 覆盖。"
+  },
+  "cases": [
+    {
+      "id": "lh-00-real-smoke",
+      "scenario": [
+        "real_smoke",
+        "same_task"
+      ],
+      "split": "real",
+      "session_recent_turns": 4,
+      "restart_after_turn": null,
+      "repeat_of": null,
+      "fake_tool_payload_chars": 6000,
+      "fake_fail_on_call": 2,
+      "turns": [
+        "解释 src/shop/fulfillment/pipeline.py 里派送线路的主流程",
+        "pipeline.py 里哪一步决定订单走哪条线路？",
+        "src/shop/shipping/workflow.py 和 pipeline.py 的调用关系是什么？",
+        "把这次会话里讨论过的文件列一下",
+        "刚才第 1 轮问的派送主流程，结论是什么？",
+        "总结这次会话的核心结论"
+      ]
+    },
+    {
+      "id": "lh-01-long-explain",
+      "scenario": [
+        "long_session_same_task",
+        "goal_correction_midway",
+        "post_compaction_recall_of_early_decision",
+        "repeated_question"
+      ],
+      "split": "dev",
+      "session_recent_turns": 6,
+      "restart_after_turn": null,
+      "repeat_of": {
+        "18": 4
+      },
+      "fake_tool_payload_chars": 6000,
+      "fake_fail_on_call": 2,
+      "turns": [
+        "解释一下 src/shop/fulfillment/pipeline.py 里派送线路的主流程",
+        "pipeline.py 里哪一步决定订单走哪条线路？",
+        "src/shop/fulfillment/ledger.py 的账本记录是在哪个环节写入的？",
+        "补充说明 pipeline.py 中线路选择的默认值是什么",
+        "src/shop/shipping/workflow.py 与 pipeline.py 之间的调用关系是什么？",
+        "总结一下刚才提到的派送流程关键决策",
+        "换个方向：解释 src/shop/refunds.py 里的退款流程",
+        "refunds.py 里退款金额是怎么算出来的？",
+        "src/shop/pricing.py 和退款计算有关系吗？",
+        "退款流程里哪个函数负责校验？",
+        "src/shop/validation.py 的校验规则是怎么被退款流程调用的？",
+        "退款流程的入口在哪个文件里？",
+        "刚才第 2 轮问的线路选择，最后结论是什么？",
+        "回顾一下我们之前讨论的派送线路默认值",
+        "src/shop/inventory.py 在退款流程里起了什么作用？",
+        "退款流程和派送流程的结构差异在哪里？",
+        "把这次会话里讨论过的关键函数列一下",
+        "补充说明 pipeline.py 中线路选择的默认值是什么",
+        "src/shop/api.py 暴露了哪些和退款相关的接口？",
+        "src/shop/models.py 里退款相关的数据结构是什么？",
+        "退款流程的错误处理写在哪个函数里？",
+        "src/shop/customer/records.py 和退款流程有关系吗？",
+        "把这次会话里出现过的文件路径列一下",
+        "最早讨论的派送流程，和后面的退款流程相比，哪个分支更多？",
+        "src/shop/admin/records.py 和 src/shop/customer/records.py 有什么区别？",
+        "总结一下这次会话的核心结论"
+      ]
+    },
+    {
+      "id": "lh-02-large-tool-output",
+      "scenario": [
+        "long_session_same_task",
+        "large_tool_output",
+        "nav_then_read"
+      ],
+      "split": "dev",
+      "session_recent_turns": 4,
+      "restart_after_turn": null,
+      "repeat_of": null,
+      "fake_tool_payload_chars": 900000,
+      "fake_fail_on_call": 0,
+      "turns": [
+        "完整读取 src/shop/reporting.py 并解释它的作用",
+        "reporting.py 的第一个函数接收什么参数？",
+        "继续看 reporting.py 后面的函数",
+        "把 reporting.py 里所有函数名列出来",
+        "src/shop/reporting.py 里有没有调用 pricing.py？",
+        "reporting.py 的错误处理在哪里？",
+        "再看一遍 reporting.py 的整体结构",
+        "reporting.py 的输出格式是什么？",
+        "src/shop/reporting.py 里哪一段代码最长？",
+        "reporting.py 里有没有重复的逻辑？",
+        "把 reporting.py 里涉及账本的部分找出来",
+        "src/shop/reporting.py 用了哪些外部依赖？",
+        "reporting.py 里的聚合是怎么实现的？",
+        "把 reporting.py 里的关键行号记下来",
+        "src/shop/reporting.py 与 api.py 的调用关系是什么？",
+        "reporting.py 里有没有缓存相关代码？",
+        "再看一次 reporting.py 的开头部分",
+        "reporting.py 的主要入口函数是哪个？",
+        "把 reporting.py 和其他模块的依赖关系总结一下",
+        "最后再总结 reporting.py 的设计意图"
+      ]
+    },
+    {
+      "id": "lh-03-tool-failure",
+      "scenario": [
+        "long_session_same_task",
+        "repeated_tool_failure",
+        "recoverable_error"
+      ],
+      "split": "dev",
+      "session_recent_turns": 4,
+      "restart_after_turn": null,
+      "repeat_of": null,
+      "fake_tool_payload_chars": 6000,
+      "fake_fail_on_call": 2,
+      "turns": [
+        "解释 src/shop/validation.py 的校验流程",
+        "validation.py 里第一个校验函数检查什么？",
+        "src/shop/validation.py 里失败的返回值是什么形状？",
+        "validation.py 里哪些分支会直接报错？",
+        "src/shop/validation.py 被哪些模块调用？",
+        "validation.py 里有没有可恢复的错误处理？",
+        "再看一遍 validation.py 的错误路径",
+        "src/shop/validation.py 的校验规则来自哪里？",
+        "validation.py 里有没有边界检查？",
+        "src/shop/validation.py 和 refunds.py 的调用关系是什么？",
+        "validation.py 里最复杂的一个函数是哪个？",
+        "把 validation.py 的错误码整理一下",
+        "src/shop/validation.py 里有没有重复校验？",
+        "validation.py 在校验失败后怎么继续？",
+        "src/shop/validation.py 的整体入口在哪里？",
+        "总结 validation.py 的错误处理策略"
+      ]
+    },
+    {
+      "id": "lh-04-restart-restore",
+      "scenario": [
+        "long_session_same_task",
+        "application_restart",
+        "restore_from_store"
+      ],
+      "split": "regression",
+      "session_recent_turns": 4,
+      "restart_after_turn": 8,
+      "repeat_of": null,
+      "fake_tool_payload_chars": 6000,
+      "fake_fail_on_call": 2,
+      "turns": [
+        "解释 src/shop/fulfillment/entrypoint.py 的入口流程",
+        "entrypoint.py 接手之后第一步做什么？",
+        "src/shop/fulfillment/pipeline.py 是怎么被 entrypoint.py 调用的？",
+        "pipeline.py 里派送线路是怎么被选中的？",
+        "src/shop/shipping/workflow.py 里有哪些状态？",
+        "workflow.py 的状态迁移写在哪里？",
+        "把派送流程的状态迁移总结一下",
+        "src/shop/fulfillment/ledger.py 的记录格式是什么？",
+        "刚才讨论的派送入口流程，第一步是什么？",
+        "重启前讨论的派送入口，入口函数叫什么？",
+        "src/shop/fulfillment/pipeline.py 和 ledger.py 谁先执行？",
+        "把这次会话里讨论过的派送入口步骤列一下",
+        "最早问的 entrypoint.py 入口流程，结论是什么？",
+        "总结这次会话对派送入口的理解"
+      ]
+    },
+    {
+      "id": "lh-05-repeated-request",
+      "scenario": [
+        "long_session_same_task",
+        "identical_request_repeat",
+        "cache_observation"
+      ],
+      "split": "regression",
+      "session_recent_turns": 4,
+      "restart_after_turn": null,
+      "repeat_of": {
+        "5": 3,
+        "9": 3
+      },
+      "fake_tool_payload_chars": 6000,
+      "fake_fail_on_call": 2,
+      "turns": [
+        "解释 src/shop/pricing.py 的定价流程",
+        "pricing.py 里折扣是在哪一步应用的？",
+        "src/shop/pricing.py 用的税率从哪里来？",
+        "pricing.py 里的金额精度是怎么处理的？",
+        "pricing.py 里折扣是在哪一步应用的？",
+        "src/shop/pricing.py 和 refunds.py 的调用关系是什么？",
+        "pricing.py 里有没有边界情况？",
+        "把 pricing.py 的关键函数列一下",
+        "pricing.py 里折扣是在哪一步应用的？",
+        "src/shop/pricing.py 的输出结构是什么？",
+        "pricing.py 里最容易被误读的一段是哪里？",
+        "总结 pricing.py 的定价流程"
+      ]
+    }
+  ]
+}

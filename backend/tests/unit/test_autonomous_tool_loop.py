@@ -167,7 +167,7 @@ def test_model_provider_failure_is_a_safe_failed_result():
 
     result = ToolLoop(BrokenModel(), host).run("system", "answer")
     assert result.status == "FAILED"
-    assert result.reason == "模型 Provider 调用失败"
+    assert result.reason == "模型 Provider 调用失败：RuntimeError"
     assert "secret" not in (result.reason or "")
 
 

@@ -1,0 +1,175 @@
+# Q-010 长会话上下文生命周期评测配置（128K 策略）
+#
+# 这份文件登记的是**评测怎么跑**，不是「参数已经调优」的结论。
+# 所有证据状态都写在 evidence_status 里；没有 A/B 的项一律 implemented_unoptimized。
+
+schema_version: 1
+profile_id: context-lifecycle-128k-20260911
+status: implemented_unoptimized
+policy_version: deepseek-harness-adapted-v1-95
+
+# ---------------------------------------------------------------------------
+# 策略参数
+#
+# 95% 是**触发压缩的压力阈值**，不是「压缩后剩余 95%」。它比 DeepSeek
+# Harness 参考的 80% 更晚，留给下一轮输出和工具结果的空间更少，因此必须和
+# overflow guard、工具结果裁剪一起使用，不能单独生效。
+# ---------------------------------------------------------------------------
+policy:
+  context_window_tokens:
+    value: 128000
+    source: backend/src/codeinsight/application/context_budget.py
+    evidence_status: implemented_unoptimized
+  compaction_threshold_ratio:
+    value: 0.95
+    derived_trigger_tokens: 121600
+    source: 用户明确指定，覆盖参考实现的 0.80
+    evidence_status: user_specified_not_tuned
+  retain_recent_ratio:
+    value: 0.16
+    derived_retained_tokens: 20480
+    source: 参考实现取值
+    evidence_status: implemented_unoptimized
+  summary_max_output_tokens:
+    value: 8192
+    source: 参考实现取值；本项目摘要由确定性规则生成，不调用模型
+    evidence_status: implemented_unoptimized
+  compaction_retries: 1
+  overflow_retries: 1
+
+# ---------------------------------------------------------------------------
+# 三条路线共用的 Context Surface
+#
+# 普通 Chat、Explain、Change Plan 使用同一个窗口和同一个输出预留来源；
+# 「装得下」的判断只有一处，不允许装配、Gateway、上游各算一套。
+# ---------------------------------------------------------------------------
+route_budget:
+  shared_window: 128000
+  output_cap_source: CODEINSIGHT_MAX_OUTPUT_TOKENS
+  routes:
+    explain: 只读代码理解 Tool Loop
+    change-plan: 修改计划的 Tool Loop
+    chat: 普通多轮会话
+  note: 模型注册表里的 context_window_tokens 是供应商能力目录，不等于每次请求的工作预算。
+
+# ---------------------------------------------------------------------------
+# Tool Loop 预算
+# ---------------------------------------------------------------------------
+tool_loop:
+  max_steps:
+    value: 8
+    evidence_status: implemented_unoptimized
+  max_tool_calls:
+    value: 64
+    evidence_status: implemented_unoptimized
+  deadline_seconds:
+    value: 60
+    evidence_status: implemented_unoptimized
+  prune_tool_results: true
+  keep_recent_tool_results: 2
+  protected_tools: [get_diff, generate_patch, validate_patch]
+  prune_rule: 失败结果永不被裁剪；只裁剪发给模型的视图，messages 仍保留完整记录
+
+# ---------------------------------------------------------------------------
+# 证据闸门
+# ---------------------------------------------------------------------------
+evidence:
+  min_count:
+    value: 2
+    evidence_status: implemented_unoptimized
+  min_distinct_paths:
+    value: 1
+    evidence_status: implemented_unoptimized
+  max_ledger:
+    value: 40
+    evidence_status: implemented_unoptimized
+  max_repair_rounds:
+    value: 1
+    evidence_status: implemented_unoptimized
+
+# ---------------------------------------------------------------------------
+# 评测本地限额（不是生产参数结论）
+#
+# 20–50 轮的连续会话会耗尽 Gateway 默认的按租户 Token Bucket（容量
+# 2,000,000，按「估算输入 + 输出预留」计费，补充速率 10,000/s）：实测第 10
+# 轮起返回 BACKPRESSURE。评测显式抬高这两个**本地**限额，否则测到的是限流
+# 而不是上下文生命周期。
+# ---------------------------------------------------------------------------
+eval_local_limits:
+  rate_limit_capacity: 64000000
+  rate_limit_refill_tokens_per_second: 2000000
+  tenant_token_limit: 64000000
+  reason: 默认 2,000,000 会让 20 轮以上的会话在第 10 轮起返回 BACKPRESSURE
+  evidence_status: eval_configuration_not_production_default
+
+# ---------------------------------------------------------------------------
+# 数据集与运行方式
+# ---------------------------------------------------------------------------
+dataset:
+  path: backend/tests/evals/context_lifecycle_cases.json
+  version: 2.1.0-q010-v1
+  case_count: 6
+  turns_total: 94
+  split_tagging:
+    real: [lh-00-real-smoke]
+    dev: [lh-01-long-explain, lh-02-large-tool-output, lh-03-tool-failure]
+    regression: [lh-04-restart-restore, lh-05-repeated-request]
+  fixture_root: backend/tests/fixtures/sample_repo
+  scenarios:
+    - 同一代码任务的长会话（26 / 20 / 16 / 14 / 12 轮）
+    - 用户中途纠正目标
+    - 多次大工具输出（单条工具结果 900,000 字符）
+    - 多次可恢复的工具失败
+    - 压缩后追问早期决策
+    - 进程内重建应用实例后恢复 Session
+    - 相同问题重复请求
+  not_covered:
+    - 压缩后要求引用旧 Evidence（Evidence 台账按 Run 建立，跨 Run 引用不成立）
+    - 仓库 fingerprint 变化（需要改动 fixture 工作区，本配置不做）
+    - 跨进程恢复（需要 MySQL；本机未启动，由默认跳过的集成测试覆盖）
+
+runner:
+  command_fake: >-
+    python tests/evals/context_lifecycle_long_horizon.py --mode fake
+    --output ../outputs/evals/context-lifecycle-fake-long-horizon.json
+  command_real: >-
+    python tests/evals/context_lifecycle_long_horizon.py --mode real
+    --case-id lh-00-real-smoke --max-total-tokens 400000
+  real_mode_gates:
+    - 必须使用项目 Frontier 网关（EXPECTED_CHAT_BASE_URL）
+    - 必须配置 CODEINSIGHT_API_KEY
+    - 拒绝 CODEINSIGHT_GATEWAY_FAKE_MODE=1
+    - --max-total-tokens 不得超过 9,000,000
+  session_recent_turns_default: 4
+  session_recent_turns_note: >-
+    线上公开 Session 默认保留 24 轮。评测刻意调小到 4–6 轮，让 20 轮以内的
+    会话就能反复触发压缩，而不是等累积到几十轮才第一次执行。这是评测设置。
+
+metrics:
+  reported:
+    - compaction_trigger_rate
+    - compaction_events
+    - summary_present_turns
+    - overflow_rate
+    - context_retention_pass
+    - provider_prompt_cache_read_ratio
+    - semantic_response_cache_hit_ratio
+    - session_restore_hit_turns
+    - input_tokens
+    - output_tokens
+    - latency_p50_ms
+    - latency_p95_ms
+  not_claimed:
+    - evidence_recall_after_compaction  # 需要人工/语义判定，不由本 runner 伪造
+    - citation_validity                # fake 模式的引用由脚本决定，不构成质量证据
+    - 参数最优取值                      # 本配置没有任何 A/B 支撑
+
+# ---------------------------------------------------------------------------
+# 证据边界
+# ---------------------------------------------------------------------------
+evidence_boundary:
+  fake_mode: 只证明链路结构没坏；回答、证据和步数都由脚本决定，不含模型判断。
+  real_mode: 只跑少量轮次证明同一套链路在真实模型下成立，不做质量对照。
+  real_requests: 客户端 max_retries=0，请求级输出上限，累计 Token 上限。
+  not_production: 本地/评测证据不得表述成生产指标或已调优结论。
+
