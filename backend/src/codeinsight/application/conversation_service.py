@@ -63,6 +63,7 @@ from codeinsight.infrastructure.gateway_errors import GatewayError
 from codeinsight.infrastructure.memory_store import InMemoryMemoryStore
 from codeinsight.infrastructure.model_gateway import CacheContext
 from codeinsight.infrastructure.redaction import redact_sensitive
+from codeinsight.infrastructure.redis_cache import RedisCache
 from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.infrastructure.run_store import InMemorySessionStore
 from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
@@ -104,6 +105,45 @@ class _ChangeRecovery:
     validation: dict[str, object]
 
 
+def default_session_service(*, max_recent_turns: int = 12) -> SessionService:
+    """按环境装配 Session 事实层。
+
+    配了 MySQL 就用真表，否则退回进程内存。Redis 只作为可失效热点缓存，
+    永远不是事实来源：它挂掉时 ``cache_aside`` 会回源 Store。
+
+    为什么默认要读环境：公开多轮会话如果只存在进程内存里，API 一重启，
+    用户看到的会话就消失了，而日志里不会有任何错误——恢复链路没闭合是
+    静默故障，不是性能问题。
+    """
+    cache = RedisCache.from_environment()
+    from codeinsight.infrastructure.db.engine import (
+        MySqlConfig,
+        create_all_tables,
+        create_db_engine,
+        create_session_factory,
+    )
+
+    mysql = MySqlConfig.from_env()
+    if mysql is None:
+        return SessionService(
+            InMemorySessionStore(),
+            InMemoryMemoryStore(),
+            cache,
+            max_recent_turns=max_recent_turns,
+        )
+    from codeinsight.infrastructure.db.stores import MySqlMemoryStore, MySqlSessionStore
+
+    engine = create_db_engine(mysql)
+    create_all_tables(engine)
+    session_factory = create_session_factory(engine)
+    return SessionService(
+        MySqlSessionStore(session_factory),
+        MySqlMemoryStore(session_factory),
+        cache,
+        max_recent_turns=max_recent_turns,
+    )
+
+
 class ConversationService:
     """把用户体验上的一个对话映射到内部多种 Agent 路径。"""
 
@@ -130,11 +170,7 @@ class ConversationService:
             if isinstance(selected_policy, DevelopmentPolicy)
             else DevelopmentPolicy.from_environment()
         )
-        self.session_service = session_service or SessionService(
-            InMemorySessionStore(),
-            InMemoryMemoryStore(),
-            max_recent_turns=12,
-        )
+        self.session_service = session_service or default_session_service()
         self.runtime = runtime or ChatRuntime()
         self._turn_inputs: dict[str, _TurnInput] = {}
         self._client_turns: dict[tuple[str, str], ChatTurn] = {}

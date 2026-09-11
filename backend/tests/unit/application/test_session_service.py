@@ -173,6 +173,58 @@ def test_redis_failure_falls_back_to_session_and_memory_stores() -> None:
     assert context.session.session_id == "session-1"
 
 
+def test_public_session_factory_reads_the_environment(monkeypatch) -> None:
+    from codeinsight.application.conversation_service import default_session_service
+
+    # 没有 MySQL 配置时必须退回进程内存，而不是在启动时抛错。
+    monkeypatch.delenv("CODEINSIGHT_MYSQL_HOST", raising=False)
+    monkeypatch.delenv("CODEINSIGHT_MYSQL_USER", raising=False)
+    monkeypatch.delenv("CODEINSIGHT_MYSQL_DATABASE", raising=False)
+    monkeypatch.delenv("CODEINSIGHT_REDIS_URL", raising=False)
+
+    service = default_session_service()
+    context = service.get_or_create_session(
+        session_id="session-factory",
+        scope=SCOPE,
+        repo_id="repo-factory",
+        repo_fingerprint="fingerprint-f",
+        index_version="index-f",
+    )
+
+    assert context.memory.recent_turns == ()
+    assert context.session.session_id == "session-factory"
+
+
+def test_repository_version_change_does_not_reuse_the_cached_surface() -> None:
+    session_store = InMemorySessionStore()
+    memory_store = InMemoryMemoryStore()
+    service = SessionService(session_store, memory_store, InMemoryCache(), max_recent_turns=2)
+    base: dict[str, object] = {
+        "session_id": "session-versioned",
+        "scope": SCOPE,
+        "repo_id": "repo-versioned",
+        "repo_fingerprint": "fingerprint-old",
+        "index_version": "index-old",
+    }
+    context = service.get_or_create_session(**base)
+    service.append_turn(
+        context,
+        role="user",
+        content="旧仓库版本的问题",
+        repo_fingerprint="fingerprint-old",
+        index_version="index-old",
+    )
+
+    same = service.get_or_create_session(**base)
+    assert [turn.content for turn in same.memory.recent_turns] == ["旧仓库版本的问题"]
+
+    # 仓库指纹或索引版本一变，缓存键就不同，不能复用旧的 Session surface。
+    newer = service.get_or_create_session(
+        **{**base, "repo_fingerprint": "fingerprint-new", "index_version": "index-new"}
+    )
+    assert newer.cache_hit is False
+
+
 def test_long_session_auto_compacts_old_turns_and_keeps_sequence_continuity() -> None:
     service = SessionService(
         InMemorySessionStore(),
