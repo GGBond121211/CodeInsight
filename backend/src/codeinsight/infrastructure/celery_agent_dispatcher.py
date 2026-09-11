@@ -13,6 +13,7 @@ from __future__ import annotations
 from celery import Celery
 
 from codeinsight.domain.agent_run import AgentRunTask
+from codeinsight.infrastructure.task_queue import TaskEnvelope
 
 AGENT_RUN_TASK_NAME = "codeinsight.run_agent"
 # 计划里写的是 codeinsight.run_validation，线上 Worker 注册的实际名字是下面这个
@@ -34,4 +35,19 @@ class CeleryAgentRunTransport:
 
     def publish(self, task: AgentRunTask) -> str:
         result = self._app.send_task(AGENT_RUN_TASK_NAME, kwargs=task.as_payload())
+        return str(result.id)
+
+
+class CeleryValidationTransport:
+    """用 send_task 投递一条固定校验：消息里只有 task_id。
+
+    要跑哪个 profile、校验哪个隔离 workspace，都留在登记过的队列事实里。把命令写进
+    消息，等于让投递方（以及任何能写消息的东西）决定执行什么。
+    """
+
+    def __init__(self, app: Celery) -> None:
+        self._app = app
+
+    def publish(self, task: TaskEnvelope) -> str:
+        result = self._app.send_task(VALIDATION_TASK_NAME, kwargs={"task_id": task.task_id})
         return str(result.id)

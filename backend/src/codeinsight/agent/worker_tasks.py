@@ -12,45 +12,20 @@
 from __future__ import annotations
 
 import os
-import time
+from collections.abc import Callable
 
 from celery import Celery
 
-from codeinsight.domain.agent_run import MANUAL_REQUIRED, AgentRunTask
-from codeinsight.domain.ports import AgentRunStore
-from codeinsight.infrastructure.celery_agent_dispatcher import AGENT_RUN_TASK_NAME
+from codeinsight.application.conversation_service import ConversationService
+from codeinsight.domain.agent_run import AgentRunTask
+from codeinsight.infrastructure.celery_agent_dispatcher import (
+    AGENT_RUN_TASK_NAME,
+    VALIDATION_TASK_NAME,
+)
 from codeinsight.infrastructure.otel import get_telemetry
-from codeinsight.infrastructure.sandbox import DockerSandbox
 
-# 领取租约的默认长度。Worker 崩掉后，超过这个时间租约才允许被别人接管：
-# 太短会把还在跑的 Run 抢走，太长会让恢复变慢。具体取值由并发实验决定（Task 11）。
-DEFAULT_LEASE_MS = 60_000
-
-# 执行体还没接上时的公开错误类别。Task 5 会用只读 Tool Loop 替换这一段。
-ERROR_AGENT_RUN_NOT_IMPLEMENTED = "AGENT_RUN_NOT_IMPLEMENTED"
-
-
-def build_agent_run_store() -> AgentRunStore:
-    """Worker 侧的 Run 事实层。
-
-    没配 MySQL 就直接失败，不退回内存实现：任务一旦交给另一个进程，进程内存里的
-    Store 就什么都证明不了，恢复巡检会看到一个空队列而报不出任何错。
-    """
-
-    from codeinsight.infrastructure.db.engine import (
-        MySqlConfig,
-        create_db_engine,
-        create_session_factory,
-    )
-    from codeinsight.infrastructure.db.stores import MySqlAgentRunStore
-
-    mysql = MySqlConfig.from_env()
-    if mysql is None:
-        raise RuntimeError(
-            "未配置 CODEINSIGHT_MYSQL_*：Agent Run Worker 需要可恢复的事实 Store。"
-        )
-    engine = create_db_engine(mysql)
-    return MySqlAgentRunStore(create_session_factory(engine))
+# Worker 侧的服务工厂。测试注入假服务；部署时按环境装配。
+ServiceFactory = Callable[[], ConversationService]
 
 
 def _configured_app(app: Celery | None = None) -> Celery:
@@ -72,57 +47,90 @@ def _configured_app(app: Celery | None = None) -> Celery:
     return selected
 
 
-def build_validation_task(app: Celery | None = None):
-    selected = _configured_app(app)
+def build_worker_conversation_service() -> ConversationService:
+    """Worker 进程侧的服务组装。
 
-    @selected.task(name="codeinsight.run_registered_validation")
-    def run_registered_validation(profile: str, workspace_path: str) -> dict[str, object]:
+    用与 API 相同的装配（create_app），不另写一份：两条装配路径一旦出现差别，
+    Worker 执行的就不是用户受理时承诺的那个流程。续跑通道换成 broker——本进程只
+    执行这一次尝试，API 进程里的那一轮状态不该被它改写。
+
+    缺 MySQL 配置时直接失败：静默退回内存 Store，会让 Worker 在一个空队列上工作
+    却报告一切正常，这比报错更难查。
+    """
+
+    from codeinsight.api.app import create_app
+    from codeinsight.infrastructure.celery_agent_dispatcher import (
+        CeleryAgentRunTransport,
+        CeleryValidationTransport,
+    )
+    from codeinsight.infrastructure.db.engine import MySqlConfig
+
+    if MySqlConfig.from_env() is None:
+        raise RuntimeError(
+            "未配置 CODEINSIGHT_MYSQL_*：Worker 需要可从事实恢复的 Run/Session Store。"
+        )
+    assembled = create_app(
+        agent_run_transport=CeleryAgentRunTransport(celery_app),
+        validation_transport=CeleryValidationTransport(celery_app),
+    )
+    return assembled.state.codeinsight_conversation
+
+
+def build_validation_task(
+    app: Celery | None = None, service_factory: ServiceFactory | None = None
+):
+    """注册 codeinsight.run_registered_validation：跑一条登记过的固定校验。
+
+    消息里只有 task_id。profile 与要校验的隔离 workspace 都从队列事实里读——投递方
+    在消息里写什么就执行什么，等于把「跑哪条命令」的决定权交给了消息本身。
+    """
+
+    selected = _configured_app(app)
+    build_service = service_factory or build_worker_conversation_service
+
+    @selected.task(name=VALIDATION_TASK_NAME)
+    def run_registered_validation(task_id: str) -> dict[str, object]:
+        service = build_service()
         with get_telemetry().span(
-            "worker", "sandbox_validation", attributes={"validation_profile": profile}
+            "worker", "sandbox_validation", attributes={"validation_task": task_id}
         ):
-            result = DockerSandbox().run(profile, workspace_path)
+            outcome = service.validation_worker.handle(task_id)
+            service.validation_coordinator.after_validation(outcome)
         return {
-            "profile": result.profile,
-            "passed": result.passed,
-            "error_class": result.error_class,
-            "message_excerpt": result.message_excerpt,
+            "task_id": outcome.task_id,
+            "run_id": outcome.run_id,
+            "claimed": outcome.claimed,
+            "status": outcome.status,
+            "profile": outcome.profile,
+            "error_class": outcome.error_class,
         }
 
     return run_registered_validation
 
 
-def build_agent_run_task(app: Celery | None = None):
-    """注册 codeinsight.run_agent：先领取 Run，再把工作交给执行体。
+def build_agent_run_task(
+    app: Celery | None = None, service_factory: ServiceFactory | None = None
+):
+    """注册 codeinsight.run_agent：消息到达即执行，不在这里自己造终态。
 
-    领取这一步是幂等的最后一道闸：重复投递同一条消息时，第二个 Worker 拿不到租约，
-    于是不会跑第二遍模型。任务载荷只有标识与版本，正文从 Session 里读。
+    领取租约、重建上下文、写状态都在 AgentRunWorker 里，与进程内路径是同一段代码。
+    这个任务体只做翻译：把消息还原成 AgentRunTask，然后交出执行权。任务载荷只有
+    标识与版本，正文从事实 Store 读。
     """
 
     selected = _configured_app(app)
+    build_service = service_factory or build_worker_conversation_service
 
     @selected.task(name=AGENT_RUN_TASK_NAME)
     def run_agent(**payload: object) -> dict[str, object]:
         task = AgentRunTask.from_payload(payload)
-        store = build_agent_run_store()
-        now_epoch_ms = int(time.time() * 1000)
-        record = store.claim_run(
-            task.run_id,
-            worker_id=f"celery-{os.getpid()}",
-            lease_until_epoch_ms=now_epoch_ms + DEFAULT_LEASE_MS,
-        )
-        if record is None:
-            # 有人持有有效租约，或这个 Run 处于不该被领取的状态。
-            return {"run_id": task.run_id, "claimed": False}
-
-        # Task 5 在这里接上只读 Tool Loop。现在写下一个明确的「未实现」，而不是让
-        # Run 停在 RUNNING 上等租约过期——说不清的状态必须能被人看见。
-        stopped = record.advanced(
-            status=MANUAL_REQUIRED,
-            updated_at_epoch_ms=int(time.time() * 1000),
-            error_class=ERROR_AGENT_RUN_NOT_IMPLEMENTED,
-        )
-        store.save_run(stopped)
-        return {"run_id": task.run_id, "claimed": True, "status": stopped.status}
+        outcome = build_service().run_agent_task(task)
+        return {
+            "run_id": outcome.run_id,
+            "claimed": outcome.claimed,
+            "status": outcome.status,
+            "error_class": outcome.error_class,
+        }
 
     return run_agent
 

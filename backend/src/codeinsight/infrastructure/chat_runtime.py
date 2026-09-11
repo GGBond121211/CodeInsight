@@ -21,8 +21,8 @@ from codeinsight.domain.chat import (
     CHAT_FAILED,
     CHAT_QUEUED,
     CHAT_RUNNING,
-    CHAT_WAITING_APPROVAL,
     TERMINAL_CHAT_STATUSES,
+    WAITING_CHAT_STATUSES,
     ChatTurn,
 )
 from codeinsight.domain.trace import (
@@ -174,12 +174,15 @@ class ChatRuntime:
         show_debug_reasoning: bool,
         worker: Callable[[ChatTurn, bool], ChatExecution],
     ) -> ChatTurn:
+        """把一轮从「停机等外部输入」推回排队。等审批与等校验都走这一条。"""
+
         with self._lock:
             turn = self._require(turn_id)
-            if turn.status != CHAT_WAITING_APPROVAL:
-                raise ChatRuntimeError("当前聊天 Run 不在等待审批状态")
+            if turn.status not in WAITING_CHAT_STATUSES:
+                raise ChatRuntimeError("当前聊天 Run 不在等待外部输入的状态")
             if turn_id in self._running:
                 raise ChatRuntimeError("当前聊天 Run 已经恢复执行")
+            previous = turn.status
             turn = replace(
                 turn,
                 status=CHAT_QUEUED,
@@ -190,7 +193,7 @@ class ChatRuntime:
         self.emit(
             turn.run_id,
             STATE_TRANSITIONED,
-            {"from_status": CHAT_WAITING_APPROVAL, "to_status": CHAT_QUEUED},
+            {"from_status": previous, "to_status": CHAT_QUEUED},
         )
         self._executor.submit(self._execute_existing, turn_id, worker, show_debug_reasoning)
         return turn
@@ -215,6 +218,23 @@ class ChatRuntime:
                 if turn.run_id == run_id:
                     return turn
         raise ChatRuntimeError("聊天 Run 不存在")
+
+    def adopt_turn(self, turn: ChatTurn) -> ChatTurn:
+        """把一轮别处受理、本进程没见过的 Run 收进本地运行时。
+
+        只登记标识与公开状态，不重发受理事件，也不执行：推进它的是消息本身，
+        不是「本地有过这一轮」这件事。Worker 进程需要它，是因为执行体要按
+        turn_id 读写本地运行时（reasoning、状态投影），而那一轮是 API 进程受理的。
+        """
+
+        with self._lock:
+            existing = self._turns.get(turn.turn_id)
+            if existing is not None:
+                return existing
+            self._turns[turn.turn_id] = turn
+            if turn.status not in TERMINAL_CHAT_STATUSES:
+                self._active_by_session[turn.session_id] = turn.turn_id
+            return turn
 
     def active_turn_for_session(self, session_id: str) -> ChatTurn | None:
         with self._lock:
@@ -339,7 +359,7 @@ class ChatRuntime:
             STATE_TRANSITIONED,
             {"from_status": CHAT_RUNNING, "to_status": execution.status},
         )
-        if execution.status != CHAT_WAITING_APPROVAL:
+        if execution.status not in WAITING_CHAT_STATUSES:
             self.emit(updated.run_id, RUN_FINISHED, {"status": execution.status})
 
     def _require(self, turn_id: str) -> ChatTurn:

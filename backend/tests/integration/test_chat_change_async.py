@@ -213,10 +213,23 @@ def test_approval_registers_continuation_and_worker_owns_apply(tmp_path: Path) -
 
     continued = conversation.agent_run_store.get_run(record.run_id)
     assert continued.status == "COMPLETED"
-    assert continued.task_kind == "resume_after_approval"
-    assert continued.attempt == 2
+    # 批准之后走两步：先应用补丁（resume_after_approval），再等固定校验跑完
+    # （resume_after_validation）。两次都换新的 task_id，run_id 不变。
+    assert continued.task_kind == "resume_after_validation"
+    assert continued.attempt == 3
     assert continued.task_id != record.task_id
     assert continued.run_id == record.run_id
+    events = conversation.runtime.event_log.read_events(record.run_id)
+    event_types = [event.event_type for event in events]
+    assert "validation_queued" in event_types
+    assert "validation_started" in event_types
+    assert "validation_finished" in event_types
+    transitions = [
+        event.payload.get("to_status")
+        for event in events
+        if event.event_type == "state_transitioned"
+    ]
+    assert "WAITING_VALIDATION" in transitions
 
 
 def test_duplicate_approval_cannot_register_a_second_continuation(tmp_path: Path) -> None:
@@ -237,7 +250,8 @@ def test_duplicate_approval_cannot_register_a_second_continuation(tmp_path: Path
     assert len(_workspaces(base)) == 1
     conversation = client.app.state.codeinsight_conversation  # type: ignore[attr-defined]
     record = conversation.agent_run_store.find_run_by_turn(turn_id)
-    assert record.attempt == 2
+    # 一次审批续跑加一次校验收尾：两条 continuation，两次都换了 task_id。
+    assert record.attempt == 3
 
 
 def test_redelivered_run_while_waiting_for_approval_never_applies(tmp_path: Path) -> None:

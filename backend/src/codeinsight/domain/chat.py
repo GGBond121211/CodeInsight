@@ -35,6 +35,9 @@ SUPPORTED_CHAT_STATUSES = frozenset(
     }
 )
 TERMINAL_CHAT_STATUSES = frozenset({CHAT_COMPLETED, CHAT_FAILED, CHAT_CANCELLED})
+# 停机等外部输入的两个状态：等待审批与等待固定校验。它们都不是终态，
+# 事件流不该因为进入它们就宣告本轮结束。
+WAITING_CHAT_STATUSES = frozenset({CHAT_WAITING_APPROVAL, CHAT_WAITING_VALIDATION})
 SUPPORTED_CHAT_TASK_TYPES = frozenset(
     {"general_chat", "scope_redirect", "clarify", "explain", "change"}
 )

@@ -328,11 +328,35 @@ class ChangeService:
         )
         return token
 
-    def apply(self, run_id: str, patch_id: str, approval_token: str) -> ChangeResult:
-        with self._lock:
-            return self._apply(run_id, patch_id, approval_token)
+    def apply(
+        self,
+        run_id: str,
+        patch_id: str,
+        approval_token: str,
+        *,
+        defer_validation: bool = False,
+    ) -> ChangeResult:
+        """应用已批准的补丁。
 
-    def _apply(self, run_id: str, patch_id: str, approval_token: str) -> ChangeResult:
+        ``defer_validation=True`` 时只做到「补丁已应用并核对」：不碰 Sandbox，
+        结果停在 WAITING_VALIDATION，等独立的 ValidationWorker 拿着登记过的
+        固定 profile 去跑。默认仍然是同步跑完校验，因为开发模式或本地直连的
+        调用方没有第二个 Worker 可等。
+        """
+
+        with self._lock:
+            return self._apply(
+                run_id, patch_id, approval_token, defer_validation=defer_validation
+            )
+
+    def _apply(
+        self,
+        run_id: str,
+        patch_id: str,
+        approval_token: str,
+        *,
+        defer_validation: bool = False,
+    ) -> ChangeResult:
         proposal = self._proposal(run_id, patch_id)
         if run_id in self._cancelled:
             raise ChangeRequestError("Run 已收到取消请求，未开始应用")
@@ -393,6 +417,19 @@ class ChangeService:
                     checkpoint.checkpoint_id,
                     "ROLLED_BACK",
                     reconciliation.evidence,
+                )
+                self._store_result(result)
+                return result
+            if defer_validation:
+                # 校验交给 ValidationWorker：改到这里的补丁已经落盘并核对过，
+                # 接下来该由谁跑沙箱、跑哪个 profile 是登记好的事实，不是这次
+                # 调用能顺手决定的事情。
+                result = self._result(
+                    proposal,
+                    managed.run.workspace_id,
+                    checkpoint.checkpoint_id,
+                    "WAITING_VALIDATION",
+                    "补丁已应用并通过核对，等待固定校验环境执行。",
                 )
                 self._store_result(result)
                 return result
@@ -507,10 +544,54 @@ class ChangeService:
         仍与已批准内容一致，再重新执行同一个固定 profile。这样 Docker 短暂不可用
         时，用户输入“继续”不会触发重复补丁或再次写入。
         """
+
+        with self._lock:
+            return self._validate_applied_patch(
+                run_id,
+                patch_id,
+                event_run_id=event_run_id,
+                required_status="REVIEW_REQUIRED",
+                retry=True,
+            )
+
+    def run_registered_validation(
+        self,
+        run_id: str,
+        patch_id: str,
+        *,
+        event_run_id: str | None = None,
+    ) -> ChangeResult:
+        """ValidationWorker 的入口：跑登记过的固定校验，并把结果写成事实。
+
+        它只能在 WAITING_VALIDATION 上启动：apply 已经发生这件事不会被再执行一次；
+        profile 取自补丁登记时固定的那一个，调用方无法临时改。
+        """
+
+        with self._lock:
+            return self._validate_applied_patch(
+                run_id,
+                patch_id,
+                event_run_id=event_run_id,
+                required_status="WAITING_VALIDATION",
+                retry=False,
+            )
+
+    def _validate_applied_patch(
+        self,
+        run_id: str,
+        patch_id: str,
+        *,
+        event_run_id: str | None,
+        required_status: str,
+        retry: bool,
+    ) -> ChangeResult:
         proposal = self._proposal(run_id, patch_id)
         previous = self._results.get(f"{run_id}:{patch_id}")
-        if previous is None or previous.status != "REVIEW_REQUIRED":
-            raise ChangeRequestError("当前补丁没有可重新校验的 REVIEW_REQUIRED 结果")
+        if previous is None or previous.status != required_status:
+            raise ChangeRequestError(
+                f"当前补丁没有停在 {required_status} 的结果，不能执行固定校验"
+            )
+        retry_flag = {"retry": "true"} if retry else {}
         managed = self.workspaces.get(run_id)
         if managed is None or managed.run.latest_checkpoint is None:
             raise ChangeRequestError("当前 Run 没有可重新校验的隔离 workspace")
@@ -536,7 +617,7 @@ class ChangeService:
             VALIDATION_STARTED,
             {
                 "profile": proposal.preview.validation_profile,
-                "retry": "true",
+                **retry_flag,
                 "mode": (
                     "development_skipped"
                     if self.development_policy.skip_sandbox_validation
@@ -555,7 +636,7 @@ class ChangeService:
                     "profile": proposal.preview.validation_profile,
                     "passed": "skipped",
                     "skipped": "true",
-                    "retry": "true",
+                    **retry_flag,
                 },
             )
         else:
@@ -568,7 +649,7 @@ class ChangeService:
                 {
                     "profile": proposal.preview.validation_profile,
                     "passed": str(checked.passed).lower(),
-                    "retry": "true",
+                    **retry_flag,
                 },
             )
             validation = self._validation_payload(checked, run_id)
@@ -596,7 +677,7 @@ class ChangeService:
                 validation,
             )
         self._store_result(result)
-        self._emit(event_id, RUN_FINISHED, {"status": result.status, "retry": "true"})
+        self._emit(event_id, RUN_FINISHED, {"status": result.status, **retry_flag})
         return result
 
     def apply_with_repairs(
@@ -716,6 +797,67 @@ class ChangeService:
     def events_after(self, run_id: str, after_sequence: int = 0) -> tuple[RunEvent, ...]:
         return self.events.read_events(run_id, after_sequence=after_sequence)
 
+    def last_result(self, run_id: str) -> ChangeResult | None:
+        """这个 Run 最近写入的一条结果事实。
+
+        校验结论、失败摘要和「需要人决定」都在结果里；续跑与收尾只读它，
+        不去问「哪一次调用还记得什么」。
+        """
+
+        for result in reversed(list(self._results.values())):
+            if result.run_id == run_id:
+                return result
+        return None
+
+    def last_review_required(self, run_id: str) -> ChangeResult | None:
+        """最近一次「校验没通过、等人决定」的结果事实。"""
+
+        for result in reversed(list(self._results.values())):
+            if result.run_id == run_id and result.status == "REVIEW_REQUIRED":
+                return result
+        return None
+
+    def repair_rounds(self, run_id: str) -> int:
+        """这个 Run 已经占用过几次自动修复预算（只数已落盘的事实）。"""
+
+        return sum(
+            1
+            for raw in self.state.list("repair-attempts")
+            if str(raw.get("run_id")) == run_id
+        )
+
+    def record_repair_round(self, run_id: str, *, patch_id: str | None = None) -> int:
+        """先记账再动手：修复预算必须在真的开始新一轮之前落盘。
+
+        反过来的顺序（跑完再记）在崩溃时会让同一个 Run 反复重修，
+        而「最多修几次」正是要挡住的自动循环。
+        """
+
+        attempt = self.repair_rounds(run_id) + 1
+        self.state.put(
+            "repair-attempts",
+            f"{run_id}:{attempt}",
+            {
+                "run_id": run_id,
+                "attempt": attempt,
+                "patch_id": patch_id or "",
+                "reserved_by": "agent-run-worker",
+            },
+        )
+        return attempt
+
+    def registered_validation(self, run_id: str, patch_id: str) -> tuple[str, str]:
+        """这条补丁登记过的固定校验：profile 与要校验的隔离 workspace 路径。
+
+        两者都来自登记时的事实：模型不能临时决定跑什么命令，Worker 也不能
+        自己挑一个目录。
+        """
+
+        proposal = self._proposal(run_id, patch_id)
+        managed = self.workspaces.get(run_id)
+        if managed is None:
+            raise ChangeRequestError("当前 Run 没有可校验的隔离 workspace")
+        return proposal.preview.validation_profile, managed.run.workspace_path
     def get_result(self, run_id: str, patch_id: str) -> ChangeResult | None:
         self._proposal(run_id, patch_id)
         return self._results.get(f"{run_id}:{patch_id}")

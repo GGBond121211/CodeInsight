@@ -1,3 +1,4 @@
+import contextlib
 import os
 import subprocess
 import sys
@@ -10,10 +11,13 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from codeinsight.agent.worker_tasks import build_validation_task
+from codeinsight.infrastructure.redis_cache import ENV_REDIS_URL
 from codeinsight.infrastructure.task_queue import (
+    VALIDATION_QUEUE_PREFIX,
     InMemoryTaskQueue,
     RedisTaskQueue,
     TaskEnvelope,
+    default_validation_queue,
 )
 
 
@@ -138,3 +142,74 @@ def test_real_worker_process_kill_and_restart_recovers_same_task(tmp_path: Path)
         if first.poll() is None:
             first.kill()
         queue.clear_test_namespace()
+
+
+class _FlakyRedis:
+    """可以在两次读之间切成不可用的假 Redis，用来表达「短暂中断」。"""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.down = False
+
+    def _check(self) -> None:
+        if self.down:
+            raise RedisError("connection refused")
+
+    def lock(self, _name: str, timeout: float = 5, blocking_timeout: float = 5):
+        self._check()
+        return contextlib.nullcontext()
+
+    def get(self, key: str) -> str | None:
+        self._check()
+        return self.values.get(key)
+
+    def set(self, key: str, value: str) -> None:
+        self._check()
+        self.values[key] = value
+
+    def exists(self, key: str) -> int:
+        self._check()
+        return int(key in self.values)
+
+    def scan_iter(self, match: str = "*"):
+        self._check()
+        return iter(())
+
+    def delete(self, *keys: str) -> None:
+        self._check()
+        for key in keys:
+            self.values.pop(key, None)
+
+
+def test_redis_outage_never_reports_a_finished_validation() -> None:
+    """Redis 中断时失败必须可见，任务状态仍以事实为准。"""
+
+    client = _FlakyRedis()
+    queue = RedisTaskQueue(client, prefix="codeinsight:test:outage")  # type: ignore[arg-type]
+    queue.submit(_task())
+    claimed = queue.claim_task("task-1", worker_id="worker-a", now_epoch_ms=100, lease_ms=50)
+    assert claimed is not None and claimed.attempt == 1
+
+    client.down = True
+    with pytest.raises(RedisError):
+        queue.complete("task-1")
+
+    client.down = False
+    # 校验其实跑完了，只是收尾没写进去：事实仍停在 RUNNING，租约到期后还能被接手，
+    # 而不是被当成「已完成」。
+    still_running = queue.get_task("task-1")
+    assert still_running is not None
+    assert still_running.status == "RUNNING"
+
+
+def test_validation_queue_is_shared_only_when_redis_is_configured(monkeypatch) -> None:
+    """跨进程跑校验要求共享队列；没配 Redis 就是单进程语义。"""
+
+    monkeypatch.delenv(ENV_REDIS_URL, raising=False)
+    assert isinstance(default_validation_queue(), InMemoryTaskQueue)
+
+    monkeypatch.setenv(ENV_REDIS_URL, "redis://127.0.0.1:6380/3")
+    shared = default_validation_queue()
+    assert isinstance(shared, RedisTaskQueue)
+    # 独立前缀：清理缓存时不会顺手删掉任务租约。
+    assert shared.prefix == VALIDATION_QUEUE_PREFIX

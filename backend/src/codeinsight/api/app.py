@@ -8,10 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from codeinsight.api.chat_routes import create_chat_router
 from codeinsight.api.routes import create_change_router, create_router
 from codeinsight.api.usage_routes import create_usage_router
+from codeinsight.application.agent_run_dispatcher import AgentRunTransport
 from codeinsight.application.change_service import ChangeService
 from codeinsight.application.code_understanding_route import MCPClientFactory
 from codeinsight.application.context_assembler import ContextAssembler
 from codeinsight.application.conversation_service import ConversationService
+from codeinsight.application.validation_coordinator import ValidationTransport
 from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
 from codeinsight.infrastructure.model_gateway import GatewayChatModel as OpenAIChatModel
 from codeinsight.infrastructure.model_gateway import ModelGateway, default_gateway_from_environment
@@ -31,6 +33,8 @@ def create_app(
     usage_gateway_factory: Callable[[], ModelGateway] = default_gateway_from_environment,
     conversation_service: ConversationService | None = None,
     mcp_client_factory: MCPClientFactory | None = None,
+    agent_run_transport: AgentRunTransport | None = None,
+    validation_transport: ValidationTransport | None = None,
 ) -> FastAPI:
     """组装本地 HTTP 应用，导入时不读取模型配置。"""
     application = FastAPI(
@@ -68,6 +72,8 @@ def create_app(
         reranker_factory=reranker_factory,
         change_service=selected_change_service,
         mcp_client_factory=mcp_client_factory,
+        agent_run_transport=agent_run_transport,
+        validation_transport=validation_transport,
     )
     application.state.codeinsight_conversation = selected_conversation_service
 

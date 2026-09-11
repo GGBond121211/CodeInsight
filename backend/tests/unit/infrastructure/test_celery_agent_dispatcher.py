@@ -8,8 +8,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+from codeinsight.agent.agent_run_worker import AgentRunOutcome
 from codeinsight.agent.worker_tasks import build_agent_run_task, build_validation_task
 from codeinsight.application.agent_run_dispatcher import AgentRunTransport
+from codeinsight.application.validation_coordinator import VALIDATION_PASSED, ValidationOutcome
 from codeinsight.domain.agent_run import TASK_AGENT_RUN, AgentRunTask
 from codeinsight.infrastructure.celery_agent_dispatcher import (
     AGENT_RUN_TASK_NAME,
@@ -98,3 +102,93 @@ def test_worker_keeps_late_acks_and_single_prefetch() -> None:
     assert app.conf.values["worker_prefetch_multiplier"] == 1
     assert app.conf.values["task_serializer"] == "json"
 
+
+class _FakeValidationService:
+    """假服务：只回答「谁被要求跑哪一条校验」。"""
+
+    def __init__(self, *, unknown: set[str] | None = None) -> None:
+        self.handled: list[str] = []
+        self.after: list[ValidationOutcome] = []
+        self.unknown = unknown or set()
+        self.validation_worker = SimpleNamespace(handle=self._handle)
+        self.validation_coordinator = SimpleNamespace(after_validation=self._after)
+
+    def _handle(self, task_id: str) -> ValidationOutcome:
+        if task_id in self.unknown:
+            raise KeyError(f"校验任务不存在：{task_id}")
+        self.handled.append(task_id)
+        return ValidationOutcome(
+            task_id=task_id,
+            run_id="run-1",
+            claimed=True,
+            status=VALIDATION_PASSED,
+            profile="python_compile",
+        )
+
+    def _after(self, outcome: ValidationOutcome) -> None:
+        self.after.append(outcome)
+
+
+class _FakeAgentService:
+    """假服务：记录交给 AgentRunWorker 的那条消息。"""
+
+    def __init__(self) -> None:
+        self.tasks: list[AgentRunTask] = []
+
+    def run_agent_task(self, task: AgentRunTask) -> AgentRunOutcome:
+        self.tasks.append(task)
+        return AgentRunOutcome(
+            run_id=task.run_id,
+            status="COMPLETED",
+            execution=None,
+            error_class=None,
+            claimed=True,
+        )
+
+
+def test_validation_task_runs_only_the_registered_task() -> None:
+    """任务体只认 task_id：profile 与路径从登记事实里读，不从消息里读。"""
+
+    app = _RecordingCelery()
+    service = _FakeValidationService()
+    build_validation_task(app, service_factory=lambda: service)  # type: ignore[arg-type]
+    task = app.registered[VALIDATION_TASK_NAME]
+
+    result = task("validation-1")
+
+    assert service.handled == ["validation-1"]
+    assert [outcome.task_id for outcome in service.after] == ["validation-1"]
+    assert result["status"] == VALIDATION_PASSED
+    assert result["profile"] == "python_compile"
+    assert result["claimed"] is True
+
+
+def test_validation_task_never_fakes_a_result_for_an_unknown_task() -> None:
+    app = _RecordingCelery()
+    service = _FakeValidationService(unknown={"missing"})
+    build_validation_task(app, service_factory=lambda: service)  # type: ignore[arg-type]
+    task = app.registered[VALIDATION_TASK_NAME]
+
+    with pytest.raises(KeyError):
+        task("missing")
+
+    # 没跑成的任务不进 continuation：Run 侧不该收到一个凭空的结论。
+    assert service.after == []
+
+
+def test_agent_run_task_delegates_to_the_run_worker() -> None:
+    app = _RecordingCelery()
+    service = _FakeAgentService()
+    build_agent_run_task(app, service_factory=lambda: service)  # type: ignore[arg-type]
+    task = app.registered[AGENT_RUN_TASK_NAME]
+
+    result = task(**_task().as_payload())
+
+    assert [received.run_id for received in service.tasks] == ["run-1"]
+    assert service.tasks[0].task_kind == TASK_AGENT_RUN
+    assert result == {
+        "run_id": "run-1",
+        "claimed": True,
+        "status": "COMPLETED",
+        "error_class": None,
+    }

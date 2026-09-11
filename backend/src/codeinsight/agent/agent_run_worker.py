@@ -109,7 +109,11 @@ class AgentRunOutcome:
 
     @property
     def ok(self) -> bool:
-        return self.execution is not None and self.status in {COMPLETED, WAITING_APPROVAL}
+        return self.execution is not None and self.status in {
+            COMPLETED,
+            WAITING_APPROVAL,
+            WAITING_VALIDATION,
+        }
 
 
 class AgentRunWorker:
@@ -246,7 +250,12 @@ class AgentRunWorker:
                 claimed=True,
             )
         status = _RUN_STATUS_BY_CHAT_STATUS.get(execution.status, FAILED)
-        error_class = None if status in {COMPLETED, WAITING_APPROVAL} else EXECUTION_FAILED
+        # 等待校验和等待审批都不是失败：这一轮没结束，只是换了一条队列继续。
+        error_class = (
+            None
+            if status in {COMPLETED, WAITING_APPROVAL, WAITING_VALIDATION}
+            else EXECUTION_FAILED
+        )
         self._save(claimed, status=status, error_class=error_class)
         if error_class is not None:
             self._emit(task.run_id, RUN_FAILED, {"status": status, "error_class": error_class})
@@ -317,4 +326,3 @@ def _has_resume_credentials(record: AgentRunRecord) -> bool:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
-

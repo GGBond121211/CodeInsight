@@ -13,15 +13,21 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
-from codeinsight.agent.agent_run_worker import AgentRunWorker
+from codeinsight.agent.agent_run_worker import (
+    RUN_RECORD_MISSING,
+    AgentRunOutcome,
+    AgentRunWorker,
+)
 from codeinsight.agent.change_workflow import run_change_workflow_to_preview
 from codeinsight.agent.tool_loop import ToolLoopConfig
 from codeinsight.application.agent_run_dispatcher import (
     AgentRunDispatcher,
+    AgentRunTransport,
     CallbackAgentRunTransport,
     TransportRejected,
 )
@@ -48,6 +54,13 @@ from codeinsight.application.scope_redirect import (
     build_scope_redirect_message,
 )
 from codeinsight.application.session_service import SessionContext, SessionService
+from codeinsight.application.validation_coordinator import (
+    CallbackValidationTransport,
+    ValidationCoordinator,
+    ValidationTaskQueue,
+    ValidationTransport,
+    ValidationWorker,
+)
 from codeinsight.domain.agent_run import (
     CANCELLED,
     COMPLETED,
@@ -57,6 +70,7 @@ from codeinsight.domain.agent_run import (
     RUNNING,
     TASK_AGENT_RUN,
     TASK_RESUME_AFTER_APPROVAL,
+    TASK_RESUME_AFTER_VALIDATION,
     UNKNOWN,
     WAITING_APPROVAL,
     WAITING_VALIDATION,
@@ -89,6 +103,7 @@ from codeinsight.domain.trace import (
     INTENT_CLASSIFIED,
     MODEL_GENERATING,
     PATCH_REJECTED,
+    REPAIR_ATTEMPTED,
     RETRIEVAL_FINISHED,
     RETRIEVAL_STARTED,
     SESSION_LOADED,
@@ -109,6 +124,7 @@ from codeinsight.infrastructure.redis_cache import RedisCache
 from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.infrastructure.run_store import InMemorySessionStore
 from codeinsight.infrastructure.runtime_policy import DevelopmentPolicy
+from codeinsight.infrastructure.task_queue import TaskEnvelope, default_validation_queue
 from codeinsight.ingestion.scanner import scan_repository
 
 # 2026-09-11：旧 LangGraph 路线整体冻结后，本文件不再需要这些符号；保留原名
@@ -121,6 +137,9 @@ INDEX_VERSION = "conversation-scan-v1"
 # 跑完」，不是模型的超时；超时后的处理见 recovery_decision。
 CHAT_RUN_POLICY_VERSION = "chat-agent-run-v1"
 DEFAULT_RUN_DEADLINE_MS = 10 * 60 * 1000
+# 一次校验失败之后允许自动重修几轮。这个数字是登记过的工程基线，不是调优结果：
+# 预算用完还是不过，就停下来交给人，不做没有上限的自动循环。
+MAX_CHANGE_REPAIR_ROUNDS = 1
 
 _CHAT_STATUS_BY_RUN_STATUS: dict[str, str] = {
     QUEUED: CHAT_QUEUED,
@@ -305,6 +324,9 @@ class ConversationService:
         mcp_client_factory=None,
         agent_run_dispatcher: AgentRunDispatcher | None = None,
         agent_run_store: AgentRunStore | None = None,
+        validation_queue: ValidationTaskQueue | None = None,
+        agent_run_transport: AgentRunTransport | None = None,
+        validation_transport: ValidationTransport | None = None,
     ) -> None:
         self._model_factory = model_factory
         self._embedding_factory = embedding_factory
@@ -321,10 +343,16 @@ class ConversationService:
         self.session_service = session_service or default_session_service()
         self.runtime = runtime or ChatRuntime()
         self.agent_run_store = agent_run_store or default_agent_run_store()
-        self.agent_run_dispatcher = agent_run_dispatcher or AgentRunDispatcher(
-            store=self.agent_run_store,
-            transport=CallbackAgentRunTransport(self._schedule_turn),
-        )
+        if agent_run_dispatcher is None:
+            # 默认是进程内回调：单进程部署里投递与执行在同一个进程，事件流也是
+            # 同一份。跨进程部署必须显式传入 broker 通道，不能悄悄换掉默认行为。
+            agent_run_transport = agent_run_transport or CallbackAgentRunTransport(
+                self._schedule_turn
+            )
+            agent_run_dispatcher = AgentRunDispatcher(
+                store=self.agent_run_store, transport=agent_run_transport
+            )
+        self.agent_run_dispatcher = agent_run_dispatcher
         self.agent_run_context_loader = AgentRunContextLoader(
             session_service=self.session_service,
             index_version=INDEX_VERSION,
@@ -345,11 +373,35 @@ class ConversationService:
         self._client_turn_lock = threading.RLock()
         self._session_workspaces: dict[str, _SessionWorkspace] = {}
         self._session_workspace_lock = threading.RLock()
+        # 「上一次修改失败、等人决定」的会话内记忆：用户说「继续修复」时指的是
+        # 上一次那一轮，而那是跨轮次的界面事实。自动修复走的是事实层（见
+        # _finalize_validation），这里只负责把用户的追问接到正确的那一轮上。
         self._change_recoveries: dict[str, _ChangeRecovery] = {}
         # 同一轮上「正在登记审批」的占位。重复点击必须在动 approval token 之前
         # 就被挡住，否则第二下会带着自己的 task_id 覆盖掉第一下已经写好的续跑。
         self._approvals_in_flight: set[str] = set()
         self._approval_lock = threading.RLock()
+        # 校验任务有自己的一条队列和工人：应用完补丁的那一轮登记完就结束，Docker
+        # 在别的线程里跑。单进程用内存队列加本地回调；换成 Redis 队列与 Celery 任务
+        # 时语义不变（按标识领取、租约、有限尝试）。
+        self.validation_queue = validation_queue or default_validation_queue()
+        self.validation_worker = ValidationWorker(
+            queue=self.validation_queue,
+            change_service=self.change_service,
+            emit=self.runtime.emit,
+        )
+        self.validation_coordinator = ValidationCoordinator(
+            queue=self.validation_queue,
+            worker=self.validation_worker,
+            transport=validation_transport
+            or CallbackValidationTransport(self._schedule_validation),
+            dispatcher=self.agent_run_dispatcher,
+            store=self.agent_run_store,
+            emit=self.runtime.emit,
+        )
+        self._validation_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="codeinsight-validation"
+        )
         add_event_sink = getattr(self.change_service, "add_event_sink", None)
         if callable(add_event_sink):
             add_event_sink(self._mirror_change_event)
@@ -531,7 +583,7 @@ class ConversationService:
             context = self.agent_run_context_loader.load(task, record)
         except AgentRunContextError as error:
             raise TransportRejected(error.error_class) from error
-        if task.task_kind == TASK_RESUME_AFTER_APPROVAL:
+        if task.task_kind in {TASK_RESUME_AFTER_APPROVAL, TASK_RESUME_AFTER_VALIDATION}:
             return self._resume_existing_turn(task, context)
         try:
             turn = self.runtime.submit(
@@ -558,27 +610,255 @@ class ConversationService:
         分流只看任务类型：新建 Run 跑一次对话，续跑只做已经批准的那个补丁。
         """
 
-        if task.task_kind == TASK_RESUME_AFTER_APPROVAL:
-
-            def runner(loaded: AgentRunContext) -> ChatExecution:
-                return self._resume_change(turn, _turn_input_from_context(loaded), task)
-
-        else:
-
-            def runner(loaded: AgentRunContext) -> ChatExecution:
-                return self._execute_turn(
-                    turn,
-                    _turn_input_from_context(loaded),
-                    loaded.classification,
-                    show_debug_reasoning,
-                )
-
-        outcome = self.agent_run_worker.handle(task, runner=runner)
+        outcome = self.agent_run_worker.handle(
+            task, runner=self._runner_for(task, turn, show_debug_reasoning)
+        )
         if outcome.execution is None:
             raise ChatRuntimeError(
                 f"Agent Run 未返回答复：{outcome.error_class or outcome.status}"
             )
         return outcome.execution
+
+    def run_agent_task(self, task: AgentRunTask) -> AgentRunOutcome:
+        """Worker 进程入口：消息本身就是执行，不经过本进程的线程池。
+
+        与进程内路径唯一的区别是「这一轮是谁受理的」：消息可能来自另一个进程，
+        本地运行时里没有这一轮，执行体需要的 turn 就从事实 Store 重建。重建只用
+        标识、用户原话和公开状态，别的一概不搬。
+        """
+
+        record = self.agent_run_store.get_run(task.run_id)
+        if record is None:
+            # 任务指向一个不存在的 Run。凭一条孤立消息去跑模型，只会产出一份
+            # 无法和任何事实对账的结果。
+            return AgentRunOutcome(
+                run_id=task.run_id,
+                status=MANUAL_REQUIRED,
+                execution=None,
+                error_class=RUN_RECORD_MISSING,
+                claimed=False,
+            )
+
+        def runner(loaded: AgentRunContext) -> ChatExecution:
+            turn = self._adopt_turn(record, loaded)
+            return self._runner_for(task, turn, loaded.options.show_debug_reasoning)(loaded)
+
+        return self.agent_run_worker.handle(task, runner=runner)
+
+    def _adopt_turn(self, record: AgentRunRecord, context: AgentRunContext) -> ChatTurn:
+        """把事实层里的这一轮收进本地运行时。
+
+        Worker 进程和 API 进程各有一个运行时。执行体会按 turn_id 读写本地运行时
+        的状态，所以 Worker 侧必须先有这一轮；它的内容全部来自事实层，而不是从
+        另一个进程的内存里搬过来。
+        """
+
+        return self.runtime.adopt_turn(
+            _turn_from_run_record(
+                record, user_message=context.user_message, task_type=context.task_type
+            )
+        )
+
+    def _runner_for(
+        self, task: AgentRunTask, turn: ChatTurn, show_debug_reasoning: bool
+    ) -> Callable[[AgentRunContext], ChatExecution]:
+        """这一轮该跑什么：分流只看任务类型。
+
+        新建 Run 跑一次对话，审批续跑只做已经批准的那个补丁，校验续跑只负责把
+        校验结论翻译成终态。进程内路径和 Worker 进程路径共用它，语义不分叉。
+        """
+
+        if task.task_kind == TASK_RESUME_AFTER_APPROVAL:
+            return lambda loaded: self._resume_change(
+                turn, self._turn_input_for(loaded), task
+            )
+        if task.task_kind == TASK_RESUME_AFTER_VALIDATION:
+            return lambda loaded: self._finalize_validation(
+                turn, loaded, show_debug_reasoning, task
+            )
+        return lambda loaded: self._execute_turn(
+            turn,
+            self._turn_input_for(loaded),
+            loaded.classification,
+            show_debug_reasoning,
+        )
+
+    def _finalize_validation(
+        self,
+        turn: ChatTurn,
+        loaded: AgentRunContext,
+        show_debug_reasoning: bool,
+        task: AgentRunTask,
+    ) -> ChatExecution:
+        """校验结论的执行体：通过就收尾，失败按登记过的预算决定修还是交人。
+
+        这一步同样不跑沙箱：结论已经由 ValidationWorker 写进事实，这里只负责把
+        事实翻译成用户能看到的终态。
+        """
+
+        record = self.agent_run_store.get_run(task.run_id)
+        patch_id = (record.patch_id or "").strip() if record is not None else ""
+        if not patch_id:
+            raise ValueError("校验续跑缺少补丁标识")
+        turn_input = self._turn_input_for(loaded)
+        result = self.change_service.get_result(task.run_id, patch_id)
+        if result is None or result.status == "WAITING_VALIDATION":
+            # 固定校验没有给出结论（环境不可用或 Worker 崩了）。这既不是「校验
+            # 通过」也不是「代码有问题」：只能停下来让人确认隔离 workspace。
+            message = "固定校验没有给出结论：后台校验没有完成，需要人工确认隔离 workspace。"
+            return ChatExecution(
+                status=CHAT_MANUAL_REQUIRED,
+                assistant_message=message,
+                result={
+                    "kind": "change_validation_inconclusive",
+                    "validation": result.validation if result is not None else None,
+                },
+                error="VALIDATION_INCONCLUSIVE",
+            )
+        if result.status == "COMPLETED":
+            return self._finish_change_turn(
+                turn,
+                turn_input,
+                result,
+                (
+                    "修改已应用；当前开发模式跳过了 Docker 固定校验。"
+                    if result.validation and result.validation.get("skipped")
+                    else "修改已应用并完成校验。"
+                ),
+            )
+        failure = self._review_required_result(task.run_id)
+        if failure is not None and not _is_sandbox_failure(failure.validation or {}):
+            # 修复轮要带着失败摘要去跑：摘要由 _repair_task 从这一条事实生成。
+            self._change_recoveries[turn.session_id] = _ChangeRecovery(
+                run_id=failure.run_id,
+                patch_id=failure.patch_id,
+                validation=dict(failure.validation or {}),
+            )
+            if self._repair_budget_left(task.run_id):
+                # 先把预算记下来再动手：反过来的顺序在崩溃时会变成无限重修。
+                self.change_service.record_repair_round(task.run_id, patch_id=patch_id)
+                self.runtime.emit(
+                    turn.run_id,
+                    REPAIR_ATTEMPTED,
+                    {"stage": "auto_repair", "status": "running"},
+                )
+                return self._execute_turn(
+                    replace(turn, user_message=_auto_repair_message(turn.user_message)),
+                    turn_input,
+                    loaded.classification,
+                    show_debug_reasoning,
+                )
+        message = f"修改流程结束，状态为 {result.status}。"
+        if result.status == "REVIEW_REQUIRED":
+            message = "固定检查没有通过，需要人工处理。"
+        return self._finish_change_turn(turn, turn_input, result, message)
+
+    def _remember_change_recovery(self, session_id: str, result) -> None:
+        """把「这一轮还要不要人来决定」记在会话上，供用户追问时接续。"""
+
+        if result.status == "REVIEW_REQUIRED" and result.validation is not None:
+            self._change_recoveries[session_id] = _ChangeRecovery(
+                run_id=result.run_id,
+                patch_id=result.patch_id,
+                validation=dict(result.validation),
+            )
+            return
+        if result.status == "COMPLETED":
+            self._change_recoveries.pop(session_id, None)
+
+    def _finish_change_turn(
+        self, turn: ChatTurn, turn_input: _TurnInput, result, assistant_message: str
+    ) -> ChatExecution:
+        """收尾一次修改轮：把助手答复写进会话，再返回用户可见的结果。"""
+
+        self._remember_change_recovery(turn.session_id, result)
+
+        context = self.session_service.get_or_create_session(
+            session_id=turn.session_id,
+            scope=TenantScope(),
+            repo_id=turn_input.repo_id,
+            repo_fingerprint=turn_input.repo_fingerprint,
+            index_version=INDEX_VERSION,
+        )
+        self.session_service.append_turn(
+            context,
+            role="assistant",
+            content=assistant_message,
+            repo_fingerprint=turn_input.repo_fingerprint,
+            index_version=INDEX_VERSION,
+        )
+        return _change_result_execution(result, assistant_message=assistant_message)
+
+    def _register_validation(self, turn: ChatTurn, result) -> ChatExecution:
+        """把这一轮的固定校验登记出去，然后立刻结束当前 attempt。"""
+
+        profile, workspace_path = self.change_service.registered_validation(
+            result.run_id, result.patch_id
+        )
+        record = self.agent_run_store.get_run(result.run_id)
+        if record is None:
+            raise ValueError("找不到这次修改的 Run 事实，无法登记校验")
+        self.validation_coordinator.register(
+            record,
+            patch_id=result.patch_id,
+            profile=profile,
+            workspace_path=workspace_path,
+        )
+        return ChatExecution(
+            status=CHAT_WAITING_VALIDATION,
+            assistant_message="补丁已应用到隔离 workspace，正在等待固定校验。",
+            result={
+                "kind": "change_pending_validation",
+                "validation": {"profile": profile, "status": "QUEUED"},
+            },
+        )
+
+    def _schedule_validation(self, task: TaskEnvelope) -> str:
+        """投递一条校验任务：立刻返回，沙箱在别的线程里跑。
+
+        Agent Worker 在登记完之后马上结束自己的 attempt，所以这里绝不能同步跑
+        Docker——那等于把 Agent 队列又堵回去。
+        """
+
+        self._validation_executor.submit(self._run_validation_task, task.task_id)
+        return task.task_id
+
+    def _run_validation_task(self, task_id: str) -> None:
+        outcome = self.validation_worker.handle(task_id)
+        self.validation_coordinator.after_validation(outcome)
+
+    def _turn_input_for(self, context: AgentRunContext) -> _TurnInput:
+        """执行前定下「这次在哪个目录里干活」。
+
+        会话事实里存的是源仓库（write-once）；一旦这个会话此前已经产生过隔离
+        workspace，进程里记着的是更近的事实。Worker 重建时优先用后者，否则模型
+        会去看源仓库，而改动其实都落在隔离 workspace 里。
+        """
+
+        base = _turn_input_from_context(context)
+        with self._session_workspace_lock:
+            workspace = self._session_workspaces.get(context.session_id)
+        if workspace is None or workspace.effective_root == workspace.source_root:
+            return base
+        return replace(
+            base,
+            repository_root=str(workspace.effective_root),
+            contains_workspace_state=True,
+        )
+
+    def _review_required_result(self, run_id: str):
+        finder = getattr(self.change_service, "last_review_required", None)
+        if not callable(finder):
+            return None
+        return finder(run_id)
+
+    def _repair_budget_left(self, run_id: str) -> bool:
+        """自动修复还有没有预算。预算记在事实里，进程重启也算数。"""
+
+        counter = getattr(self.change_service, "repair_rounds", None)
+        if not callable(counter):
+            return False
+        return counter(run_id) < MAX_CHANGE_REPAIR_ROUNDS
 
     def _resume_existing_turn(self, task: AgentRunTask, context: AgentRunContext) -> str:
         """续跑投递：复用停在等待审批的那一轮，而不是新开一轮对话。
@@ -613,7 +893,9 @@ class ConversationService:
         token = (record.approval_token or "").strip() if record is not None else ""
         if not patch_id or not token:
             raise ValueError("续跑缺少补丁标识或审批令牌")
-        return self._apply_change(turn, turn_input, patch_id, token)
+        return self._apply_change(
+            turn, turn_input, patch_id, token, defer_validation=True
+        )
 
     def _resolve_session_repository(
         self,
@@ -1202,14 +1484,7 @@ class ConversationService:
                     recovery.patch_id,
                     event_run_id=turn.run_id,
                 )
-                if result.status == "COMPLETED":
-                    self._change_recoveries.pop(turn.session_id, None)
-                else:
-                    self._change_recoveries[turn.session_id] = _ChangeRecovery(
-                        run_id=recovery.run_id,
-                        patch_id=recovery.patch_id,
-                        validation=dict(result.validation or {}),
-                    )
+                self._remember_change_recovery(turn.session_id, result)
                 return _change_result_execution(
                     result,
                     assistant_message=(
@@ -1319,9 +1594,13 @@ class ConversationService:
         turn_input: _TurnInput,
         patch_id: str,
         approval_token: str,
+        *,
+        defer_validation: bool = False,
     ) -> ChatExecution:
         self.runtime.emit(turn.run_id, STEP_STARTED, {"stage": "apply", "status": "running"})
-        result = self.change_service.apply(turn.run_id, patch_id, approval_token)
+        result = self.change_service.apply(
+            turn.run_id, patch_id, approval_token, defer_validation=defer_validation
+        )
         workspace_manager = getattr(self.change_service, "workspaces", None)
         managed = (
             workspace_manager.get(turn.run_id)
@@ -1335,14 +1614,8 @@ class ConversationService:
                 Path(managed.run.source_repo_path),
                 Path(managed.run.workspace_path),
             )
-        if result.status == "REVIEW_REQUIRED" and result.validation is not None:
-            self._change_recoveries[turn.session_id] = _ChangeRecovery(
-                run_id=turn.run_id,
-                patch_id=patch_id,
-                validation=dict(result.validation),
-            )
-        elif result.status == "COMPLETED":
-            self._change_recoveries.pop(turn.session_id, None)
+        if defer_validation and result.status == "WAITING_VALIDATION":
+            return self._register_validation(turn, result)
         if result.status == "COMPLETED" and result.validation and result.validation.get(
             "skipped"
         ):
@@ -1351,25 +1624,7 @@ class ConversationService:
             assistant_message = "修改已应用并完成校验。"
         else:
             assistant_message = f"修改流程结束，状态为 {result.status}。"
-        context = self.session_service.get_or_create_session(
-            session_id=turn.session_id,
-            scope=TenantScope(),
-            repo_id=turn_input.repo_id,
-            repo_fingerprint=turn_input.repo_fingerprint,
-            index_version=INDEX_VERSION,
-        )
-        self.session_service.append_turn(
-            context,
-            role="assistant",
-            content=assistant_message,
-            repo_fingerprint=turn_input.repo_fingerprint,
-            index_version=INDEX_VERSION,
-        )
-        execution = _change_result_execution(
-            result,
-            assistant_message=assistant_message,
-        )
-        return execution
+        return self._finish_change_turn(turn, turn_input, result, assistant_message)
 
     def _mirror_change_event(self, event) -> None:
         if event.event_type == "run_finished":
@@ -1743,6 +1998,20 @@ def _is_sandbox_failure(validation: Mapping[str, object]) -> bool:
     return error_class.startswith("SANDBOX_") or any(
         marker in excerpt
         for marker in ("docker", "docker_engine", "daemon", "access is denied")
+    )
+
+
+def _auto_repair_message(message: str) -> str:
+    """自动修复轮的输入：保留用户目标，只补一句「这是修复轮」。
+
+    失败摘要由 _repair_task 从事实层生成，这里不重复拼一遍——同一份摘要在模型
+    眼里会变成两条不同的指令。
+    """
+
+    return (
+        f"{message.strip()}\n\n"
+        "[自动修复] 固定校验没有通过，请根据失败摘要继续修复同一个目标，"
+        "不要重复已经应用过的改动。"
     )
 
 
