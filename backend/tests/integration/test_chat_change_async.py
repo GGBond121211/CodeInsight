@@ -287,8 +287,12 @@ def test_worker_crash_in_apply_window_stops_at_unknown_and_is_not_retried(
     assert preview["status"] == "WAITING_APPROVAL"
 
     assert client.post(f"/api/v2/chat/turns/{preview['turn_id']}/approve").status_code == 202
-    final = _wait_for(client, preview["turn_id"], statuses={"COMPLETED", "FAILED"})
-    assert final["status"] == "FAILED"
+    final = _wait_for(
+        client, preview["turn_id"], statuses={"COMPLETED", "FAILED", "UNKNOWN"}
+    )
+    # 事实层说「状态不明」，界面就必须说同一句话：显示 FAILED 会把「需要人工
+    # 对账」这件事藏起来。
+    assert final["status"] == "UNKNOWN"
 
     conversation = client.app.state.codeinsight_conversation  # type: ignore[attr-defined]
     record = conversation.agent_run_store.find_run_by_turn(preview["turn_id"])

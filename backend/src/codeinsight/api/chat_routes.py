@@ -19,7 +19,19 @@ from codeinsight.application.conversation_service import (
     ChatDispatchError,
     ConversationService,
 )
+from codeinsight.domain.chat import (
+    CHAT_MANUAL_REQUIRED,
+    CHAT_UNKNOWN,
+    CHAT_WAITING_APPROVAL,
+)
+from codeinsight.domain.trace import RUN_FINISHED, STATE_TRANSITIONED
 from codeinsight.infrastructure.chat_runtime import ChatRuntimeError
+
+# 事件流在这里把控制权交回客户端：等审批、以及两种「停下来等人」的状态。
+# 等校验不在其中——它没有用户决策点，后续 continuation 会继续往同一个 run 上写。
+_STOP_STREAM_STATUSES = frozenset(
+    {CHAT_WAITING_APPROVAL, CHAT_UNKNOWN, CHAT_MANUAL_REQUIRED}
+)
 
 
 def create_chat_router(conversation_service: ConversationService) -> APIRouter:
@@ -116,37 +128,36 @@ def create_chat_router(conversation_service: ConversationService) -> APIRouter:
     def turn_events(
         turn_id: str, after_sequence: int = Query(default=0, ge=0)
     ) -> StreamingResponse:
-        try:
-            turn = conversation_service.runtime.get_turn(turn_id)
-        except ChatRuntimeError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+        run_id = conversation_service.resolve_run_id(turn_id)
+        if run_id is None:
+            raise HTTPException(status_code=404, detail="聊天 Run 不存在")
 
         def stream() -> Iterator[str]:
-            backlog, debug_backlog, subscriber = conversation_service.runtime.subscribe(
-                turn.run_id, after_sequence=after_sequence
+            # 回放与订阅在一步里完成：已落事实的事件从 Store 取，新事件从广播收，
+            # 两边用 sequence 去重。断线重连因此既不会重复，也不会漏。
+            subscription = conversation_service.runtime.subscribe(
+                run_id, after_sequence=after_sequence
             )
+            subscriber = subscription.subscriber
             last_sequence = after_sequence
             try:
-                stop_after_backlog = False
-                for event in backlog:
+                finished = False
+                for event in subscription.backlog:
                     last_sequence = max(last_sequence, event.sequence)
                     yield _event_frame(event)
-                    if event.event_type == "run_finished" or (
-                        event.event_type == "state_transitioned"
-                        and event.payload.get("to_status") == "WAITING_APPROVAL"
-                    ):
-                        stop_after_backlog = True
+                    if _ends_the_stream(event):
+                        finished = True
                         break
-                for payload in debug_backlog:
+                for payload in subscription.debug_backlog:
                     yield _debug_frame(payload)
-                if stop_after_backlog or conversation_service.runtime.is_terminal(turn.run_id):
+                if finished or conversation_service.run_is_settled(run_id):
                     return
                 while True:
                     try:
                         kind, payload = subscriber.get(timeout=8)
                     except Empty:
                         yield ": keep-alive\n\n"
-                        if conversation_service.runtime.is_terminal(turn.run_id):
+                        if conversation_service.run_is_settled(run_id):
                             return
                         continue
                     if kind == "debug_reasoning":
@@ -154,16 +165,14 @@ def create_chat_router(conversation_service: ConversationService) -> APIRouter:
                         continue
                     event = payload
                     if event.sequence <= last_sequence:
+                        # 广播与回放重叠的部分只推一次。
                         continue
                     last_sequence = event.sequence
                     yield _event_frame(event)
-                    if event.event_type == "run_finished" or (
-                        event.event_type == "state_transitioned"
-                        and event.payload.get("to_status") == "WAITING_APPROVAL"
-                    ):
+                    if _ends_the_stream(event):
                         return
             finally:
-                conversation_service.runtime.unsubscribe(turn.run_id, subscriber)
+                conversation_service.runtime.unsubscribe(run_id, subscriber)
 
         return StreamingResponse(
             stream(),
@@ -173,6 +182,21 @@ def create_chat_router(conversation_service: ConversationService) -> APIRouter:
 
     return router
 
+
+
+def _ends_the_stream(event) -> bool:
+    """什么事件表示「这条连接可以收尾了」。
+
+    等审批要停下来等用户动作（客户端随后重新订阅）；run_finished 是本轮结束。
+    等校验不停：它没有用户决策点，后续 continuation 会继续往同一个 run 上写。
+    """
+
+    if event.event_type == RUN_FINISHED:
+        return True
+    return (
+        event.event_type == STATE_TRANSITIONED
+        and event.payload.get("to_status") in _STOP_STREAM_STATUSES
+    )
 
 def _event_frame(event) -> str:
     payload = {

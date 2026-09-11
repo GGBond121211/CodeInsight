@@ -38,6 +38,12 @@ TERMINAL_CHAT_STATUSES = frozenset({CHAT_COMPLETED, CHAT_FAILED, CHAT_CANCELLED}
 # 停机等外部输入的两个状态：等待审批与等待固定校验。它们都不是终态，
 # 事件流不该因为进入它们就宣告本轮结束。
 WAITING_CHAT_STATUSES = frozenset({CHAT_WAITING_APPROVAL, CHAT_WAITING_VALIDATION})
+# 不会再自动推进的状态：终态，加上两种「停下来等人」的状态。事件流靠它决定
+# 还要不要等新事件，运行时靠它决定该不该放开这个会话。判错会留下一条永远挂着的
+# 连接，或者把一个其实已经停下的会话一直锁着。
+SETTLED_CHAT_STATUSES = frozenset(
+    {CHAT_COMPLETED, CHAT_FAILED, CHAT_CANCELLED, CHAT_UNKNOWN, CHAT_MANUAL_REQUIRED}
+)
 SUPPORTED_CHAT_TASK_TYPES = frozenset(
     {"general_chat", "scope_redirect", "clarify", "explain", "change"}
 )

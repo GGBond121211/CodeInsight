@@ -7,13 +7,11 @@
 
 from __future__ import annotations
 
-import queue
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from typing import Any
 from uuid import uuid4
 
 from codeinsight.domain.chat import (
@@ -21,6 +19,7 @@ from codeinsight.domain.chat import (
     CHAT_FAILED,
     CHAT_QUEUED,
     CHAT_RUNNING,
+    SETTLED_CHAT_STATUSES,
     TERMINAL_CHAT_STATUSES,
     WAITING_CHAT_STATUSES,
     ChatTurn,
@@ -32,7 +31,7 @@ from codeinsight.domain.trace import (
     TURN_ACCEPTED,
     RunEvent,
 )
-from codeinsight.infrastructure.event_log import InMemoryEventLog
+from codeinsight.infrastructure.event_log import LiveEventLog, default_event_log
 
 
 class ChatRuntimeError(ValueError):
@@ -47,76 +46,16 @@ class ChatExecution:
     error: str | None = None
 
 
-class LiveEventLog:
-    """在 InMemoryEventLog 之上增加 SSE 订阅，不改变事件日志契约。"""
-
-    def __init__(self) -> None:
-        self._events = InMemoryEventLog()
-        self._lock = threading.RLock()
-        self._subscribers: dict[str, set[queue.Queue[tuple[str, Any]]]] = {}
-        self._debug_backlog: dict[str, list[dict[str, object]]] = {}
-
-    def append(self, event: RunEvent) -> None:
-        with self._lock:
-            self._events.append(event)
-            for subscriber in tuple(self._subscribers.get(event.run_id, ())):
-                subscriber.put(("event", event))
-
-    def next_sequence(self, run_id: str) -> int:
-        with self._lock:
-            return self._events.next_sequence(run_id)
-
-    def read_events(self, run_id: str, *, after_sequence: int = 0) -> tuple[RunEvent, ...]:
-        with self._lock:
-            return self._events.read_events(run_id, after_sequence=after_sequence)
-
-    def subscribe(
-        self, run_id: str, *, after_sequence: int = 0
-    ) -> tuple[tuple[RunEvent, ...], tuple[dict[str, object], ...], queue.Queue]:
-        """原子地取得 backlog 并建立订阅，避免 SSE 建连竞态丢事件。"""
-        if after_sequence < 0:
-            raise ValueError("after_sequence 不能为负")
-        with self._lock:
-            backlog = self._events.read_events(run_id, after_sequence=after_sequence)
-            # reasoning 没有公开 RunEvent sequence：只在首次订阅时尽力回放，
-            # 续订只接收新到达的临时内容，避免审批恢复时重复展示上一阶段 reasoning。
-            debug = tuple(self._debug_backlog.get(run_id, ())) if after_sequence == 0 else ()
-            subscriber: queue.Queue[tuple[str, Any]] = queue.Queue()
-            self._subscribers.setdefault(run_id, set()).add(subscriber)
-            return backlog, debug, subscriber
-
-    def unsubscribe(self, run_id: str, subscriber: queue.Queue) -> None:
-        with self._lock:
-            subscribers = self._subscribers.get(run_id)
-            if subscribers is None:
-                return
-            subscribers.discard(subscriber)
-            if not subscribers:
-                self._subscribers.pop(run_id, None)
-
-    def publish_debug_reasoning(self, run_id: str, content: str, *, model: str) -> None:
-        """只把供应商显式 reasoning 放进临时内存 SSE 队列。"""
-        if not content.strip():
-            return
-        payload = {
-            "run_id": run_id,
-            "model": model,
-            "content": content,
-            "occurred_at_epoch_ms": int(time.time() * 1000),
-        }
-        with self._lock:
-            self._debug_backlog.setdefault(run_id, []).append(payload)
-            for subscriber in tuple(self._subscribers.get(run_id, ())):
-                subscriber.put(("debug_reasoning", payload))
-
-
 class ChatRuntime:
     """一次进程内服务实例共享的后台聊天运行时。"""
 
-    def __init__(self, *, max_workers: int = 4) -> None:
+    def __init__(
+        self, *, max_workers: int = 4, event_log: LiveEventLog | None = None
+    ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers 必须为正")
-        self.event_log = LiveEventLog()
+        # 事件日志可以换实现：单进程用内存，跨重启回放要用真表（default_event_log）。
+        self.event_log = event_log or default_event_log()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="codeinsight-chat"
         )
@@ -211,6 +150,19 @@ class ChatRuntime:
 
         with self._lock:
             return self._turns.get(turn_id)
+
+    def get_turn_or_none_by_run_id(self, run_id: str) -> ChatTurn | None:
+        """本进程见过这一轮就返回它。
+
+        事件流要判断「这一轮跑完没有」，而「本进程没见过」不等于「不存在」：
+        API 重启后事件仍然在 Store 里，判断得回退到事实层。
+        """
+
+        with self._lock:
+            for turn in self._turns.values():
+                if turn.run_id == run_id:
+                    return turn
+            return None
 
     def get_turn_by_run_id(self, run_id: str) -> ChatTurn:
         with self._lock:
@@ -352,7 +304,9 @@ class ChatRuntime:
             )
             self._turns[turn_id] = updated
             self._running.discard(turn_id)
-            if execution.status in TERMINAL_CHAT_STATUSES:
+            # 停到「等人处理」上的这一轮同样要放开会话：它已经不靠对话推进了，
+            # 一直锁着会话只会让用户连问题都问不了。
+            if execution.status in SETTLED_CHAT_STATUSES:
                 self._active_by_session.pop(updated.session_id, None)
         self.emit(
             updated.run_id,

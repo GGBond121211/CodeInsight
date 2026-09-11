@@ -66,6 +66,7 @@ from codeinsight.domain.agent_run import (
     COMPLETED,
     FAILED,
     MANUAL_REQUIRED,
+    OPEN_AGENT_RUN_STATUSES,
     QUEUED,
     RUNNING,
     TASK_AGENT_RUN,
@@ -90,6 +91,7 @@ from codeinsight.domain.chat import (
     CHAT_UNKNOWN,
     CHAT_WAITING_APPROVAL,
     CHAT_WAITING_VALIDATION,
+    SETTLED_CHAT_STATUSES,
     ChatTurn,
 )
 from codeinsight.domain.errors import ModelCallError, ModelConfigurationError, ModelResponseError
@@ -614,8 +616,13 @@ class ConversationService:
             task, runner=self._runner_for(task, turn, show_debug_reasoning)
         )
         if outcome.execution is None:
-            raise ChatRuntimeError(
-                f"Agent Run 未返回答复：{outcome.error_class or outcome.status}"
+            # Worker 自己终止了这一轮。事实层里的状态（UNKNOWN、MANUAL_REQUIRED、
+            # FAILED）必须原样变成用户看到的说法：一律显示「失败」，「需要人工对账」
+            # 这层信息就在界面上消失了。
+            return ChatExecution(
+                status=_CHAT_STATUS_BY_RUN_STATUS.get(outcome.status, CHAT_FAILED),
+                assistant_message=_stopped_message(outcome.status),
+                error=outcome.error_class,
             )
         return outcome.execution
 
@@ -644,6 +651,47 @@ class ConversationService:
             return self._runner_for(task, turn, loaded.options.show_debug_reasoning)(loaded)
 
         return self.agent_run_worker.handle(task, runner=runner)
+
+    def _adopt_turn(self, record: AgentRunRecord, context: AgentRunContext) -> ChatTurn:
+        """把事实层里的这一轮收进本地运行时。
+
+        Worker 进程和 API 进程各有一个运行时。执行体会按 turn_id 读写本地运行时
+        的状态，所以 Worker 侧必须先有这一轮；它的内容全部来自事实层，而不是从
+        另一个进程的内存里搬过来。
+        """
+
+        return self.runtime.adopt_turn(
+            _turn_from_run_record(
+                record, user_message=context.user_message, task_type=context.task_type
+            )
+        )
+
+    def resolve_run_id(self, turn_id: str) -> str | None:
+        """这一轮对应的 run_id：本地运行时优先，其次事实层。
+
+        SSE 断线重连和 API 重启后都要能接着读事件，所以「本进程没见过这一轮」
+        不能等于「没有这一轮」。
+        """
+
+        turn = self.runtime.get_turn_or_none(turn_id)
+        if turn is not None:
+            return turn.run_id
+        record = self.agent_run_store.find_run_by_turn(turn_id)
+        return record.run_id if record is not None else None
+
+    def run_is_settled(self, run_id: str) -> bool:
+        """这一轮还会不会自动产生新事件。本地运行时不知道时回退到事实层。
+
+        事件流靠它决定「还等不等新事件」：答错会留下一条永远挂着的连接，或者
+        提前关掉一条还有事件要写的连接。等审批与等校验都不算停下——前者等用户
+        动作，后者有 Worker 在推。
+        """
+
+        turn = self.runtime.get_turn_or_none_by_run_id(run_id)
+        if turn is not None:
+            return turn.status in SETTLED_CHAT_STATUSES
+        record = self.agent_run_store.get_run(run_id)
+        return record is None or record.status not in OPEN_AGENT_RUN_STATUSES
 
     def _adopt_turn(self, record: AgentRunRecord, context: AgentRunContext) -> ChatTurn:
         """把事实层里的这一轮收进本地运行时。
@@ -2031,6 +2079,15 @@ def _repair_task(message: str, recovery: _ChangeRecovery) -> str:
         "</validation_failure_digest>"
     )
 
+
+def _stopped_message(status: str) -> str:
+    """Worker 停下时的用户可见说法。原因不同，说法就不该共用一句「失败」。"""
+
+    if status == UNKNOWN:
+        return "这一轮的结果不确定：后台执行中断，需要人工核对隔离 workspace。"
+    if status == MANUAL_REQUIRED:
+        return "这一轮需要人工处理：后台执行没能完成。"
+    return "本轮执行失败，请查看事件详情。"
 
 def _change_result_execution(result, *, assistant_message: str) -> ChatExecution:
     return ChatExecution(
