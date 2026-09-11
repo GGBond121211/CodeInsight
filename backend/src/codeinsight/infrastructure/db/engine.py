@@ -137,19 +137,52 @@ def create_all_tables(engine: Engine) -> None:
 
 
 def _apply_additive_compatibility_migrations(engine: Engine) -> None:
-    """补充 create_all 无法处理的安全加列；不删除、不改写既有数据。"""
+    """补充 create_all 无法处理的安全加列；不删除、不改写既有数据。
+
+    只加列、且新列都允许为空或带默认值，因此对既有数据是原地兼容的，
+    已经存在的库不必重建，也不会丢数据。
+    """
+
+    additions: tuple[tuple[str, str, str], ...] = (
+        (
+            "gateway_cost_records",
+            "ttft_milliseconds",
+            "ALTER TABLE gateway_cost_records "
+            "ADD COLUMN ttft_milliseconds FLOAT NULL AFTER latency_milliseconds",
+        ),
+        (
+            "sessions",
+            "repo_root",
+            "ALTER TABLE sessions ADD COLUMN repo_root VARCHAR(1024) NULL",
+        ),
+        (
+            "agent_runs",
+            "validation_profile",
+            "ALTER TABLE agent_runs ADD COLUMN validation_profile "
+"VARCHAR(64) NOT NULL DEFAULT 'python_compile'",
+        ),
+        (
+            "agent_runs",
+            "result_limit",
+            "ALTER TABLE agent_runs ADD COLUMN result_limit INT NOT NULL DEFAULT 5",
+        ),
+        (
+            "agent_runs",
+            "show_debug_reasoning",
+            "ALTER TABLE agent_runs ADD COLUMN show_debug_reasoning "
+            "TINYINT(1) NOT NULL DEFAULT 0",
+        ),
+    )
     inspector = inspect(engine)
-    if "gateway_cost_records" not in inspector.get_table_names():
-        return
-    columns = {column["name"] for column in inspector.get_columns("gateway_cost_records")}
-    if "ttft_milliseconds" not in columns:
+    existing_tables = set(inspector.get_table_names())
+    for table, column, statement in additions:
+        if table not in existing_tables:
+            continue
+        columns = {item["name"] for item in inspector.get_columns(table)}
+        if column in columns:
+            continue
         with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "ALTER TABLE gateway_cost_records "
-                    "ADD COLUMN ttft_milliseconds FLOAT NULL AFTER latency_milliseconds"
-                )
-            )
+            connection.execute(text(statement))
 
 
 def drop_all_tables(engine: Engine) -> None:

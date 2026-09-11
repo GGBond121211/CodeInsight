@@ -88,6 +88,8 @@ class SessionRow(Base):
     repo_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
     active_goal_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 会话绑定的仓库根。跨进程 Worker 靠它知道该读哪个目录。
+    repo_root: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
 
 class MemoryRecordRow(Base):
@@ -352,6 +354,14 @@ class AgentRunRow(Base):
     error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at_epoch_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # 本轮被要求的参数。Worker 只有 run_id，重建执行时必须能读到它们。
+    validation_profile: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="python_compile"
+    )
+    result_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    show_debug_reasoning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
 
 class CheckpointRow(Base):

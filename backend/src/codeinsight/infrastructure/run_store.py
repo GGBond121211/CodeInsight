@@ -27,6 +27,7 @@ from codeinsight.domain.change import (
     ConversationSession,
     RunSnapshot,
     StateVersionConflictError,
+    merge_session_facts,
 )
 from codeinsight.domain.trace import IdempotencyKey
 
@@ -70,6 +71,9 @@ class InMemorySessionStore:
 
     def save_session(self, session: ConversationSession) -> None:
         with self._lock:
+            existing = self._sessions.get(session.session_id)
+            if existing is not None:
+                session = merge_session_facts(existing, session)
             self._sessions[session.session_id] = session
 
     def get_goal(self, goal_id: str) -> CodeGoal | None:

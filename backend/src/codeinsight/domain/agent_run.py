@@ -116,6 +116,25 @@ def needs_attention(status: str) -> bool:
     return status in ATTENTION_AGENT_RUN_STATUSES
 
 
+@dataclass(frozen=True)
+class RunRequestOptions:
+    """受理这一轮时请求方给出的参数。
+
+    它们属于「这一轮被要求做什么」，所以随 Run 一起持久化：Worker 在另一个进程
+    里只有 run_id，拿不到请求对象，这些参数不能只活在 API 进程的内存里。
+    """
+
+    validation_profile: str = "python_compile"
+    result_limit: int = 5
+    show_debug_reasoning: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.validation_profile.strip():
+            raise ValueError("validation_profile 不能为空")
+        if self.result_limit < 1:
+            raise ValueError("result_limit 至少为 1")
+
+
 # ---------------------------------------------------------------------------
 # 后台任务
 # ---------------------------------------------------------------------------
@@ -149,6 +168,9 @@ class AgentRunTask:
     deadline_epoch_ms: int
     attempt: int = 1
     max_attempts: int = 2
+    # 本轮被要求的参数。它们不是对话内容，而是「这一轮要做什么」，
+    # 因此随任务一起走到 Worker，不必让 Worker 反查请求。
+    options: RunRequestOptions = RunRequestOptions()
 
     def __post_init__(self) -> None:
         for value, label in (
@@ -215,6 +237,9 @@ class AgentRunTask:
             "deadline_epoch_ms": self.deadline_epoch_ms,
             "attempt": self.attempt,
             "max_attempts": self.max_attempts,
+            "validation_profile": self.options.validation_profile,
+            "result_limit": self.options.result_limit,
+            "show_debug_reasoning": self.options.show_debug_reasoning,
         }
 
     @classmethod
@@ -246,6 +271,11 @@ class AgentRunTask:
             deadline_epoch_ms=int(payload["deadline_epoch_ms"]),  # type: ignore[arg-type]
             attempt=int(payload.get("attempt", 1)),  # type: ignore[arg-type]
             max_attempts=int(payload.get("max_attempts", 2)),  # type: ignore[arg-type]
+            options=RunRequestOptions(
+                validation_profile=str(payload.get("validation_profile", "python_compile")),
+                result_limit=int(payload.get("result_limit", 5)),  # type: ignore[arg-type]
+                show_debug_reasoning=bool(payload.get("show_debug_reasoning", False)),
+            ),
         )
 
 
@@ -274,6 +304,7 @@ class AgentRunRecord:
     lease_until_epoch_ms: int | None = None
     error_class: str | None = None
     event_sequence: int = 0
+    options: RunRequestOptions = RunRequestOptions()
 
     def __post_init__(self) -> None:
         for value, label in (

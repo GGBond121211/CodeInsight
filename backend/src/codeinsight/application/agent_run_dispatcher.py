@@ -123,6 +123,7 @@ class AgentRunDispatcher:
             updated_at_epoch_ms=self._clock_ms(),
             attempt=task.attempt,
             max_attempts=task.max_attempts,
+            options=task.options,
         )
         self._store.save_run(record)
         return self._publish(task, record)

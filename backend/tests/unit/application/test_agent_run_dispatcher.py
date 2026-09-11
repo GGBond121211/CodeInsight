@@ -135,6 +135,11 @@ def test_task_payload_carries_ids_and_version_only() -> None:
         "deadline_epoch_ms",
         "attempt",
         "max_attempts",
+        # 本轮被要求的参数：它们不是对话内容，而是「这一轮要做什么」，
+        # Worker 靠它们重建执行，不必回头反查请求。
+        "validation_profile",
+        "result_limit",
+        "show_debug_reasoning",
     }
     for forbidden in (
         "user_message",

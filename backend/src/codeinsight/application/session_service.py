@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 
 from codeinsight.application.context_budget import ContextLifecyclePolicy, estimate_tokens
 from codeinsight.domain.change import (
@@ -146,6 +147,29 @@ class SessionService:
             cache_hit=cached.hit,
             cache_fallback=cached.used_fallback,
         )
+
+    def load_session(self, session_id: str) -> ConversationSession | None:
+        """按 session_id 读回会话事实。
+
+        Worker 在另一个进程里只有 session_id；它就是靠这一条知道该读哪个仓库。
+        """
+
+        return self._session_store.get_session(session_id)
+
+    def bind_repository_root(self, session_id: str, repo_root: str) -> bool:
+        """把会话绑定的仓库根落成事实。返回是否真的写了一次。
+
+        这是受理路径上的热调用，因此只在第一次绑定或根目录变化时写库。
+        """
+
+        normalized = str(Path(repo_root).resolve())
+        session = self._session_store.get_session(session_id)
+        if session is None:
+            raise ValueError(f"会话不存在：{session_id}")
+        if session.repo_root == normalized:
+            return False
+        self._session_store.save_session(replace(session, repo_root=normalized))
+        return True
 
     def append_turn(
         self,

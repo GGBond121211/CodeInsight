@@ -210,6 +210,10 @@ class ConversationSession:
     session_id: str
     scope: TenantScope
     repo_id: str
+    # 会话绑定的仓库根目录。Worker 在另一个进程里只有 session_id，没有请求对象；
+    # 没有这一项它就不知道该去读哪个目录，恢复也就无从谈起。
+    # 绝对路径属于敏感字段：它只进事实表，不进事件 payload。
+    repo_root: str = ""
     recent_turns: tuple[ConversationTurn, ...] = ()
     summary: str | None = None
     active_goal_id: str | None = None
@@ -241,6 +245,21 @@ class ConversationSession:
 
     def with_active_goal(self, goal_id: str | None) -> ConversationSession:
         return replace(self, active_goal_id=goal_id)
+
+
+def merge_session_facts(
+    existing: ConversationSession, incoming: ConversationSession
+) -> ConversationSession:
+    """把一次会话写入合并到已有事实上。
+
+    规则只有一条：仓库根一旦绑定就不被空值抹掉。它是会话级的一次性事实
+    （换仓库会被 _resolve_session_repository 拒绝），而进程内缓存里的会话副本
+    可能是在绑定之前加载的——直接覆盖会让跨进程的 Worker 失去读哪个目录的依据。
+    """
+
+    if not incoming.repo_root and existing.repo_root:
+        return replace(incoming, repo_root=existing.repo_root)
+    return incoming
 
 
 @dataclass(frozen=True)

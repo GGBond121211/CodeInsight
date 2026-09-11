@@ -17,12 +17,19 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
+from codeinsight.agent.agent_run_worker import AgentRunWorker
 from codeinsight.agent.change_workflow import run_change_workflow_to_preview
 from codeinsight.agent.tool_loop import ToolLoopConfig
 from codeinsight.application.agent_run_dispatcher import (
     AgentRunDispatcher,
     CallbackAgentRunTransport,
     TransportRejected,
+)
+from codeinsight.application.agent_run_executor import (
+    AgentRunContext,
+    AgentRunContextError,
+    AgentRunContextLoader,
+    AgentRunExecutor,
 )
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.code_understanding_route import (
@@ -54,6 +61,7 @@ from codeinsight.domain.agent_run import (
     WAITING_VALIDATION,
     AgentRunRecord,
     AgentRunTask,
+    RunRequestOptions,
 )
 from codeinsight.domain.answer import AutoAnswer
 from codeinsight.domain.change import MODE_ISOLATED_WRITE, MODE_READ_ONLY, TenantScope
@@ -192,21 +200,6 @@ def _turn_from_run_record(
 
 
 @dataclass(frozen=True)
-class _PendingTurn:
-    """进程内投递所需的上下文。
-
-    它是「API 进程与 Worker 进程尚未分离」的唯一残留：Worker 还拿不到分类结果
-    与工作区参数，只能由受理它的进程暂时替它拿着。Task 5 让 Worker 只凭 run_id
-    重建上下文之后，这个结构就会消失。
-    """
-
-    turn_input: _TurnInput
-    classification: ChatTaskClassification
-    show_debug_reasoning: bool
-    message: str
-
-
-@dataclass(frozen=True)
 class _ChangeRecovery:
     """上一轮校验失败后，供同一 Session 继续修复的公开摘要。"""
 
@@ -252,6 +245,24 @@ def default_session_service(*, max_recent_turns: int = 12) -> SessionService:
         cache,
         max_recent_turns=max_recent_turns,
     )
+
+
+def _turn_input_from_context(context: AgentRunContext) -> _TurnInput:
+    """把 Worker 重建出来的上下文翻译成执行为所需的输入。
+
+    执行体（_execute_turn）只认 _TurnInput；这里做一次翻译，避免让执行体同时
+    认识两种形状。
+    """
+
+    return _TurnInput(
+        repository_root=context.repo_root,
+        repo_id=context.repo_id,
+        repo_fingerprint=context.repo_fingerprint,
+        validation_profile=context.options.validation_profile,
+        limit=context.options.result_limit,
+        contains_workspace_state=context.contains_workspace_state,
+    )
+
 
 
 def default_agent_run_store() -> AgentRunStore:
@@ -313,7 +324,18 @@ class ConversationService:
             store=self.agent_run_store,
             transport=CallbackAgentRunTransport(self._schedule_turn),
         )
-        self._pending_turns: dict[str, _PendingTurn] = {}
+        self.agent_run_context_loader = AgentRunContextLoader(
+            session_service=self.session_service,
+            index_version=INDEX_VERSION,
+            fingerprint=lambda root: _unscanned_repository_fingerprint(Path(root)),
+        )
+        self.agent_run_executor = AgentRunExecutor(emit=self.runtime.emit)
+        self.agent_run_worker = AgentRunWorker(
+            store=self.agent_run_store,
+            loader=self.agent_run_context_loader,
+            executor=self.agent_run_executor,
+            emit=self.runtime.emit,
+        )
         # 投递那一刻的受理快照。202 要回答的是「我刚受理了哪一轮」，
         # 而不是「它现在跑到哪了」——后者会在响应组装时被 Worker 抢先改写。
         self._accepted_turns: dict[str, ChatTurn] = {}
@@ -427,17 +449,33 @@ class ConversationService:
             idempotency_key=client_turn_id or turn_id,
             policy_version=CHAT_RUN_POLICY_VERSION,
             deadline_epoch_ms=int(time.time() * 1000) + DEFAULT_RUN_DEADLINE_MS,
+            options=RunRequestOptions(
+                validation_profile=validation_profile.strip(),
+                result_limit=limit,
+                show_debug_reasoning=show_debug_reasoning,
+            ),
         )
-        self._pending_turns[task.task_id] = _PendingTurn(
-            turn_input=turn_input,
-            classification=classification,
-            show_debug_reasoning=show_debug_reasoning,
-            message=message.strip(),
+        # 受理即事实：用户这一轮的消息在返回 202 之前写进会话。Worker 只凭
+        # session_id/run_id 重建执行，读到的必须已经是这句话；晚一步写，
+        # 另一个进程的 Worker 就会答上一轮的问题。
+        previous_compactions = context.memory.compaction_count
+        context = self.session_service.append_turn(
+            context,
+            role="user",
+            content=message.strip(),
+            repo_fingerprint=repo_fingerprint,
+            index_version=INDEX_VERSION,
         )
-        try:
-            record = self.agent_run_dispatcher.dispatch(task)
-        finally:
-            self._pending_turns.pop(task.task_id, None)
+        if context.memory.compaction_count > previous_compactions:
+            self.runtime.emit(
+                task.run_id,
+                CONTEXT_COMPACTED,
+                {
+                    "compaction_count": str(context.memory.compaction_count),
+                    "through_sequence": str(context.memory.compacted_through_sequence),
+                },
+            )
+        record = self.agent_run_dispatcher.dispatch(task)
         if record.status != QUEUED:
             raise ChatDispatchError(record.error_class or "DISPATCH_FAILED")
 
@@ -474,24 +512,27 @@ class ConversationService:
         return turn
 
     def _schedule_turn(self, task: AgentRunTask) -> str:
-        """进程内投递：把任务交给本进程的线程池执行。
+        """进程内投递：先把这一轮的事实读回来，再交给本进程的线程池执行。
 
-        它也是 TransportRejected 的来源之一——同一会话上一轮还没结束时，ChatRuntime
-        会拒绝再开一轮。这个拒绝必须原样交回 API（409），不能被当成「通道故障」。
+        这里读一遍不是为了把上下文送给 Worker——Worker 自己会再读一遍，它只能
+        依据事实层工作。这一步是为了构造用户看到的状态投影：API 若凭空编一个
+        task_type 或消息，界面显示的就会是另一轮的内容。
         """
 
-        pending = self._pending_turns.get(task.task_id)
-        if pending is None:
-            raise TransportRejected(f"任务 {task.task_id} 的进程内上下文已经不在")
+        record = self.agent_run_store.get_run(task.run_id)
+        if record is None:
+            raise TransportRejected(f"Run {task.run_id} 不在事实层，无法投递")
+        try:
+            context = self.agent_run_context_loader.load(task, record)
+        except AgentRunContextError as error:
+            raise TransportRejected(error.error_class) from error
         try:
             turn = self.runtime.submit(
                 session_id=task.session_id,
-                task_type=pending.classification.task_type,
-                user_message=pending.message,
-                show_debug_reasoning=pending.show_debug_reasoning,
-                worker=lambda current, debug: self._execute_turn(
-                    current, pending.turn_input, pending.classification, debug
-                ),
+                task_type=context.task_type,
+                user_message=context.user_message,
+                show_debug_reasoning=context.options.show_debug_reasoning,
+                worker=lambda current, debug: self._execute_loaded_run(task, current, debug),
                 turn_id=task.turn_id,
                 run_id=task.run_id,
                 task_id=task.task_id,
@@ -500,6 +541,29 @@ class ConversationService:
             raise TransportRejected(str(error)) from error
         self._accepted_turns[task.task_id] = turn
         return turn.turn_id
+
+    def _execute_loaded_run(
+        self, task: AgentRunTask, turn: ChatTurn, show_debug_reasoning: bool
+    ) -> ChatExecution:
+        """把一轮执行交给 AgentRunWorker，并如实报告它没有产出回答的情况。
+
+        Worker 负责领取租约、重建上下文、落状态；这里只把执行体接上去。
+        """
+
+        outcome = self.agent_run_worker.handle(
+            task,
+            runner=lambda loaded: self._execute_turn(
+                turn,
+                _turn_input_from_context(loaded),
+                loaded.classification,
+                show_debug_reasoning,
+            ),
+        )
+        if outcome.execution is None:
+            raise ChatRuntimeError(
+                f"Agent Run 未产出回答：{outcome.error_class or outcome.status}"
+            )
+        return outcome.execution
 
 
     def _resolve_session_repository(
@@ -542,11 +606,17 @@ class ConversationService:
     def _remember_session_workspace(
         self, session_id: str, repo_id: str, source_root: Path
     ) -> None:
+        resolved = source_root.resolve()
         with self._session_workspace_lock:
+            first_seen = session_id not in self._session_workspaces
             self._session_workspaces.setdefault(
-                session_id,
-                _SessionWorkspace(repo_id, source_root.resolve(), source_root.resolve()),
+                session_id, _SessionWorkspace(repo_id, resolved, resolved)
             )
+        if not first_seen:
+            return
+        # 会话绑定的仓库根要落成持久事实：受理与执行分开之后，另一个进程的
+        # Worker 只有 session_id，没有这张进程内的表。
+        self.session_service.bind_repository_root(session_id, str(resolved))
 
     def _remember_effective_workspace(
         self,
@@ -706,23 +776,8 @@ class ConversationService:
                     "summary_present": str(bool(context.memory.summary)).lower(),
                 },
             )
-            previous_compactions = context.memory.compaction_count
-            context = self.session_service.append_turn(
-                context,
-                role="user",
-                content=turn.user_message,
-                repo_fingerprint=turn_input.repo_fingerprint,
-                index_version=INDEX_VERSION,
-            )
-            if context.memory.compaction_count > previous_compactions:
-                self.runtime.emit(
-                    turn.run_id,
-                    CONTEXT_COMPACTED,
-                    {
-                        "compaction_count": str(context.memory.compaction_count),
-                        "through_sequence": str(context.memory.compacted_through_sequence),
-                    },
-                )
+            # 用户这一轮的消息在受理时就已落库（见 submit_turn），压缩结论也在
+            # 那时写进了事件；这里不再追加，否则同一个问题会进会话两次。
             goal_type = classification.task_type
             request_scene = "change-plan" if goal_type == "change" else "explain"
             if goal_type in {"change", "explain"}:

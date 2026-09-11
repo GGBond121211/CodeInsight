@@ -29,6 +29,7 @@ from codeinsight.domain.agent_run import (
     QUEUED,
     RUNNING,
     AgentRunRecord,
+    RunRequestOptions,
 )
 from codeinsight.domain.change import (
     ChangeApproval,
@@ -37,6 +38,7 @@ from codeinsight.domain.change import (
     RunSnapshot,
     StateVersionConflictError,
     TenantScope,
+    merge_session_facts,
 )
 from codeinsight.domain.memory import MemoryRecord
 from codeinsight.domain.trace import AuditRecord, IdempotencyKey, RunEvent, TraceContext
@@ -62,6 +64,11 @@ from codeinsight.infrastructure.run_store import (
 
 # 多值字段在库里的分隔符。选换行而不是逗号：文件路径里可能有逗号，
 # 但不可能有换行。
+# 空字符串常量：直接写两个字面量引号会被上层模板转义吞掉，
+# 这里显式命名一次，读起来也更清楚。
+EMPTY_TEXT = ""
+
+
 SCOPE_SEPARATOR = "\n"
 
 
@@ -196,6 +203,17 @@ class MySqlMemoryStore:
             db.commit()
 
 
+def _session_from_row(row: SessionRow) -> ConversationSession:
+    return ConversationSession(
+        session_id=row.session_id,
+        scope=TenantScope(tenant_id=row.tenant_id, user_id=row.user_id),
+        repo_id=row.repo_id,
+        repo_root=row.repo_root or EMPTY_TEXT,
+        summary=row.summary,
+        active_goal_id=row.active_goal_id,
+    )
+
+
 def _memory_from_row(row: MemoryRecordRow) -> MemoryRecord:
     return MemoryRecord(
         record_id=row.record_id,
@@ -237,13 +255,7 @@ class MySqlSessionStore:
             row = db.get(SessionRow, session_id)
             if row is None:
                 return None
-            return ConversationSession(
-                session_id=row.session_id,
-                scope=TenantScope(tenant_id=row.tenant_id, user_id=row.user_id),
-                repo_id=row.repo_id,
-                summary=row.summary,
-                active_goal_id=row.active_goal_id,
-            )
+            return _session_from_row(row)
 
     def save_session(self, session: ConversationSession) -> None:
         with self._session_factory() as db:
@@ -251,11 +263,14 @@ class MySqlSessionStore:
             if row is None:
                 row = SessionRow(session_id=session.session_id)
                 db.add(row)
+            else:
+                session = merge_session_facts(_session_from_row(row), session)
             row.tenant_id = session.scope.tenant_id
             row.user_id = session.scope.user_id
             row.repo_id = session.repo_id
             row.summary = session.summary
             row.active_goal_id = session.active_goal_id
+            row.repo_root = session.repo_root or None
             db.commit()
 
     def get_goal(self, goal_id: str) -> CodeGoal | None:
@@ -894,6 +909,9 @@ def _apply_agent_run_to_row(row: AgentRunRow, record: AgentRunRecord) -> None:
     row.error_class = record.error_class
     row.event_sequence = record.event_sequence
     row.updated_at_epoch_ms = record.updated_at_epoch_ms
+    row.validation_profile = record.options.validation_profile
+    row.result_limit = record.options.result_limit
+    row.show_debug_reasoning = record.options.show_debug_reasoning
 
 
 def _agent_run_from_row(row: AgentRunRow) -> AgentRunRecord:
@@ -914,6 +932,11 @@ def _agent_run_from_row(row: AgentRunRow) -> AgentRunRecord:
         lease_until_epoch_ms=row.lease_until_epoch_ms,
         error_class=row.error_class,
         event_sequence=row.event_sequence,
+        options=RunRequestOptions(
+            validation_profile=row.validation_profile,
+            result_limit=row.result_limit,
+            show_debug_reasoning=row.show_debug_reasoning,
+        ),
     )
 
 
