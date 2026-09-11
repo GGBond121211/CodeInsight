@@ -17,6 +17,7 @@ from threading import Event
 from typing import Protocol
 
 from codeinsight.agent.tool_lifecycle import ToolLifecycleRecorder
+from codeinsight.application.context_budget import estimate_messages_tokens
 from codeinsight.application.tool_result_pruner import (
     PruneOutcome,
     ToolResultPruner,
@@ -215,6 +216,10 @@ class ToolLoopConfig:
     # 一直单调增长，直到某次调用直接撞上上游上下文上限。
     prune_tool_results: bool = True
     keep_recent_tool_results: int = 2
+    # 每轮调用前的工作上下文预算。None 表示调用方没有声明窗口，此时不做
+    # 溢出守门；应用入口必须显式传入，否则循环会一直长到上游拒绝为止。
+    context_window_tokens: int | None = None
+    reserved_output_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.max_steps < 1 or self.max_tool_calls < 1:
@@ -223,6 +228,15 @@ class ToolLoopConfig:
             raise ValueError("deadline_seconds 必须为正")
         if self.keep_recent_tool_results < 0:
             raise ValueError("keep_recent_tool_results 不能为负")
+        if self.context_window_tokens is not None and self.context_window_tokens <= 0:
+            raise ValueError("context_window_tokens 必须为正")
+        if self.reserved_output_tokens < 0:
+            raise ValueError("reserved_output_tokens 不能为负")
+        if (
+            self.context_window_tokens is not None
+            and self.reserved_output_tokens >= self.context_window_tokens
+        ):
+            raise ValueError("输出预留不能占满整个上下文窗口")
 
 
 @dataclass(frozen=True)
@@ -239,6 +253,26 @@ class ToolLoopResult:
     lifecycle_events: tuple[RunEvent, ...] = ()
     # 每轮实际发生的裁剪；用于回答「模型这一轮到底看到了什么」。
     prune_events: tuple[PruneOutcome, ...] = ()
+    # 每轮调用前的上下文估算与预算结论。
+    context_checks: tuple[ToolCallContext, ...] = ()
+
+
+@dataclass(frozen=True)
+class ToolCallContext:
+    """一次 Tool Loop 模型调用前的上下文预算结论。"""
+
+    step: int
+    estimated_input_tokens: int
+    reserved_output_tokens: int
+    context_window_tokens: int | None
+    fits: bool
+    pruned_call_ids: tuple[str, ...] = ()
+
+    @property
+    def guard_result(self) -> str:
+        return "not_checked" if self.context_window_tokens is None else (
+            "fits" if self.fits else "overflow"
+        )
 
 
 class ToolLoop:
@@ -270,6 +304,7 @@ class ToolLoop:
         else:
             self._pruner = None
         self._prune_events: list[PruneOutcome] = []
+        self._context_checks: list[ToolCallContext] = []
 
     def run(
         self,
@@ -294,6 +329,7 @@ class ToolLoop:
         output_tokens = 0
         start = time.monotonic()
         self._prune_events = []
+        self._context_checks = []
 
         for step in range(1, self._config.max_steps + 1):
             if cancel_event is not None and cancel_event.is_set():
@@ -318,10 +354,20 @@ class ToolLoop:
                     output_tokens,
                     "总 deadline 已到",
                 )
-            try:
-                response = self._model.complete_with_tools(
-                    self._visible_messages(messages), tools
+            visible, context_check = self._prepare_call(step, messages)
+            self._context_checks.append(context_check)
+            if not context_check.fits:
+                return self._stuck(
+                    messages,
+                    calls,
+                    results,
+                    step - 1,
+                    input_tokens,
+                    output_tokens,
+                    "上下文预算已用尽：压缩后仍超出工作窗口",
                 )
+            try:
+                response = self._model.complete_with_tools(visible, tools)
             except Exception:
                 return self._result(
                     "FAILED",
@@ -512,17 +558,44 @@ class ToolLoop:
             "达到最大步骤数",
         )
 
-    def _visible_messages(
-        self, messages: list[Mapping[str, object]]
-    ) -> tuple[Mapping[str, object], ...]:
-        """本轮发给模型的消息视图。
+    def _prepare_call(
+        self, step: int, messages: list[Mapping[str, object]]
+    ) -> tuple[tuple[Mapping[str, object], ...], ToolCallContext]:
+        """生成本轮发给模型的消息视图，并在发出前完成裁剪与溢出守门。
 
-        裁剪只作用于这一次调用，``messages`` 本身仍是完整记录：审计和回放要
-        看的是模型真实收到过什么，而不是被裁剪后的副本。
+        裁剪只作用于这一次调用，messages 本身仍是完整记录：审计和回放要看的
+        是模型真实收到过什么，而不是被裁剪后的副本。
+
+        先按保留窗口裁剪；仍然超出工作窗口时再升级为全量裁剪。两种情况都仍
+        超限就直接停在本地——把一个注定被上游拒绝的请求发出去，只会既花掉
+        一次计费，又拿到一个分不清原因的失败。
         """
+        window = self._config.context_window_tokens
+        reserved = self._config.reserved_output_tokens
+        visible = self._prune_visible(messages, keep_recent=None)
+        estimate = estimate_messages_tokens(visible)
+        overflow = window is not None and estimate + reserved > window
+        if overflow and self._pruner is not None:
+            visible = self._prune_visible(messages, keep_recent=0)
+            estimate = estimate_messages_tokens(visible)
+            overflow = estimate + reserved > window
+        return visible, ToolCallContext(
+            step=step,
+            estimated_input_tokens=estimate,
+            reserved_output_tokens=reserved,
+            context_window_tokens=window,
+            fits=not overflow,
+        )
+
+    def _prune_visible(
+        self,
+        messages: list[Mapping[str, object]],
+        *,
+        keep_recent: int | None,
+    ) -> tuple[Mapping[str, object], ...]:
         if self._pruner is None:
             return tuple(messages)
-        outcome = self._pruner.prune(messages)
+        outcome = self._pruner.prune(messages, keep_recent=keep_recent)
         if outcome.pruned:
             self._prune_events.append(outcome)
         return outcome.messages
@@ -663,6 +736,7 @@ class ToolLoop:
             reason,
             self._lifecycle.events,
             tuple(self._prune_events),
+            tuple(self._context_checks),
         )
 
     def _stuck(

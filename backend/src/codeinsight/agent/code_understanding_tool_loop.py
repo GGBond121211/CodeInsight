@@ -55,6 +55,7 @@ from codeinsight.domain.trace import (
     EVIDENCE_REPAIR_STARTED,
     RunEvent,
 )
+from codeinsight.infrastructure.model_gateway import resolve_route_budget
 from codeinsight.infrastructure.openai_chat import parse_model_answer
 from codeinsight.prompts.code_understanding import (
     PROMPT_VERSION,
@@ -105,18 +106,30 @@ CODE_UNDERSTANDING_STATUSES: frozenset[str] = frozenset(
 )
 
 
+def _default_loop_config() -> ToolLoopConfig:
+    """按 explain 路线的共享预算构造 Tool Loop 预算。
+
+    窗口和输出预留都来自 route budget，Tool Loop 不再自己长出一套「装得下」
+    的判断：多一套判断就多一次和上游不一致的机会。
+    """
+    budget = resolve_route_budget("explain")
+    return ToolLoopConfig(
+        max_steps=8,
+        max_tool_calls=64,
+        deadline_seconds=60.0,
+        repeated_call_limit=2,
+        repeated_error_limit=2,
+        context_window_tokens=budget.context_window_tokens,
+        reserved_output_tokens=budget.reserved_output_tokens,
+    )
+
+
 @dataclass(frozen=True)
 class CodeUnderstandingConfig:
     """代码理解路线的显式预算；默认值是工程基线，不是质量最优值。"""
 
     loop: ToolLoopConfig = field(
-        default_factory=lambda: ToolLoopConfig(
-            max_steps=8,
-            max_tool_calls=64,
-            deadline_seconds=60.0,
-            repeated_call_limit=2,
-            repeated_error_limit=2,
-        )
+        default_factory=lambda: _default_loop_config()
     )
     repair: RepairBudget = field(default_factory=RepairBudget)
     min_evidence: int = 2

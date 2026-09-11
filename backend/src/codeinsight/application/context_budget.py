@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, Decimal
 
@@ -27,6 +28,16 @@ def estimate_tokens(text: str) -> int:
     这里保留同名入口，避免既有调用方和登记表 S3-P03 的来源指针失效。
     """
     return domain_estimate_tokens(text)
+
+
+def estimate_messages_tokens(messages: object) -> int:
+    """按最终待发送的 messages 估算输入 token。
+
+    用序列化后的整体长度，而不是拼接前的粗略字符串：角色信封、工具 schema
+    和 JSON 转义都真实占用上下文。Gateway 和 Tool Loop 共用这一处口径，
+    否则两边会各自算出「装得下」的结论，而上游实际溢出。
+    """
+    return estimate_tokens(json.dumps(messages, ensure_ascii=False, default=str))
 
 
 CONTEXT_LIFECYCLE_POLICY_VERSION = "deepseek-harness-adapted-v1-95"

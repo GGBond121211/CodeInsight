@@ -7,6 +7,7 @@ from codeinsight.agent.tool_loop import (
     ToolModelResponse,
     ToolResult,
 )
+from codeinsight.application.context_budget import estimate_messages_tokens
 from codeinsight.infrastructure.tool_registry import build_default_registry
 
 
@@ -268,3 +269,62 @@ def test_keep_recent_tool_results_controls_the_window() -> None:
     result = loop.run("system", "解释入口")
 
     assert result.prune_events == ()
+
+
+def test_context_checks_record_every_call() -> None:
+    model = RecordingModel(steps=2)
+    loop = ToolLoop(
+        model,
+        BigResultHost(),
+        config=ToolLoopConfig(
+            max_steps=4,
+            context_window_tokens=128_000,
+            reserved_output_tokens=40_960,
+        ),
+    )
+
+    result = loop.run("system", "解释入口")
+
+    assert len(result.context_checks) == len(model.seen)
+    for check in result.context_checks:
+        assert check.context_window_tokens == 128_000
+        assert check.reserved_output_tokens == 40_960
+        assert check.estimated_input_tokens > 0
+        assert check.guard_result == "fits"
+
+
+def test_no_call_is_sent_without_a_window_is_declared() -> None:
+    model = RecordingModel(steps=1)
+    loop = ToolLoop(model, BigResultHost(), config=ToolLoopConfig(max_steps=2))
+
+    result = loop.run("system", "解释入口")
+
+    assert [check.guard_result for check in result.context_checks] == [
+        "not_checked",
+        "not_checked",
+    ]
+
+
+def test_loop_stops_locally_when_even_full_pruning_cannot_fit() -> None:
+    window = 600
+    reserved = 100
+    model = RecordingModel(steps=6)
+    loop = ToolLoop(
+        model,
+        BigResultHost(),
+        config=ToolLoopConfig(
+            max_steps=8,
+            context_window_tokens=window,
+            reserved_output_tokens=reserved,
+        ),
+    )
+
+    result = loop.run("system", "解释入口")
+
+    assert result.status == "STUCK"
+    assert result.reason == "上下文预算已用尽：压缩后仍超出工作窗口"
+    # 关键断言：没有任何一次调用是超窗口发出去的。
+    assert len(model.seen) >= 1
+    for seen in model.seen:
+        assert estimate_messages_tokens(seen) + reserved <= window
+    assert result.context_checks[-1].guard_result == "overflow"

@@ -8,7 +8,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import lru_cache
@@ -19,7 +19,7 @@ from codeinsight.agent.tool_loop import ToolModelResponse
 from codeinsight.application.context_budget import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     ContextLifecyclePolicy,
-    estimate_tokens,
+    estimate_messages_tokens,
 )
 from codeinsight.domain.answer import ModelAnswer, ModelCompletion
 from codeinsight.domain.errors import ModelConfigurationError
@@ -58,16 +58,6 @@ MAX_CONFIGURED_OUTPUT_TOKENS = 100_000
 # 否则一个正常的 4~12 轮 Session 会在模型实际返回前被旧的 200k 门禁拦截。
 DEFAULT_TENANT_TOKEN_LIMIT = 2_000_000
 DEFAULT_RATE_LIMIT_CAPACITY = 2_000_000
-
-
-def estimate_messages_tokens(messages: Sequence[Mapping[str, object]]) -> int:
-    """按最终待发送的 messages 估算输入 token。
-
-    用序列化后的整体长度，而不是拼接前的粗略字符串：角色信封、工具 schema
-    和 JSON 转义都真实占用上下文。分开算正是「本地认为装得下、上游实际
-    溢出」这类三方口径不一致的来源。
-    """
-    return estimate_tokens(json.dumps(list(messages), ensure_ascii=False, default=str))
 
 
 @dataclass(frozen=True)
