@@ -74,7 +74,12 @@ class AgentRunContext:
     confidence: float
     rule: str
     options: RunRequestOptions
-    # 隔离工作区里是否已经有未验证的改动。只读 Run 恒为 False；change 路径在
+    # 这是这个 Run 的第几次尝试。上下文预算与压缩边界都挂在它上面：出问题时
+    # 「哪一次尝试用了哪套预算、从哪条边界开始」必须能查，而不是只能看一个总数。
+    attempt: int = 1
+    # 重建上下文时这一轮依据的 Session 压缩边界。它进入 surface 指纹，用于判断
+    # 「压缩之后前缀还能不能复用」，而不是把边界本身写进缓存键。
+    compaction_boundary_id: str | None = None
     # _execute_turn 内部按 task_type 自行置 True，因此这里不必猜。
     contains_workspace_state: bool = False
 
@@ -115,11 +120,14 @@ class AgentRunContextLoader:
             raise AgentRunContextError(CONTEXT_REPOSITORY_UNKNOWN)
         if not Path(repo_root).is_dir():
             raise AgentRunContextError(CONTEXT_REPOSITORY_MISSING)
-        message = self._last_user_message(
+        memory = self._session_service.load_session_memory(
             session_id=session.session_id,
             scope=session.scope,
             repo_id=session.repo_id,
         )
+        if memory is None:
+            raise AgentRunContextError(CONTEXT_MESSAGE_NOT_FOUND)
+        message = _last_user_message(memory)
         classification = classify_chat_task(
             message, has_active_code_goal=session.active_goal_id is not None
         )
@@ -136,18 +144,11 @@ class AgentRunContextLoader:
             confidence=classification.confidence,
             rule=classification.rule,
             options=record.options,
+            attempt=record.attempt,
+            compaction_boundary_id=memory.compaction_boundary_id,
         )
 
-    def _last_user_message(self, *, session_id: str, scope, repo_id: str) -> str:
-        memory = self._session_service.load_session_memory(
-            session_id=session_id, scope=scope, repo_id=repo_id
-        )
-        if memory is None:
-            raise AgentRunContextError(CONTEXT_MESSAGE_NOT_FOUND)
-        for turn in reversed(memory.recent_turns):
-            if turn.role == "user":
-                return turn.content
-        raise AgentRunContextError(CONTEXT_MESSAGE_NOT_FOUND)
+
 
 
 class AgentRunExecutor:
@@ -197,6 +198,9 @@ class AgentRunExecutor:
                 "session_history_budget": str(budget.session_history_budget),
                 "policy_version": budget.policy_version,
                 "rule": context.rule,
+                # 这一次尝试用了哪套预算、从哪条压缩边界开始。
+                "attempt_id": str(context.attempt),
+                "compaction_boundary_id": context.compaction_boundary_id or "",
             },
         )
         try:
@@ -205,6 +209,15 @@ class AgentRunExecutor:
             raise AgentRunExecutionError(type(error).__name__, retryable=True) from error
         except (ModelConfigurationError, ValueError, OSError) as error:
             raise AgentRunExecutionError(type(error).__name__, retryable=False) from error
+
+
+def _last_user_message(memory) -> str:
+    """这一轮要回答的那句话：会话记忆里最后一条用户消息。"""
+
+    for turn in reversed(memory.recent_turns):
+        if turn.role == "user":
+            return turn.content
+    raise AgentRunContextError(CONTEXT_MESSAGE_NOT_FOUND)
 
 
 def _now_ms() -> int:
