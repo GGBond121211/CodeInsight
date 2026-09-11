@@ -64,6 +64,7 @@ from codeinsight.domain.chat import (
 from codeinsight.domain.ports import AgentRunStore
 from codeinsight.domain.trace import RUN_FAILED, RUN_UNKNOWN, WORKER_CLAIMED
 from codeinsight.infrastructure.chat_runtime import ChatExecution
+from codeinsight.infrastructure.otel import get_telemetry
 
 # 领取租约的默认长度：Worker 崩掉后，超过它才允许别人接管。太短会把还在跑的
 # Run 抢走，太长会让恢复变慢。具体取值由并发实验决定（计划 Task 11）。
@@ -198,6 +199,14 @@ class AgentRunWorker:
                 error_class=None,
                 claimed=False,
             )
+        claimed_at = self._clock_ms()
+        # 排队等待只在这里能算准：领取前的记录还是「已排队」那一刻的样子。
+        get_telemetry().record_queue_wait(
+            task_kind=task.task_kind, wait_ms=claimed_at - record.updated_at_epoch_ms
+        )
+        if record.status == RUNNING:
+            # 领取前它还标着 RUNNING：那是租约到期后的接管，不是一次新的续跑。
+            get_telemetry().record_worker_recovery(task_kind=task.task_kind)
         self._emit(
             task.run_id,
             WORKER_CLAIMED,
@@ -229,7 +238,21 @@ class AgentRunWorker:
                 claimed=True,
             )
         try:
-            execution = self._executor.execute(context, runner=runner)
+            # 执行 Span 带上关联标识：跨进程排查时，run/turn/task/attempt 是
+            # 把 HTTP 请求、Worker、模型调用和校验串起来的唯一线索。它们只做
+            # Span attribute，不做 metric label。
+            with get_telemetry().span(
+                "worker",
+                "agent_run",
+                attributes={
+                    "run_id": task.run_id,
+                    "turn_id": task.turn_id,
+                    "task_id": task.task_id,
+                    "task_kind": task.task_kind,
+                    "attempt_id": str(claimed.attempt),
+                },
+            ):
+                execution = self._executor.execute(context, runner=runner)
         except AgentRunExecutionError as error:
             return self._stop(
                 task.run_id,

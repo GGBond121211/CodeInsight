@@ -103,6 +103,7 @@ from codeinsight.domain.trace import (
     CONTEXT_ASSEMBLED,
     CONTEXT_COMPACTED,
     INTENT_CLASSIFIED,
+    MODEL_CALLED,
     MODEL_GENERATING,
     PATCH_REJECTED,
     REPAIR_ATTEMPTED,
@@ -111,7 +112,10 @@ from codeinsight.domain.trace import (
     SESSION_LOADED,
     STEP_STARTED,
     TASK_QUEUED,
+    TOOL_RESULT_COMMITTED,
+    VALIDATION_FINISHED,
     VALIDATION_PREFLIGHT,
+    VALIDATION_QUEUED,
 )
 from codeinsight.infrastructure.chat_runtime import (
     ChatExecution,
@@ -121,6 +125,7 @@ from codeinsight.infrastructure.chat_runtime import (
 from codeinsight.infrastructure.gateway_errors import GatewayError
 from codeinsight.infrastructure.memory_store import InMemoryMemoryStore
 from codeinsight.infrastructure.model_gateway import CacheContext, resolve_route_budget
+from codeinsight.infrastructure.otel import get_telemetry
 from codeinsight.infrastructure.redaction import redact_sensitive
 from codeinsight.infrastructure.redis_cache import RedisCache
 from codeinsight.infrastructure.reranker import Reranker
@@ -612,9 +617,11 @@ class ConversationService:
         分流只看任务类型：新建 Run 跑一次对话，续跑只做已经批准的那个补丁。
         """
 
+        started_ms = int(time.time() * 1000)
         outcome = self.agent_run_worker.handle(
             task, runner=self._runner_for(task, turn, show_debug_reasoning)
         )
+        self._record_run_metrics(task, turn, outcome, started_ms=started_ms)
         if outcome.execution is None:
             # Worker 自己终止了这一轮。事实层里的状态（UNKNOWN、MANUAL_REQUIRED、
             # FAILED）必须原样变成用户看到的说法：一律显示「失败」，「需要人工对账」
@@ -705,6 +712,32 @@ class ConversationService:
             _turn_from_run_record(
                 record, user_message=context.user_message, task_type=context.task_type
             )
+        )
+
+    def _record_run_metrics(
+        self,
+        task: AgentRunTask,
+        turn: ChatTurn,
+        outcome: AgentRunOutcome,
+        *,
+        started_ms: int,
+    ) -> None:
+        """把一次尝试的耗时与规模记成低基数指标。
+
+        计数从事件里数，不另建一套账：模型调用、工具调用、校验等待原本就是事实，
+        指标只是它们的投影。标识（run/turn/task/attempt）不进 label。
+        """
+
+        events = self.runtime.event_log.read_events(turn.run_id)
+        get_telemetry().record_agent_run(
+            task_kind=task.task_kind,
+            status=outcome.status,
+            execution_ms=max(int(time.time() * 1000) - started_ms, 0),
+            model_calls=_count_events(events, MODEL_CALLED),
+            tool_calls=_count_events(events, TOOL_RESULT_COMMITTED),
+            validation_wait_ms=_elapsed_between(
+                events, VALIDATION_QUEUED, VALIDATION_FINISHED
+            ),
         )
 
     def _runner_for(
@@ -2078,6 +2111,28 @@ def _repair_task(message: str, recovery: _ChangeRecovery) -> str:
         f"message_excerpt: {excerpt}\n"
         "</validation_failure_digest>"
     )
+
+
+def _count_events(events, event_type: str) -> int:
+    return sum(1 for event in events if event.event_type == event_type)
+
+
+def _elapsed_between(events, started_type: str, finished_type: str) -> int | None:
+    """两个公开事件之间的毫秒数。缺任一条就不报——不猜。"""
+
+    started = next(
+        (event for event in reversed(events) if event.event_type == started_type),
+        None,
+    )
+    finished = next(
+        (event for event in reversed(events) if event.event_type == finished_type),
+        None,
+    )
+    if started is None or finished is None:
+        return None
+    if finished.occurred_at_epoch_ms < started.occurred_at_epoch_ms:
+        return None
+    return finished.occurred_at_epoch_ms - started.occurred_at_epoch_ms
 
 
 def _stopped_message(status: str) -> str:

@@ -60,6 +60,55 @@ class Telemetry:
             "Exact semantic response cache hits",
             registry=self.registry,
         )
+        # Worker 运行指标。标签只放低基数维度：task_kind / status。run_id、turn_id、
+        # task_id、attempt_id 这类标识只进事件与 Span attribute——它们做 label 会让
+        # 时间序列随请求量线性增长，Prometheus 最先扛不住的就是这个。
+        run_labels = ["task_kind", "status"]
+        task_labels = ["task_kind"]
+        assert_metric_labels(run_labels)
+        assert_metric_labels(task_labels)
+        self.agent_run_attempts = Counter(
+            "codeinsight_agent_run_attempts_total",
+            "Agent Run Worker 的尝试次数",
+            run_labels,
+            registry=self.registry,
+        )
+        self.agent_run_duration = Histogram(
+            "codeinsight_agent_run_duration_seconds",
+            "Agent Run 一次尝试的执行耗时",
+            run_labels,
+            registry=self.registry,
+        )
+        self.agent_run_queue_wait = Histogram(
+            "codeinsight_agent_run_queue_wait_seconds",
+            "从写进 QUEUED 到被 Worker 领取的等待时间",
+            task_labels,
+            registry=self.registry,
+        )
+        self.agent_run_validation_wait = Histogram(
+            "codeinsight_agent_run_validation_wait_seconds",
+            "从登记固定校验到校验结束的等待时间",
+            run_labels,
+            registry=self.registry,
+        )
+        self.agent_run_model_calls = Counter(
+            "codeinsight_agent_run_model_calls_total",
+            "一次 Run 内的模型调用次数",
+            task_labels,
+            registry=self.registry,
+        )
+        self.agent_run_tool_calls = Counter(
+            "codeinsight_agent_run_tool_calls_total",
+            "一次 Run 内的工具调用次数",
+            task_labels,
+            registry=self.registry,
+        )
+        self.worker_recoveries = Counter(
+            "codeinsight_worker_recoveries_total",
+            "租约到期后被另一条消息接管的次数",
+            task_labels,
+            registry=self.registry,
+        )
 
     @contextmanager
     def span(
@@ -123,6 +172,48 @@ class Telemetry:
         self.gateway_cache_miss_tokens.inc(cache_miss_tokens)
         if semantic_cache_hit:
             self.gateway_semantic_cache_hits.inc()
+
+    def record_agent_run(
+        self,
+        *,
+        task_kind: str,
+        status: str,
+        execution_ms: int,
+        model_calls: int = 0,
+        tool_calls: int = 0,
+        validation_wait_ms: int | None = None,
+    ) -> None:
+        """记一次 Worker 尝试的耗时与规模。
+
+        计数由调用方从事件里数出来：模型调用、工具调用、校验等待原本就是事实，
+        指标只是它们的投影，不另建一套账。
+        """
+
+        if execution_ms < 0:
+            raise ValueError("execution_ms 不能为负")
+        labels = {"task_kind": task_kind, "status": status}
+        self.agent_run_attempts.labels(**labels).inc()
+        self.agent_run_duration.labels(**labels).observe(execution_ms / 1000)
+        if model_calls:
+            self.agent_run_model_calls.labels(task_kind=task_kind).inc(model_calls)
+        if tool_calls:
+            self.agent_run_tool_calls.labels(task_kind=task_kind).inc(tool_calls)
+        if validation_wait_ms is not None:
+            self.agent_run_validation_wait.labels(**labels).observe(
+                max(validation_wait_ms, 0) / 1000
+            )
+
+    def record_queue_wait(self, *, task_kind: str, wait_ms: int) -> None:
+        """排队等待：从写进 QUEUED 到被领取。负值不记，也不猜。"""
+
+        if wait_ms < 0:
+            return
+        self.agent_run_queue_wait.labels(task_kind=task_kind).observe(wait_ms / 1000)
+
+    def record_worker_recovery(self, *, task_kind: str) -> None:
+        """租约到期后的接管。它和「一次新的续跑」是两回事，必须分开记。"""
+
+        self.worker_recoveries.labels(task_kind=task_kind).inc()
 
     def metrics(self) -> bytes:
         return generate_latest(self.registry)

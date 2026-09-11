@@ -663,6 +663,9 @@ class ModelGateway:
                 attributes={
                     "request_id": request.request_id,
                     "attempt_id": attempt_id,
+                    # 这一次模型调用属于哪一轮。没有它，Span 就没法和 Worker、
+                    # 校验、变更事实对上，排查只能靠时间戳猜。
+                    "run_id": request.run_id or "",
                     "tenant_id": request.tenant_id,
                     "user_id": request.user_id,
                     "scene": request.scene,
