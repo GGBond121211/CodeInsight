@@ -5,8 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-PRICE_VERSION = "frontier-stars-2026-09-04"
-DEFAULT_MODEL_ID = "deepseek-v4-flash"
+PRICE_VERSION = "aliyun-maas-2026-09-11"
+# 2026-09-11：旧中转站额度耗尽，换到与 Embedding 同一家的阿里云 MaaS 兼容端点。
+# 价格来自控制台模型广场截图（元/百万 token）：qwen3.8-flash 输入 0.8、输出 2.7；
+# qwen3.7-flash 输入 0.2、输出 0.8。
+#
+# cached_input_price_per_million 没有查到中转站的缓存计价：这里取与输入价相同的值，
+# 含义是「按不命中缓存计算」，成本估计因此偏保守，不会把未证实的折扣写进账。
+DEFAULT_MODEL_ID = "qwen3.8-flash"
+FALLBACK_MODEL_ID = "qwen3.7-flash-2026-07-15"
 
 
 @dataclass(frozen=True)
@@ -93,17 +100,39 @@ def _profile(
 
 
 def default_model_registry() -> ModelRegistry:
-    """登记图片中可见的 12 个模型；未明确能力的模型不进入自动降级链。"""
+    """登记可用模型；未明确能力的模型不进入自动降级链。
+
+    2026-09-11 起默认模型是阿里云 MaaS 的 ``qwen3.8-flash``，自动降级链只有一个候选：
+    ``qwen3.7-flash-2026-07-15``（价格更低、能力相同）。旧中转站的模型仍留在目录里作为
+    历史价格与对照，但既不是默认模型，也不带 ``fallback_eligible``。
+    """
     return ModelRegistry(
         (
             _profile("codex-auto-review", "1.75", "14", "0.175", {"text"}),
             _profile(
                 DEFAULT_MODEL_ID,
+                "0.8",
+                "2.7",
+                "0.8",
+                {"text", "tools", "structured_output"},
+                quality_tier="best",
+            ),
+            _profile(
+                FALLBACK_MODEL_ID,
+                "0.2",
+                "0.8",
+                "0.2",
+                {"text", "tools", "structured_output"},
+                fallback_eligible=True,
+            ),
+            # 2026-09-11：不再是默认模型。新中转站上它的免费额度已耗尽，
+            # 报价也比 qwen3.8-flash 高出十倍以上，因此不再带 best 标记与降级资格。
+            _profile(
+                "deepseek-v4-flash",
                 "12",
                 "36",
                 "0.3996",
                 {"text", "tools", "structured_output"},
-                quality_tier="best",
             ),
             _profile(
                 "deepseek-v4-flash-vision-exp",

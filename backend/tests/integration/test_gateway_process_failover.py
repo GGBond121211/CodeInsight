@@ -7,6 +7,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from codeinsight.infrastructure.model_profiles import DEFAULT_MODEL_ID
+
 
 def _free_port() -> int:
     with socket.socket() as candidate:
@@ -81,12 +83,12 @@ def test_proxy_keeps_serving_after_one_gateway_process_stops() -> None:
     try:
         for port in (gateway_a_port, gateway_b_port, proxy_port):
             _wait_health(port)
-        assert _chat(proxy_port, "before-stop")["model"] == "deepseek-v4-flash"
+        assert _chat(proxy_port, "before-stop")["model"] == DEFAULT_MODEL_ID
 
         gateway_a.terminate()
         gateway_a.wait(timeout=5)
 
-        assert _chat(proxy_port, "after-stop")["model"] == "deepseek-v4-flash"
+        assert _chat(proxy_port, "after-stop")["model"] == DEFAULT_MODEL_ID
     finally:
         for process in (gateway_a, gateway_b, proxy):
             if process.poll() is None:

@@ -1,12 +1,32 @@
-# Q-010 长会话上下文生命周期评测配置（128K 策略）
+# Q-010 长会话上下文生命周期评测配置
 #
 # 这份文件登记的是**评测怎么跑**，不是「参数已经调优」的结论。
+#
+# 2026-09-11（工作窗口对齐 1M）：模型注册表里的窗口随默认模型统一到 1,000,000，
+# 下面的 128K 是**评测专用工作窗口**，由 runner 的 --context-window-tokens 写进
+# CODEINSIGHT_CONTEXT_WINDOW_TOKENS。评测必须把会话历史压过预算才能验证压缩，
+# 用真实 1M 窗口铺填充要烧掉几十万 token 才够触发，所以显式调小。参数之间的比例
+# 不变，变的只是分母；生产默认值见 deployment_defaults。
 # 所有证据状态都写在 evidence_status 里；没有 A/B 的项一律 implemented_unoptimized。
 
 schema_version: 1
 profile_id: context-lifecycle-128k-20260911
 status: implemented_unoptimized
-policy_version: deepseek-harness-adapted-v2-input-budget
+policy_version: deepseek-harness-adapted-v3-window-1m
+
+# ---------------------------------------------------------------------------
+# 生产默认（部署属性，不是评测取值）
+#
+# 这三行由 resolve_route_budget 从注册表和 CODEINSIGHT_MAX_OUTPUT_TOKENS 现算，
+# 写在这里只是让人一眼看到 1M 口径下的落点，改窗口时必须一起核对。
+# ---------------------------------------------------------------------------
+deployment_defaults:
+  context_window_tokens: 1000000
+  input_allowance: 959040
+  compaction_trigger_tokens: 911088
+  session_history_budget: 906992
+  retained_tokens: 160000
+  evidence_status: implemented_unoptimized
 
 # ---------------------------------------------------------------------------
 # 策略参数
@@ -29,6 +49,9 @@ policy:
     evidence_status: implemented_unoptimized
   context_window_tokens:
     value: 128000
+    role: 评测工作窗口（--context-window-tokens），不是部署默认值
+    production_default: 1000000
+    note: 评测要在可承受用量内让历史压过预算，所以把分母调小；比例参数不受影响
     source: backend/src/codeinsight/application/context_budget.py
     evidence_status: implemented_unoptimized
   reserved_output_tokens:
@@ -73,7 +96,7 @@ policy:
 # 「装得下」的判断只有一处，不允许装配、Gateway、上游各算一套。
 # ---------------------------------------------------------------------------
 route_budget:
-  shared_window: 128000
+  shared_window: 128000  # 评测覆盖值；部署默认 1000000
   output_cap_source: CODEINSIGHT_MAX_OUTPUT_TOKENS
   routes:
     explain: 只读代码理解 Tool Loop
@@ -161,9 +184,11 @@ dataset:
 runner:
   command_fake: >-
     python tests/evals/context_lifecycle_long_horizon.py --mode fake
+    --context-window-tokens 128000
     --output ../outputs/evals/context-lifecycle-fake-long-horizon.json
   command_real: >-
     python tests/evals/context_lifecycle_long_horizon.py --mode real
+    --context-window-tokens 128000
     --case-id lh-00-real-smoke --max-total-tokens 400000
   real_mode_gates:
     - 必须使用项目 Frontier 网关（EXPECTED_CHAT_BASE_URL）

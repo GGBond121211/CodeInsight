@@ -419,19 +419,22 @@ tunable:
   # 完整取值、派生关系和不变量写在 experiments/configs/context_lifecycle_128k.yaml，
   # 这里只登记「运行时真正被读到的那个数字」，避免两处各写一套参数表。
   - name: session_history_budget
-    current: 78592
+    current: 906992
     unit: tokens
-    candidates: [65536, 78592, 98304]
-    safety_ceiling: 87040
-    ceiling_reason: "超过 87040（窗口减输出预留）的请求会被 Gateway 的 overflow guard 直接拒收，压缩没有机会执行"
+    candidates: [655360, 906992, 959040]
+    safety_ceiling: 959040
+    ceiling_reason: "超过 959040（窗口 1000000 减输出预留 40960）的请求会被 Gateway 的 overflow guard 直接拒收，压缩没有机会执行"
     scope: "application/context_budget.py:ContextLifecyclePolicy.session_history_budget"
     evidence: >-
-      Q-010 2026-09-11：= floor(87040 * 0.95) - 4096。分母改成可用输入预算之前，
-      压缩触发点是 121600，比拒收线还高，压缩在算术上不可达；实测也只有
-      「保留轮数」在驱动压缩。
+      Q-010 2026-09-11：= floor(959040 * 0.95) - 4096。工作窗口随默认模型统一到
+      1,000,000（当前中转站在售模型都是 1M）；分母是可用输入预算而不是原始窗口——
+      第一版按原始窗口算出的 121600 比拒收线 87040 还高，压缩在算术上不可达。
     evidence_status: implemented_unoptimized
     priority: high
-    note: "到达即压缩；压缩后的保留预算是 20480（retain_recent_ratio 0.16）。"
+    note: >-
+      到达即压缩；压缩后的保留预算是 160000（retain_recent_ratio 0.16 x 1000000）。
+      candidates 是按新窗口等比放大的占位，仍然没有 A/B 支撑；评测为了让压缩在
+      可承受用量内可达，显式把工作窗口压到 128K（context_lifecycle_128k.yaml）。
 
   - name: hnsw_m
     current: 16

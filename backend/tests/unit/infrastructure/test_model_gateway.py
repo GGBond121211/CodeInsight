@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -37,7 +38,13 @@ from codeinsight.infrastructure.model_gateway import (
     estimate_messages_tokens,
     resolve_route_budget,
 )
-from codeinsight.infrastructure.model_profiles import default_model_registry, default_routes
+from codeinsight.infrastructure.model_profiles import (
+    DEFAULT_MODEL_ID,
+    FALLBACK_MODEL_ID,
+    PRICE_VERSION,
+    default_model_registry,
+    default_routes,
+)
 from codeinsight.infrastructure.provider_adapters import (
     FakeProviderAdapter,
     ProviderResponse,
@@ -67,16 +74,47 @@ def _success(model: str, content: str = '{"ok":true}') -> ProviderResponse:
 
 def test_route_budget_shares_one_window_and_one_output_cap(monkeypatch) -> None:
     monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "40960")
+    monkeypatch.delenv("CODEINSIGHT_CONTEXT_WINDOW_TOKENS", raising=False)
 
     explain = resolve_route_budget("explain")
     tool_loop = resolve_route_budget("change-plan")
 
-    assert explain.context_window_tokens == 128_000
-    assert tool_loop.context_window_tokens == 128_000
+    assert explain.context_window_tokens == 1_000_000
+    assert tool_loop.context_window_tokens == 1_000_000
     assert explain.reserved_output_tokens == 40_960
     assert tool_loop.reserved_output_tokens == 40_960
-    assert explain.input_allowance == 128_000 - 40_960
+    assert explain.input_allowance == 1_000_000 - 40_960
     assert explain.policy_version == CONTEXT_LIFECYCLE_POLICY_VERSION
+
+
+def test_route_budget_window_can_be_lowered_for_evaluation(monkeypatch) -> None:
+    """窗口是部署属性：评测要在不烧掉近百万输入 token 的前提下触发压缩。"""
+    monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "40960")
+    monkeypatch.setenv("CODEINSIGHT_CONTEXT_WINDOW_TOKENS", "128000")
+
+    budget = resolve_route_budget("explain")
+
+    assert budget.context_window_tokens == 128_000
+    assert budget.input_allowance == 128_000 - 40_960
+    assert budget.session_history_budget == 82_688 - 4_096
+
+
+def test_route_budget_refuses_a_window_that_cannot_hold_the_reservation(monkeypatch) -> None:
+    monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "40960")
+    monkeypatch.setenv("CODEINSIGHT_CONTEXT_WINDOW_TOKENS", "40000")
+
+    with pytest.raises(ValueError):
+        resolve_route_budget("explain")
+
+
+def test_context_window_must_be_a_positive_integer(monkeypatch) -> None:
+    monkeypatch.setenv("CODEINSIGHT_CONTEXT_WINDOW_TOKENS", "abc")
+    with pytest.raises(ModelConfigurationError):
+        resolve_route_budget("explain")
+
+    monkeypatch.setenv("CODEINSIGHT_CONTEXT_WINDOW_TOKENS", "0")
+    with pytest.raises(ModelConfigurationError):
+        resolve_route_budget("explain")
 
 
 def test_route_budget_refuses_a_reservation_that_fills_the_window() -> None:
@@ -98,7 +136,7 @@ def test_messages_estimate_covers_roles_tools_and_json_escaping() -> None:
 
 
 def test_overflow_guard_rejects_before_any_provider_call() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     gateway = ModelGateway(provider=provider)
 
     with pytest.raises(ContextOverflowGatewayError, match="超出工作上下文窗口"):
@@ -114,7 +152,7 @@ def test_overflow_guard_rejects_before_any_provider_call() -> None:
 
 
 def test_overflow_guard_reports_the_numbers_without_the_request_body() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     event_log = InMemoryEventLog()
     gateway = ModelGateway(provider=provider, event_log=event_log)
 
@@ -142,7 +180,7 @@ def test_overflow_guard_reports_the_numbers_without_the_request_body() -> None:
 
 
 def test_overflow_guard_lets_a_request_that_fits_through() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     gateway = ModelGateway(provider=provider)
 
     response = gateway.complete(
@@ -154,18 +192,18 @@ def test_overflow_guard_lets_a_request_that_fits_through() -> None:
     )
 
     assert response.content == '{"ok":true}'
-    assert provider.called_models == ["deepseek-v4-flash"]
+    assert provider.called_models == [DEFAULT_MODEL_ID]
 
 
 def test_request_without_a_declared_window_is_not_guarded() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     gateway = ModelGateway(provider=provider)
     request = _request()
 
     assert request.overflow_guard_result == "not_checked"
     gateway.complete(request)
 
-    assert provider.called_models == ["deepseek-v4-flash"]
+    assert provider.called_models == [DEFAULT_MODEL_ID]
 
 
 def test_gateway_chat_model_estimates_from_the_serialized_messages() -> None:
@@ -176,7 +214,7 @@ def test_gateway_chat_model_estimates_from_the_serialized_messages() -> None:
                 fitted=SimpleNamespace(estimate=SimpleNamespace(input_tokens=1)),
             )
 
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     completion = GatewayChatModel(
         ModelGateway(provider=provider), context_assembler=ExpandingAssembler()
     ).complete("system-v1", "hello")
@@ -195,7 +233,7 @@ def test_gateway_chat_model_declares_the_shared_working_window() -> None:
             return SimpleNamespace(
                 content="{}",
                 tool_calls=(),
-                model="deepseek-v4-flash",
+                model=DEFAULT_MODEL_ID,
                 input_tokens=1,
                 output_tokens=1,
                 reasoning_content=None,
@@ -206,17 +244,20 @@ def test_gateway_chat_model_declares_the_shared_working_window() -> None:
     model.complete_text("system-v1", "hello")
     model.complete_with_tools(({"role": "user", "content": "hi"},), ())
 
-    assert [request.context_window_tokens for request in seen] == [128_000, 128_000, 128_000]
+    assert [request.context_window_tokens for request in seen] == [
+        1_000_000,
+        1_000_000,
+        1_000_000,
+    ]
     assert [request.overflow_guard_result for request in seen] == ["fits", "fits", "fits"]
 
 
 def test_structured_output_truncated_at_max_tokens_is_recognized() -> None:
-    truncated = ProviderResponse("{", (), "deepseek-v4-flash", 80, 20, 0, "length")
+    truncated = ProviderResponse("{", (), DEFAULT_MODEL_ID, 80, 20, 0, "length")
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [truncated, truncated],
-            "gpt-5.4-mini": [truncated, truncated],
-            "gpt-5.4": [truncated, truncated],
+            DEFAULT_MODEL_ID: [truncated, truncated],
+            FALLBACK_MODEL_ID: [truncated, truncated],
         }
     )
     gateway = ModelGateway(provider=provider)
@@ -233,9 +274,9 @@ def test_structured_output_truncated_at_max_tokens_is_recognized() -> None:
 
 
 def test_usage_summary_keeps_the_three_cache_views_apart() -> None:
-    cached = ProviderResponse("{\"ok\":true}", (), "deepseek-v4-flash", 80, 20, 30, "stop")
+    cached = ProviderResponse("{\"ok\":true}", (), DEFAULT_MODEL_ID, 80, 20, 30, "stop")
     provider = FakeProviderAdapter(
-        {"deepseek-v4-flash": [cached, _success("deepseek-v4-flash")]}
+        {DEFAULT_MODEL_ID: [cached, _success(DEFAULT_MODEL_ID)]}
     )
     gateway = ModelGateway(provider=provider)
 
@@ -268,9 +309,9 @@ def test_usage_summary_keeps_the_three_cache_views_apart() -> None:
 def test_usage_summary_counts_context_retention_separately() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [
-                _success("deepseek-v4-flash"),
-                _success("deepseek-v4-flash"),
+            DEFAULT_MODEL_ID: [
+                _success(DEFAULT_MODEL_ID),
+                _success(DEFAULT_MODEL_ID),
             ]
         }
     )
@@ -304,18 +345,19 @@ def test_usage_summary_counts_context_retention_separately() -> None:
     assert summary["context_retention_overflow"] == 1
 
 
-def test_registry_uses_deepseek_as_best_and_cheapest_capable_fallback() -> None:
+def test_registry_uses_qwen_as_best_and_cheaper_capable_fallback() -> None:
     registry = default_model_registry()
     routes = default_routes(registry)
 
-    primary = registry.require("deepseek-v4-flash")
+    primary = registry.require(DEFAULT_MODEL_ID)
     fallback = registry.require(routes["change-plan"].fallback_model_ids[0])
 
-    assert primary.input_price_per_million == 12
-    assert primary.output_price_per_million == 36
-    assert routes["change-plan"].primary_model_id == "deepseek-v4-flash"
-    assert fallback.model_id == "gpt-5.4-mini"
-    assert fallback.input_price_per_million == pytest.approx(0.75)
+    assert primary.input_price_per_million == Decimal("0.8")
+    assert primary.output_price_per_million == Decimal("2.7")
+    assert routes["change-plan"].primary_model_id == "qwen3.8-flash"
+    assert fallback.model_id == "qwen3.7-flash-2026-07-15"
+    assert fallback.input_price_per_million == Decimal("0.2")
+    assert fallback.nominal_price < primary.nominal_price
     assert {"tools", "structured_output"} <= fallback.capabilities
 
 
@@ -373,7 +415,7 @@ def test_output_budget_defaults_to_reasoning_safe_value_and_is_configurable(monk
 
 def test_model_called_event_exposes_effective_output_budget(monkeypatch) -> None:
     monkeypatch.setenv("CODEINSIGHT_MAX_OUTPUT_TOKENS", "40960")
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     gateway = ModelGateway(provider=provider)
 
     GatewayChatModel(gateway).complete("system-v1", "hello", run_id="run-budget")
@@ -397,7 +439,7 @@ def test_gateway_chat_model_expands_context_budget_for_reasoning_and_answer(monk
             )
 
     assembler = RecordingAssembler()
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
 
     GatewayChatModel(ModelGateway(provider=provider), context_assembler=assembler).complete(
         "system-v1", "hello"
@@ -410,12 +452,12 @@ def test_gateway_chat_model_expands_context_budget_for_reasoning_and_answer(monk
 
 
 def test_gateway_chat_model_records_content_derived_prompt_version() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     gateway = ModelGateway(provider=provider)
 
     completion = GatewayChatModel(gateway).complete("system-v1", "hello")
 
-    assert completion.model == "deepseek-v4-flash"
+    assert completion.model == DEFAULT_MODEL_ID
     assert gateway.cost_records[0].prompt_version.startswith("prompt-sha256-")
     assert gateway.cost_records[0].prompt_version != "runtime-prompt"
 
@@ -444,11 +486,11 @@ def test_gateway_chat_model_text_route_does_not_request_json() -> None:
 def test_gateway_chat_model_exposes_provider_reasoning_without_recording_it() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [
+            DEFAULT_MODEL_ID: [
                 ProviderResponse(
                     '{"ok":true}',
                     (),
-                    "deepseek-v4-flash",
+                    DEFAULT_MODEL_ID,
                     80,
                     20,
                     0,
@@ -472,25 +514,25 @@ def test_gateway_chat_model_exposes_provider_reasoning_without_recording_it() ->
 def test_rate_limit_retries_then_falls_back_and_records_price_version() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [
+            DEFAULT_MODEL_ID: [
                 RateLimitGatewayError("limited"),
                 RateLimitGatewayError("limited again"),
             ],
-            "gpt-5.4-mini": [_success("gpt-5.4-mini")],
+            FALLBACK_MODEL_ID: [_success(FALLBACK_MODEL_ID)],
         }
     )
     gateway = ModelGateway(provider=provider, max_retries=1)
 
     response = gateway.complete(_request())
 
-    assert response.model == "gpt-5.4-mini"
+    assert response.model == FALLBACK_MODEL_ID
     assert [item.model for item in response.attempts] == [
-        "deepseek-v4-flash",
-        "deepseek-v4-flash",
-        "gpt-5.4-mini",
+        DEFAULT_MODEL_ID,
+        DEFAULT_MODEL_ID,
+        FALLBACK_MODEL_ID,
     ]
     assert response.attempts[-1].fallback_reason == "RATE_LIMIT"
-    assert response.cost.price_version == "frontier-stars-2026-09-04"
+    assert response.cost.price_version == PRICE_VERSION
     assert response.cost.total_stars > 0
     assert len(gateway.cost_records) == 3
     assert [item.error_class for item in gateway.cost_records] == [
@@ -503,19 +545,19 @@ def test_rate_limit_retries_then_falls_back_and_records_price_version() -> None:
 def test_authentication_error_never_falls_back() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [AuthenticationGatewayError("bad key")],
-            "gpt-5.4-mini": [_success("gpt-5.4-mini")],
+            DEFAULT_MODEL_ID: [AuthenticationGatewayError("bad key")],
+            FALLBACK_MODEL_ID: [_success(FALLBACK_MODEL_ID)],
         }
     )
 
     with pytest.raises(AuthenticationGatewayError):
         ModelGateway(provider=provider).complete(_request())
 
-    assert provider.called_models == ["deepseek-v4-flash"]
+    assert provider.called_models == [DEFAULT_MODEL_ID]
 
 
 def test_budget_is_reserved_before_provider_call() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     ledger = InMemoryBudgetLedger(default_limit=100)
 
     with pytest.raises(BudgetExceededError):
@@ -549,27 +591,27 @@ def test_route_tenant_token_bucket_refills() -> None:
 def test_invalid_json_gets_one_repair_attempt_then_cheaper_fallback() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [
-                _success("deepseek-v4-flash", "not-json"),
-                _success("deepseek-v4-flash", "still-not-json"),
+            DEFAULT_MODEL_ID: [
+                _success(DEFAULT_MODEL_ID, "not-json"),
+                _success(DEFAULT_MODEL_ID, "still-not-json"),
             ],
-            "gpt-5.4-mini": [_success("gpt-5.4-mini", json.dumps({"ok": True}))],
+            FALLBACK_MODEL_ID: [_success(FALLBACK_MODEL_ID, json.dumps({"ok": True}))],
         }
     )
     request = _request(response_format={"type": "json_object"})
 
     response = ModelGateway(provider=provider, max_retries=0).complete(request)
 
-    assert response.model == "gpt-5.4-mini"
-    assert provider.called_models.count("deepseek-v4-flash") == 2
+    assert response.model == FALLBACK_MODEL_ID
+    assert provider.called_models.count(DEFAULT_MODEL_ID) == 2
 
 
 def test_gateway_accepts_fenced_structured_json_before_retrying_or_falling_back() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [
+            DEFAULT_MODEL_ID: [
                 _success(
-                    "deepseek-v4-flash",
+                    DEFAULT_MODEL_ID,
                     '```json\n{"ok":true}\n```',
                 )
             ]
@@ -579,16 +621,16 @@ def test_gateway_accepts_fenced_structured_json_before_retrying_or_falling_back(
 
     response = ModelGateway(provider=provider, max_retries=0).complete(request)
 
-    assert response.model == "deepseek-v4-flash"
-    assert provider.called_models == ["deepseek-v4-flash"]
+    assert response.model == DEFAULT_MODEL_ID
+    assert provider.called_models == [DEFAULT_MODEL_ID]
 
 
 def test_invalid_structured_response_event_contains_safe_diagnostic() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [
-                _success("deepseek-v4-flash", "not-json"),
-                _success("deepseek-v4-flash", "still-not-json"),
+            DEFAULT_MODEL_ID: [
+                _success(DEFAULT_MODEL_ID, "not-json"),
+                _success(DEFAULT_MODEL_ID, "still-not-json"),
             ]
         }
     )
@@ -614,27 +656,27 @@ def test_invalid_structured_response_event_contains_safe_diagnostic() -> None:
 def test_retryable_upstream_failures_reach_cheaper_model(error: Exception) -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [error],
-            "gpt-5.4-mini": [_success("gpt-5.4-mini")],
+            DEFAULT_MODEL_ID: [error],
+            FALLBACK_MODEL_ID: [_success(FALLBACK_MODEL_ID)],
         }
     )
 
     response = ModelGateway(provider=provider, max_retries=0).complete(_request())
 
-    assert response.model == "gpt-5.4-mini"
+    assert response.model == FALLBACK_MODEL_ID
 
 
 def test_circuit_opens_after_repeated_primary_failures() -> None:
     provider = FakeProviderAdapter(
         {
-            "deepseek-v4-flash": [
+            DEFAULT_MODEL_ID: [
                 UpstreamGatewayError("500-a"),
                 UpstreamGatewayError("500-b"),
             ],
-            "gpt-5.4-mini": [
-                _success("gpt-5.4-mini"),
-                _success("gpt-5.4-mini"),
-                _success("gpt-5.4-mini"),
+            FALLBACK_MODEL_ID: [
+                _success(FALLBACK_MODEL_ID),
+                _success(FALLBACK_MODEL_ID),
+                _success(FALLBACK_MODEL_ID),
             ],
         }
     )
@@ -647,12 +689,12 @@ def test_circuit_opens_after_repeated_primary_failures() -> None:
     for number in range(3):
         gateway.complete(_request(request_id=f"req-circuit-{number}"))
 
-    assert provider.called_models.count("deepseek-v4-flash") == 2
-    assert provider.called_models.count("gpt-5.4-mini") == 3
+    assert provider.called_models.count(DEFAULT_MODEL_ID) == 2
+    assert provider.called_models.count(FALLBACK_MODEL_ID) == 3
 
 
 def test_backpressure_rejects_before_provider_call() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     admission = AdmissionController(max_concurrency=1)
     admission.acquire()
     gateway = ModelGateway(provider=provider, admission=admission)
@@ -665,7 +707,7 @@ def test_backpressure_rejects_before_provider_call() -> None:
 
 
 def test_gateway_emits_public_model_events_without_prompts() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     gateway = ModelGateway(provider=provider)
 
     gateway.complete(_request(run_id="run-events"))
@@ -673,23 +715,23 @@ def test_gateway_emits_public_model_events_without_prompts() -> None:
 
     assert [event.event_type for event in events] == ["model_called", "model_result"]
     assert all("messages" not in event.payload for event in events)
-    assert events[-1].payload["model"] == "deepseek-v4-flash"
+    assert events[-1].payload["model"] == DEFAULT_MODEL_ID
 
 
 def test_price_version_keeps_historical_cost_stable() -> None:
-    provider = FakeProviderAdapter({"deepseek-v4-flash": [_success("deepseek-v4-flash")]})
+    provider = FakeProviderAdapter({DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID)]})
     gateway = ModelGateway(provider=provider)
 
     response = gateway.complete(_request())
     recorded = response.cost
 
-    assert recorded.price_version == "frontier-stars-2026-09-04"
+    assert recorded.price_version == PRICE_VERSION
     assert response.cost == recorded
 
 
 def test_semantic_cache_is_repo_and_index_scoped_and_skips_workspace_state() -> None:
     provider = FakeProviderAdapter(
-        {"deepseek-v4-flash": [_success("deepseek-v4-flash"), _success("deepseek-v4-flash")]}
+        {DEFAULT_MODEL_ID: [_success(DEFAULT_MODEL_ID), _success(DEFAULT_MODEL_ID)]}
     )
     gateway = ModelGateway(provider=provider)
     base = CacheContext("repo", "fp-a", "idx-1", False, False)
@@ -722,7 +764,7 @@ def test_semantic_cache_is_repo_and_index_scoped_and_skips_workspace_state() -> 
     assert first.cache_hit is False
     assert second.cache_hit is True
     assert other_repo.cache_hit is False
-    assert provider.called_models == ["deepseek-v4-flash", "deepseek-v4-flash"]
+    assert provider.called_models == [DEFAULT_MODEL_ID, DEFAULT_MODEL_ID]
 
     live = _request(
         request_id="req-live",
@@ -731,4 +773,4 @@ def test_semantic_cache_is_repo_and_index_scoped_and_skips_workspace_state() -> 
         tools=(),
         cache_context=CacheContext("repo", "fp-a", "idx-1", True, False),
     )
-    assert gateway.semantic_cache.key_for(live, "deepseek-v4-flash") is None
+    assert gateway.semantic_cache.key_for(live, DEFAULT_MODEL_ID) is None

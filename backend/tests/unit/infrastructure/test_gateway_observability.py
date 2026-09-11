@@ -9,6 +9,7 @@ from codeinsight.infrastructure.model_gateway import (
     ModelGateway,
     configured_routes_from_environment,
 )
+from codeinsight.infrastructure.model_profiles import DEFAULT_MODEL_ID
 from codeinsight.infrastructure.otel import Telemetry
 from codeinsight.infrastructure.provider_adapters import (
     OpenAIProviderAdapter,
@@ -152,6 +153,6 @@ def test_gateway_health_reports_the_runtime_route_configuration(monkeypatch) -> 
 
     assert payload["status"] == "ok"
     assert payload["routes"]["explain"] == {
-        "primary": "deepseek-v4-flash",
+        "primary": DEFAULT_MODEL_ID,
         "fallbacks": [],
     }

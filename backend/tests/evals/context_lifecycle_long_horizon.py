@@ -35,6 +35,7 @@ PROJECT_ROOT = BACKEND_ROOT.parent
 sys.path.insert(0, str(BACKEND_ROOT / "src"))
 
 from codeinsight.infrastructure.chat_endpoint import EXPECTED_CHAT_BASE_URL  # noqa: E402
+from codeinsight.infrastructure.model_profiles import DEFAULT_MODEL_ID  # noqa: E402
 
 CASES_PATH = BACKEND_ROOT / "tests" / "evals" / "context_lifecycle_cases.json"
 FIXTURE_ROOT = BACKEND_ROOT / "tests" / "fixtures" / "sample_repo"
@@ -51,13 +52,34 @@ SOURCE_PATH_PATTERN = re.compile(r"(?<![\w/.-])([\w][\w./-]*\.py)\b")
 # 只放行模型端点配置。MySQL/Redis 未启动时，公开 Store 必须继续走内存实现，
 # 否则「本机没起数据库」会把评测变成一次连接失败。
 ENV_ALLOWLIST = frozenset(
-    {"CODEINSIGHT_API_KEY", "CODEINSIGHT_MODEL", "CODEINSIGHT_BASE_URL"}
+    {
+        "CODEINSIGHT_API_KEY",
+        "CODEINSIGHT_MODEL",
+        "CODEINSIGHT_BASE_URL",
+        # 检索链路自己的凭据。缺了它们，真实模式里 search_repository /
+        # get_evidence_context 会因为构造不出 Embedding 而返回 INVALID_RESPONSE，
+        # 于是每一轮都停在 STUCK，测到的只是「本机没配检索」而不是上下文生命周期。
+        "CODEINSIGHT_EMBEDDING_API_KEY",
+        "CODEINSIGHT_EMBEDDING_BASE_URL",
+        "CODEINSIGHT_EMBEDDING_MODEL",
+        "CODEINSIGHT_EMBEDDING_OUTPUT_TYPE",
+        "CODEINSIGHT_RERANK_API_KEY",
+        "CODEINSIGHT_RERANK_BASE_URL",
+        "CODEINSIGHT_RERANK_MODEL",
+    }
 )
 
 # 评测本地限额。20–50 轮的连续会话会耗尽 Gateway 默认的按租户 Token Bucket
 # （容量 2,000,000，按「估算输入 + 输出预留」计费，补充速率 10,000/s）：
 # 实测第 10 轮起就返回 BACKPRESSURE，测到的是限流而不是上下文生命周期。
 # 抬高的是这两个**本地评测**限额，不是生产参数结论。
+# 评测工作窗口。模型真实窗口是 1,000,000，但评测得先把会话历史压过预算才能验证
+# 压缩；靠 message_padding_chars 铺够 1M 输入要烧掉几十万 token，而且需要生成
+# 几百万字符的填充文本。这里显式把工作窗口压到 128K，让「压过预算」这条路径在
+# 可承受的用量内可达。窗口大小不改变被测逻辑，只改变触发点；真实模式同样适用，
+# 所以它同时也是一道省钱措施。
+EVAL_CONTEXT_WINDOW_TOKENS = 128_000
+
 EVAL_RATE_LIMIT_CAPACITY = 64_000_000
 EVAL_RATE_LIMIT_REFILL_PER_SECOND = 2_000_000
 EVAL_TENANT_TOKEN_LIMIT = 64_000_000
@@ -428,7 +450,7 @@ def _run_case(
     else:
         gateway = ModelGateway(
             provider=_ScriptedEvidenceProvider(
-                model=os.environ.get("CODEINSIGHT_MODEL", "deepseek-v4-flash")
+                model=os.environ.get("CODEINSIGHT_MODEL", DEFAULT_MODEL_ID)
             ),
             budget_ledger=InMemoryBudgetLedger(default_limit=EVAL_TENANT_TOKEN_LIMIT),
             rate_limiter=TokenBucketRateLimiter(
@@ -752,6 +774,12 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
     parser.add_argument("--max-output-tokens", type=int, default=40_960)
     parser.add_argument("--max-total-tokens", type=int, default=400_000)
+    parser.add_argument(
+        "--context-window-tokens",
+        type=int,
+        default=EVAL_CONTEXT_WINDOW_TOKENS,
+        help="评测工作窗口；默认 128K，见 experiments/configs/context_lifecycle_128k.yaml",
+    )
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument(
         "--fake-tool-payload-chars",
@@ -782,6 +810,7 @@ def main() -> int:
         if args.max_total_tokens > 9_000_000:
             raise SystemExit("--max-total-tokens 超过单次验收周期上限")
     os.environ["CODEINSIGHT_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
+    os.environ["CODEINSIGHT_CONTEXT_WINDOW_TOKENS"] = str(args.context_window_tokens)
 
     document = load_cases(set(args.case_ids) if args.case_ids else None)
     records: list[dict] = []
@@ -847,6 +876,7 @@ def main() -> int:
         "model_configured": os.environ.get("CODEINSIGHT_MODEL"),
         "provider_client_max_retries": 0,
         "output_token_cap": args.max_output_tokens,
+        "context_window_tokens": args.context_window_tokens,
         "max_total_tokens": args.max_total_tokens,
         "tokens_used": tokens_used,
         "eval_recent_turns": EVAL_RECENT_TURNS,
@@ -855,6 +885,7 @@ def main() -> int:
         "notes": [
             "fake 模式只验证链路结构，不产生质量结论；回答、证据和步数都由脚本决定。",
             "真实模式只跑少量轮次，未做质量对照，也不代表参数已调优。",
+            "context_window_tokens 是评测工作窗口，不是模型能力上限；生产默认是 1,000,000。",
             "只保存路由、压缩、缓存、usage 与延迟元数据，不保存用户问题正文和模型答案正文。",
             "进程内重建应用实例只证明 Session 从 Store 恢复；"
             "跨进程恢复需要 MySQL，不在本机默认范围内。",

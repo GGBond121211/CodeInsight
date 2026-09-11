@@ -10,12 +10,14 @@
 
 schema_version: 2
 created_at: "2026-09-02"
-updated_at: "2026-09-04"
-price_version: "frontier-stars-2026-09-04"
-price_unit: "stars_per_1m_tokens"
+updated_at: "2026-09-11"
+price_version: "aliyun-maas-2026-09-11"
+price_unit: "yuan_per_1m_tokens"
 
 # ---------------------------------------------------------------------------
-# 基线模型 —— 1.0 全部评测使用的组合
+# 基线模型 —— 1.0 全部评测使用的组合。这一段是历史登记：1.0 的数字都来自
+# deepseek-v4-flash 与旧 Frontier 端点，换模型后不能沿用。2.1.0 的运行时默认
+# 已改为 qwen3.8-flash（见 routes / runtime_models）。
 # ---------------------------------------------------------------------------
 baseline:
   chat:
@@ -50,16 +52,16 @@ route_profiles:
     requires_tool_calling: false
     requires_structured_output: true
     status: implemented
-    primary: "deepseek-v4-flash"
-    fallback: ["gpt-5.4-mini", "gpt-5.4"]
+    primary: "qwen3.8-flash"
+    fallback: ["qwen3.7-flash-2026-07-15"]
 
   - route: change-plan
     description: "生成 ChangePlan"
     requires_tool_calling: true
     requires_structured_output: true
     status: implemented
-    primary: "deepseek-v4-flash"
-    fallback: ["gpt-5.4-mini", "gpt-5.4"]
+    primary: "qwen3.8-flash"
+    fallback: ["qwen3.7-flash-2026-07-15"]
     note: "必须支持原生 tool_calls，不接受把工具调用伪装成文本 JSON"
 
   - route: patch
@@ -67,16 +69,16 @@ route_profiles:
     requires_tool_calling: true
     requires_structured_output: true
     status: implemented
-    primary: "deepseek-v4-flash"
-    fallback: ["gpt-5.4-mini", "gpt-5.4"]
+    primary: "qwen3.8-flash"
+    fallback: ["qwen3.7-flash-2026-07-15"]
 
   - route: patch-review
     description: "补丁审查 / 引用审查"
     requires_tool_calling: false
     requires_structured_output: true
     status: implemented
-    primary: "deepseek-v4-flash"
-    fallback: ["gpt-5.4-mini", "gpt-5.4"]
+    primary: "qwen3.8-flash"
+    fallback: ["qwen3.7-flash-2026-07-15"]
 
 # ---------------------------------------------------------------------------
 # 候选模型 —— 全部 pending，Step 8 才实际对照
@@ -84,9 +86,14 @@ route_profiles:
 candidates:
   chat:
     - id: baseline-flash
+      model: "qwen3.8-flash"
+      status: capability_smoke_passed_quality_unverified
+      note: "当前默认模型，作为 A/B 的 baseline 组；只跑过能力 smoke，质量未对照"
+
+    - id: superseded-deepseek-flash
       model: "deepseek-v4-flash"
       status: measured
-      note: "作为 A/B 的 baseline 组"
+      note: "1.0 与 2.0 的 baseline，2026-09-11 起不再是默认；旧报价（星星）与旧端点一起停用"
 
     - id: candidate-reasoning
       model: null
@@ -153,11 +160,19 @@ fake_provider:
     Fake Provider 的任何输出都不得进入质量指标。它只回答
     「系统在故障下的行为是否正确」，不回答「答案好不好」。
 
-# 用户于 2026-09-04 提供的 API 模型页截图。价格是截图中的星星数，
-# 不是人民币或美元；能力只登记截图明确标签或本项目真实 smoke 已证明的项。
+# 价格口径：2026-09-11 起是用户在阿里云百炼控制台模型广场截图里的人民币报价
+# （元/百万 token）。能力只登记截图明确标签或本项目真实 smoke 已证明的项，
+# 没跑过的能力一律不写。
 runtime_models:
+  # 2026-09-11：随默认端点换成阿里云 MaaS，本表改用**人民币/百万 token**，
+  # 价格来自用户在控制台模型广场的截图。旧的「星星」报价属于已停用的
+  # Frontier 端点，留在 git 历史里，不与本表混用。
+  # 本表是 backend/src/codeinsight/infrastructure/model_profiles.py 的镜像；
+  # 两处不一致时以代码为准。
   - {model: "codex-auto-review", input: 1.75, output: 14, cached_input: 0.175, capabilities: [text]}
-  - {model: "deepseek-v4-flash", input: 12, output: 36, cached_input: 0.3996, capabilities: [text, tools, structured_output], tier: best}
+  - {model: "qwen3.8-flash", input: 0.8, output: 2.7, cached_input: 0.8, capabilities: [text, tools, structured_output], tier: best, default: true}
+  - {model: "qwen3.7-flash-2026-07-15", input: 0.2, output: 0.8, cached_input: 0.2, capabilities: [text, tools, structured_output], fallback_eligible: true}
+  - {model: "deepseek-v4-flash", input: 12, output: 36, cached_input: 0.3996, capabilities: [text, tools, structured_output]}
   - {model: "deepseek-v4-flash-vision-exp", input: 12, output: 36, cached_input: 0.3996, capabilities: [text, vision, reasoning, tools, structured_output]}
   - {model: "deepseek-v4-pro", input: 36, output: 108, cached_input: 1.1988, capabilities: [text]}
   - {model: "glm-5.2", input: 30, output: 105, cached_input: 7.5, capabilities: [text, reasoning, tools, structured_output]}
@@ -168,7 +183,9 @@ runtime_models:
   - {model: "gpt-5.6-luna", input: 1.5, output: 12, cached_input: 0.18, capabilities: [text]}
   - {model: "gpt-5.6-sol", input: 5, output: 30, cached_input: 0.5, capabilities: [text]}
   - {model: "gpt-5.6-terra", input: 2.5, output: 20, cached_input: 0.3, capabilities: [text]}
-
+  # cached_input 与 input 同价是**保守假设**（按不命中计价）：该中转站没有公开
+  # 缓存计价，宁可高估成本也不把未证实的折扣写成事实。
+  # smoke_verified: "2026-09-11: qwen3.8-flash 在真实端点上跑通工具调用与压缩；其余行只是登记，未逐个 smoke"
 # ---------------------------------------------------------------------------
 # 成本记账要求（增补 R-7）
 # ---------------------------------------------------------------------------

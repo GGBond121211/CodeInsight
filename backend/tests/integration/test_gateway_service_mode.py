@@ -2,6 +2,10 @@ from fastapi.testclient import TestClient
 
 from codeinsight.infrastructure.gateway_server import create_gateway_app
 from codeinsight.infrastructure.model_gateway import ModelGateway
+from codeinsight.infrastructure.model_profiles import (
+    DEFAULT_MODEL_ID,
+    default_model_registry,
+)
 from codeinsight.infrastructure.provider_adapters import FakeProviderAdapter, ProviderResponse
 
 
@@ -9,8 +13,8 @@ def _gateway() -> ModelGateway:
     return ModelGateway(
         provider=FakeProviderAdapter(
             {
-                "deepseek-v4-flash": [
-                    ProviderResponse("ok", (), "deepseek-v4-flash", 5, 2, 0, "stop")
+                DEFAULT_MODEL_ID: [
+                    ProviderResponse("ok", (), DEFAULT_MODEL_ID, 5, 2, 0, "stop")
                 ]
             }
         )
@@ -34,12 +38,10 @@ def test_two_stateless_gateway_instances_can_serve_requests() -> None:
 
     assert [response.status_code for response in responses] == [200, 200]
     assert [response.json()["model"] for response in responses] == [
-        "deepseek-v4-flash",
-        "deepseek-v4-flash",
+        DEFAULT_MODEL_ID,
+        DEFAULT_MODEL_ID,
     ]
     assert clients[0].get("/metrics").status_code == 200
     models = clients[0].get("/v1/models").json()["data"]
-    assert len(models) == 12
-    assert next(item for item in models if item["quality_tier"] == "best")["id"] == (
-        "deepseek-v4-flash"
-    )
+    assert len(models) == len(default_model_registry().all())
+    assert next(item for item in models if item["quality_tier"] == "best")["id"] == DEFAULT_MODEL_ID

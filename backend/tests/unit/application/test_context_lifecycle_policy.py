@@ -11,7 +11,7 @@ from codeinsight.application.context_budget import (
 
 def test_policy_locks_the_registered_working_numbers() -> None:
     policy = ContextLifecyclePolicy()
-    assert policy.context_window_tokens == 128_000
+    assert policy.context_window_tokens == 1_000_000
     assert policy.compaction_threshold_ratio == 0.95
     assert policy.retain_recent_ratio == 0.16
     assert policy.summary_max_tokens == 8_192
@@ -22,38 +22,45 @@ def test_policy_locks_the_registered_working_numbers() -> None:
 
 
 def test_ratio_math_lands_exactly_on_the_registered_boundary() -> None:
-    # 浮点乘法在这里会飘；定点换算必须精确落在 82688 和 20480。
-    assert scale_tokens(87_040, 0.95) == 82_688
-    assert scale_tokens(128_000, 0.16) == 20_480
+    # 十进制定点而不是浮点乘法：换算到精确值 911088 与 160000。
+    assert scale_tokens(959_040, 0.95) == 911_088
+    assert scale_tokens(1_000_000, 0.16) == 160_000
 
 
 def test_just_below_the_threshold_does_not_trigger_compaction() -> None:
     policy = ContextLifecyclePolicy()
     below = scale_tokens(policy.input_allowance(40_960), 0.9499)
-    assert below == 82_679
+    assert below == 910_992
     assert policy.should_compact(below, reserved_output_tokens=40_960) is False
 
 
 def test_the_threshold_itself_triggers_compaction() -> None:
     policy = ContextLifecyclePolicy()
-    assert policy.compaction_trigger_tokens(40_960) == 82_688
-    assert policy.should_compact(82_687, reserved_output_tokens=40_960) is False
-    assert policy.should_compact(82_688, reserved_output_tokens=40_960) is True
+    assert policy.compaction_trigger_tokens(40_960) == 911_088
+    assert policy.should_compact(911_087, reserved_output_tokens=40_960) is False
+    assert policy.should_compact(911_088, reserved_output_tokens=40_960) is True
 
 
 def test_threshold_is_a_fraction_of_the_usable_input_budget() -> None:
     """95% 的分母是可用输入预算，不是原始窗口。
 
-    Q-010 第一版用原始窗口当分母，得到 121600 —— 比输出预留后的输入上限
-    87040 还高，压缩在算术上永远不可能被触发。这条测试把这个错误钉住：
-    窗口级的 0.95 必须**高过**拒收线，而策略给出的触发点必须**低于**它。
+    Q-010 第一版用原始窗口当分母：在 128K 窗口、40960 输出预留下算出 121600，
+    比拒收线 87040 还高，压缩永远不可能被触发。1M 窗口下这个错误不会显形
+    （950000 < 959040），所以两种窗口都要钉：历史失败模式必须仍然可复现，
+    当前默认的触发点必须落在拒收线以内。
     """
     policy = ContextLifecyclePolicy()
     allowance = policy.input_allowance(40_960)
-    assert allowance == 87_040
-    assert scale_tokens(policy.context_window_tokens, 0.95) == 121_600
-    assert scale_tokens(policy.context_window_tokens, 0.95) > allowance
+    assert allowance == 959_040
+    assert scale_tokens(policy.context_window_tokens, 0.95) == 950_000
+    assert scale_tokens(policy.context_window_tokens, 0.95) < allowance
     assert policy.compaction_trigger_tokens(40_960) < allowance
+    # 历史失败模式：128K 窗口下用原始窗口当分母会算出 121600，比拒收线还高。
+    narrow = ContextLifecyclePolicy(context_window_tokens=128_000)
+    assert scale_tokens(narrow.context_window_tokens, 0.95) == 121_600
+    assert scale_tokens(narrow.context_window_tokens, 0.95) > narrow.input_allowance(40_960)
+    assert narrow.compaction_trigger_tokens(40_960) == 82_688
+    assert narrow.compaction_trigger_tokens(40_960) < narrow.input_allowance(40_960)
 
 
 def test_trigger_reachability_invariant_holds_across_legal_output_caps() -> None:
@@ -74,7 +81,7 @@ def test_unreachable_trigger_is_refused() -> None:
 
 def test_session_history_budget_reserves_the_non_history_overhead() -> None:
     policy = ContextLifecyclePolicy()
-    assert policy.session_history_budget(40_960) == 82_688 - 4_096
+    assert policy.session_history_budget(40_960) == 911_088 - 4_096
 
 
 def test_history_budget_must_exceed_the_retained_window() -> None:
@@ -86,7 +93,7 @@ def test_history_budget_must_exceed_the_retained_window() -> None:
 
 def test_recent_retention_budget_is_sixteen_percent_of_the_window() -> None:
     policy = ContextLifecyclePolicy()
-    assert policy.retained_recent_tokens == 20_480
+    assert policy.retained_recent_tokens == 160_000
     assert policy.retained_recent_tokens < policy.session_history_budget(40_960)
 
 
@@ -99,18 +106,18 @@ def test_summary_budget_is_fixed_and_not_the_answer_output_cap() -> None:
 
 def test_overflow_guard_covers_input_plus_reserved_output() -> None:
     policy = ContextLifecyclePolicy()
-    assert policy.exceeds_window(100_000, 40_960) is True
-    assert policy.exceeds_window(87_040, 40_960) is False
+    assert policy.exceeds_window(1_000_000, 40_960) is True
+    assert policy.exceeds_window(959_040, 40_960) is False
     # 恰好等于窗口不算溢出，超出 1 token 就算。
-    assert policy.exceeds_window(87_041, 40_960) is True
-    assert policy.exceeds_window(121_600, 6_400) is False
+    assert policy.exceeds_window(959_041, 40_960) is True
+    assert policy.exceeds_window(993_600, 6_400) is False
 
 
 def test_output_reservation_cannot_fill_the_whole_window() -> None:
     policy = ContextLifecyclePolicy()
-    assert policy.input_allowance(40_960) == 87_040
+    assert policy.input_allowance(40_960) == 959_040
     with pytest.raises(ValueError):
-        policy.input_allowance(128_000)
+        policy.input_allowance(1_000_000)
 
 
 @pytest.mark.parametrize(

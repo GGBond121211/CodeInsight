@@ -32,6 +32,15 @@ FINGERPRINT = "fp-q010"
 TURN_CHARS = 40_000
 
 
+@pytest.fixture(autouse=True)
+def _shrunken_working_window(monkeypatch) -> None:
+    """测试用的小窗口：默认 1M 下要铺四百万字符才能压过预算，那不叫实验。
+
+    窗口大小是部署属性，这些用例只验证「历史压过预算时压缩真的被执行」。
+    """
+    monkeypatch.setenv("CODEINSIGHT_CONTEXT_WINDOW_TOKENS", "128000")
+
+
 @dataclass(frozen=True)
 class _StubTurn:
     """只需要 run_id：_enforce_session_budget 只用它发事件。"""

@@ -40,7 +40,13 @@ def estimate_messages_tokens(messages: object) -> int:
     return estimate_tokens(json.dumps(messages, ensure_ascii=False, default=str))
 
 
-CONTEXT_LIFECYCLE_POLICY_VERSION = "deepseek-harness-adapted-v2-input-budget"
+# 默认工作上下文窗口。2026-09-11 换成阿里云 MaaS 后，默认模型 qwen3.8-flash 的
+# 供应商窗口是 1M，工作预算跟着对齐。窗口是部署属性：可以用
+# CODEINSIGHT_CONTEXT_WINDOW_TOKENS 下调到中转站或评测实际需要的值，
+# 但不会自动取模型注册表里的供应商目录值。
+DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
+
+CONTEXT_LIFECYCLE_POLICY_VERSION = "deepseek-harness-adapted-v3-window-1m"
 
 # 单次模型调用的输出预留。它同时是 ContextAssembler 的输入硬上限扣减项和
 # Provider 请求的 max_tokens，因此只能有一个来源：以前 assembler 默认 1000、
@@ -51,7 +57,7 @@ DEFAULT_MAX_OUTPUT_TOKENS = 40_960
 def scale_tokens(total: int, ratio: float) -> int:
     """按比例换算 token 阈值。
 
-    用十进制定点而不是浮点乘法：87040 * 0.95 必须恰好落在 82688，而不是
+    用十进制定点而不是浮点乘法：959040 * 0.95 必须恰好落在 911088，而不是
     82687.999…。任何一位漂移都会让压缩提前或推迟一整轮，同一条会话轨迹
     就可能在不同机器上产生不同的压缩次数。
     """
@@ -70,13 +76,15 @@ class ContextLifecyclePolicy:
     因此必须和 overflow guard、工具结果裁剪一起使用，不能单独生效。
 
     分母是**可用输入预算**（上下文窗口减去本轮输出预留），不是原始窗口。
-    用原始窗口算出来的 0.95 × 128000 = 121600 永远不可能被触发：请求在
-    87040 就已经被 Gateway 的 overflow guard 拒收，压缩没有机会执行。
-    这个错误在 Q-010 第一版真实存在，因此现在由
-    ``verify_trigger_reachable`` 在构造路由预算时显式拒绝。
+    Q-010 第一版用原始窗口当分母，在 128K 窗口下算出 121600，比输出预留后的
+    输入上限 87040 还高，压缩在算术上不可能执行；现在由
+    ``verify_trigger_reachable`` 在构造路由预算时显式拒绝这种取值。
+
+    1M 窗口、40960 输出预留下的取值：可输入 959040、触发点 911088、
+    历史预算 906992、压缩后保留 160000。
     """
 
-    context_window_tokens: int = 128_000
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
     compaction_threshold_ratio: float = 0.95
     retain_recent_ratio: float = 0.16
     # 摘要的 token 上限，由 session_service 在渲染后强制执行。本项目的摘要由
@@ -112,7 +120,8 @@ class ContextLifecyclePolicy:
     def compaction_trigger_tokens(self, reserved_output_tokens: int) -> int:
         """开始执行压缩的输入压力阈值；达到即触发。
 
-        分母是可用输入预算，不是原始窗口：121600 这种取值永远不可达。
+        分母是可用输入预算，不是原始窗口：128K 窗口下用原始窗口算出的 121600
+        比拒收线还高，属于不可达取值。
         """
         return scale_tokens(
             self.input_allowance(reserved_output_tokens),
@@ -138,8 +147,8 @@ class ContextLifecyclePolicy:
     def verify_trigger_reachable(self, reserved_output_tokens: int) -> None:
         """断言压缩触发点落在拒收线以内、且压缩确实能腾出空间。
 
-        Q-010 第一版遗漏的就是这条不变量：当时 0.95 乘的是原始窗口，
-        触发点 121600 比输出预留后的输入上限 87040 还高，压缩在算术上
+        Q-010 第一版遗漏的就是这条不变量：当时 0.95 乘的是原始窗口，在 128K
+        窗口下触发点 121600 比输出预留后的输入上限 87040 还高，压缩在算术上
         不可能被执行，而单元测试只验证了策略对象自己的数字，没有验证可达性。
         """
         trigger = self.compaction_trigger_tokens(reserved_output_tokens)

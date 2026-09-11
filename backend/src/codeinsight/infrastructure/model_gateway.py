@@ -109,9 +109,11 @@ def resolve_route_budget(
     scene: str, *, policy: ContextLifecyclePolicy | None = None
 ) -> RouteBudget:
     """解析场景预算；窗口取共享策略，输出上限取当前配置。"""
-    selected = policy or ContextLifecyclePolicy()
+    selected = policy or ContextLifecyclePolicy(
+        context_window_tokens=configured_context_window_tokens()
+    )
     # 构造即校验：触发点必须落在拒收线以内。Q-010 第一版用原始窗口当分母，
-    # 得到 121600 这个永远不可达的触发点，而没有任何地方会发现。
+    # 在 128K 窗口下得到 121600 这个永远不可达的触发点，而没有任何地方会发现。
     selected.verify_trigger_reachable(configured_max_output_tokens())
     return RouteBudget(
         scene=scene,
@@ -1032,6 +1034,30 @@ def configured_max_output_tokens() -> int:
         raise ModelConfigurationError(
             "CODEINSIGHT_MAX_OUTPUT_TOKENS 必须在 "
             f"{MIN_CONFIGURED_OUTPUT_TOKENS} 到 {MAX_CONFIGURED_OUTPUT_TOKENS} 之间"
+        )
+    return value
+
+
+def configured_context_window_tokens() -> int:
+    """
+    工作上下文窗口；默认对齐默认模型的 1M，可用环境变量下调。
+
+    CODEINSIGHT_CONTEXT_WINDOW_TOKENS 的用途只有一个：把窗口调小。评测要在
+    不烧掉近百万输入 token 的前提下触发 token 压缩，就必须能压低这条线。
+    调大没有意义——供应商目录里的窗口是能力上限，不是每次请求的预算。
+    """
+    raw = os.environ.get("CODEINSIGHT_CONTEXT_WINDOW_TOKENS", "").strip()
+    if not raw:
+        return ContextLifecyclePolicy().context_window_tokens
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ModelConfigurationError(
+            "CODEINSIGHT_CONTEXT_WINDOW_TOKENS 必须是整数"
+        ) from None
+    if value <= 0:
+        raise ModelConfigurationError(
+            "CODEINSIGHT_CONTEXT_WINDOW_TOKENS 必须为正"
         )
     return value
 
