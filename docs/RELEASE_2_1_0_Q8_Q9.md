@@ -55,13 +55,81 @@
   同时断言 `agent/workflow.py` 里 `def run_citation_agent` 仍然存在（冻结而非删除）。
 - **老路评测脚本一并退役。** `tests/evals/run_agent_answer_eval.py`、
   `run_fusion_answer_eval.py`、`run_multilingual_answer_eval.py`、
-  `run_master_200_eval.py` 仍然能跑（它们直接调用冻结实现，不经过入口），
-  但不作为 2.1.0 的结论来源，2.1.0 的取证只认新路。仍有几个
-  `tests/evals/test_*_answer_eval_runner.py` 在跑：它们只测 payload 与指标
-  这类纯函数，不调用老路，因此没有退役。
+  `run_master_200_eval.py` 当时仍能跑（它们直接调用冻结实现，不经过入口），
+  但不作为 2.1.0 的结论来源，2.1.0 的取证只认新路。（2026-09-11 已改为
+  整块注释或删除 agent 分支，见下一节。）
 
 仍未做：老路的**质量对照**不再有可比对象——它在封闭时也没有同数据、同模型的
 真实取样，因此本文不声称新路比老路更好或更差。
+
+## 2026-09-11 收口：linear 与 agent 都走只读 Tool Loop
+
+用户 2026-09-11 决定 explain 以后只有一条路线。此前 Router 判成 `linear` 的问题
+仍然走「直接回答」（`application/auto_answer_repository.py`），只有 `agent` 才进
+Tool Loop——「explain 只有一条路」在代码层面并不成立。
+
+- `application/code_understanding_route.py` 新增 `CODE_UNDERSTANDING_ROUTES` 与
+  `uses_code_understanding()`：`linear` 与 `agent` 都收敛到只读 Tool Loop，
+  只有 `insufficient` 不检索。对话、HTTP、CLI 三条入口改为调用同一个判断，
+  不再各写一份 `execution_route == "agent"`。
+- 三条入口不再在父进程构造 Embedding / Rerank；检索依赖由 MCP Server 子进程
+  按环境变量自建（原调用按要求保留为注释）。
+- `conversation_service` 与 `api/routes` 里已无调用方的 `_auto_from_agent`
+  映射函数一并注释冻结。
+- 这是**产品决定**，不是实验结果：本文不声称 Tool Loop 的质量优于被替换的
+  linear 直接回答路线。
+- 守卫：`test_code_understanding_route.py` 断言三条入口里不再出现
+  `execution_route == "agent"`，并且都调用 `uses_code_understanding(`。
+
+## 2026-09-11 老路整块注释冻结
+
+用户要求「老路相关代码全部注释掉，但不删除，正常运行时和测试都不再用」：
+
+- 源码：`agent/workflow.py`、`agent/state.py`、`prompts/citation_review.py`、
+  `domain/agent.py`、`application/agent_answer_repository.py` 整块注释，
+  每个文件顶部写明冻结原因、边界与恢复方式。
+- 测试：`unit/agent/test_workflow.py`、`unit/agent/test_query_plan_workflow.py`、
+  `integration/test_agent_answer_repository.py`、`unit/prompts/test_citation_review.py`、
+  `unit/domain/test_agent.py`、`evals/run_agent_answer_eval.py`、
+  `evals/test_agent_answer_eval_runner.py` 整块注释——这些文件此前只覆盖冻结路线。
+- 评测脚本：`run_fusion_answer_eval.py`、`run_multilingual_answer_eval.py`、
+  `run_master_200_eval.py` 去掉 agent 分支并保留原实现注释；
+  `--mode router-agent` 现在直接报错退出，不会静默降级成别的模式。
+- `backend/pyproject.toml` 保留 `legacy` marker 与 `addopts = "-m 'not legacy'"`，
+  作为回退时的现成隔离开关（当前已没有用例使用该 marker）。
+- 守卫：`test_code_understanding_route.py` 断言 `agent/workflow.py` 里
+  `# def run_citation_agent` 仍在（注释冻结而非删除），且没有未注释的定义行。
+
+## 2026-09-11 真实模型小批量取证（dev split）
+
+使用项目自己的 runner（`backend/tests/evals/run_conversation_eval.py`，真实
+Frontier 网关、`deepseek-v4-flash`、请求级输出上限 4096、`max_retries=0`，
+每个 case 独立 Session 与缓存）跑了 dev split 全部 6 个 case / 28 轮。对照是
+同一数据集（`2.1.0`）2026-09-08 的旧路径真实基线。
+
+| 指标 | 旧路径 dev（2026-09-08） | 新路径 dev（2026-09-11） |
+| --- | --- | --- |
+| 轮次 / 正常结束 / 失败 | 28 / 27 / 1 | 28 / 26 / 2 |
+| route_accuracy | 1.0 | 1.0 |
+| outcome_accuracy | 0.852（23/27） | 0.846（22/26） |
+| evidence_recall | 0.913 | 1.000 |
+| valid_citation_rate | 1.0 | 1.0 |
+| model_calls | 53 | 72 |
+| input / output tokens | 未按 split 统计 | 230,003 / 27,349 |
+
+- 本次真实调用合计约 `289k` token（conv-021 单案例 21,744/4,030 + dev 230,003/27,349），
+  远低于用户授权上限。Embedding 与 Rerank 不在这个口径内：MCP Server 在子进程
+  内做检索，`embedding_input_tokens` 仍记 0。
+- 新路径的 2 个失败都是 `SANDBOX_PERMISSION_DENIED`（本机 Docker 未运行，
+  两个 change 轮拿不到修改前校验），与 Tool Loop 无关；旧基线那 1 个失败是
+  `DEV_MODE_VALIDATION_SKIPPED`。所以「失败轮数」不能读成路线质量差异。
+- outcome 不符的 4 轮里，3 轮是 conv-021 的「应为证据不足、实际回答了」——
+  旧基线同样如此，属于数据集标注与实际行为的既有分歧，不是本次改动引入；
+  另 1 轮是 conv-001 第 3 轮（旧基线判对，新路径回答为 answered）。
+- 这些真实轮次的公开事件里 `execution_routes` 全是 `linear`，说明收口后真实
+  请求确实走进了 Tool Loop——这不是只改了测试。
+- 边界：只跑 dev split；regression / golden / holdout 未跑；没有与老路的同数据
+  对照（老路已冻结）；没有做 repair 0/1/2 的参数对照。
 
 ## 与计划的两处偏离（有意）
 
@@ -98,11 +166,14 @@ Windows 上 `time.monotonic()` 分辨率约 15.6ms，亚毫秒 deadline 会让�
 
 ## 未完成 / 未宣称
 
-1. **没有质量对照。** linear / Tool Loop / Tool Loop + Repair 的同数据
-   比较（计划 Task 5、Q-009 Task 6）尚未运行，因此不能声称新路线更好或更差。
-2. **新路没有真实模型取样。** 老路已封闭，但新路目前也只有 Fake Provider
-   契约测试；真实 Provider 下的工具选择、严格答案成功率和 Token 成本未测。
+1. **没有质量对照。** linear 直接回答与 Tool Loop 的同数据比较（计划 Task 5）
+   不再有可比对象：linear 已收口进 Tool Loop，老路已注释冻结。本文既不声称
+   新路线更好，也不声称它更差。
+2. **真实模型取样只覆盖 dev split。** 2026-09-11 的小批量取证关闭了
+   「新路完全没有真实取样」这条缺口，但只跑了 6 个 case / 28 轮，
+   regression / golden / holdout 未跑，因此这不是质量结论。
 3. **Repair 轮数没有调优。** 默认 `max_repair_rounds=1` 是工程基线，
-   0/1/2 的对照未做，不声称 1 是最优值。
+   0/1/2 的对照未做，不声称 1 是最优值；本轮真实运行也没有单独统计
+   repair 的实际触发次数。
 4. **Embedding 用量不回流。** MCP Server 在子进程内做 Embedding，
-  工具循环路径的 `embedding_input_tokens` 记 0，成本统计不完整。
+   工具循环路径的 `embedding_input_tokens` 记 0，成本统计不完整。

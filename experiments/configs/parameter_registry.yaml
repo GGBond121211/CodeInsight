@@ -321,20 +321,28 @@ tunable:
 
   # --- 2.0 新增（尚未实现，先登记） ---
   # --- Q-008 / Q-009：代码理解 Tool Loop 与证据修复 ---
-  - name: explain_tool_loop_enabled
-    current: false
-    unit: bool
-    candidates: [false, true]
-    scope: "application/conversation_service.py:code_understanding_tool_loop_enabled"
-    experiment: "Q-008 Task 5 对照（未运行）"
-    evidence: >-
-      Q-008 2026-09-10：只读 Tool Loop、Evidence Ledger 与答案契约已实现并有契约测试；
-      默认关闭，explain 仍走原 LangGraph/linear 路径。
-    evidence_status: implemented_unoptimized
-    priority: high
-    note: >-
-      开关只影响 explain，不影响 change、general_chat 和 scope_redirect。
-      在完成同数据、同模型对照之前不得改为默认 true。
+  # 2026-09-11 退役：explain_tool_loop_enabled 开关及其读取函数已在 2026-09-10 删除；
+  # 2026-09-11 起 Router 判 linear 或 agent 都收敛到只读 Tool Loop，只有 insufficient
+  # 不检索。没有开关就没有可调参数，原条目按用户「注释掉不删除」的要求保留：
+  # - name: explain_tool_loop_enabled
+  #   current: false
+  #   unit: bool
+  #   candidates: [false, true]
+  #   scope: "application/conversation_service.py:code_understanding_tool_loop_enabled"
+  #   experiment: "Q-008 Task 5 对照（未运行）"
+  #   evidence: >-
+  #     Q-008 2026-09-10：只读 Tool Loop、Evidence Ledger 与答案契约已实现并有契约测试；
+  #     默认关闭，explain 仍走原 LangGraph/linear 路径。
+  #   evidence_status: implemented_unoptimized
+  #   priority: high
+  #   note: >-
+  #     开关只影响 explain，不影响 change、general_chat 和 scope_redirect。
+  #     在完成同数据、同模型对照之前不得改为默认 true。
+  #
+  # 2026-09-11 真实模型取样（dev split 6 case / 28 轮，真实 Frontier 网关）：下面
+  # Q-008/Q-009 的六个取值在真实运行中没有被触顶或报错（每轮 3 次模型调用：路由、
+  # 一轮工具、收尾；工具事件完整、无错误类），但都没有做候选对照，
+  # evidence_status 仍是 implemented_unoptimized。
 
   - name: tool_loop_max_steps
     current: 8
