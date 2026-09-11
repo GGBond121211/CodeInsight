@@ -133,17 +133,21 @@ class ChatRuntime:
         user_message: str,
         show_debug_reasoning: bool,
         worker: Callable[[ChatTurn, bool], ChatExecution],
+        turn_id: str | None = None,
+        run_id: str | None = None,
+        task_id: str | None = None,
     ) -> ChatTurn:
         now = int(time.time() * 1000)
         turn = ChatTurn(
-            turn_id=f"turn-{uuid4().hex[:16]}",
+            turn_id=turn_id or f"turn-{uuid4().hex[:16]}",
             session_id=session_id,
-            run_id=f"chat-run-{uuid4().hex[:16]}",
+            run_id=run_id or f"chat-run-{uuid4().hex[:16]}",
             task_type=task_type,
             status=CHAT_QUEUED,
             user_message=user_message,
             created_at_epoch_ms=now,
             updated_at_epoch_ms=now,
+            task_id=task_id,
         )
         with self._lock:
             if session_id in self._active_by_session:
@@ -194,6 +198,16 @@ class ChatRuntime:
     def get_turn(self, turn_id: str) -> ChatTurn:
         with self._lock:
             return self._require(turn_id)
+
+    def get_turn_or_none(self, turn_id: str) -> ChatTurn | None:
+        """本进程见过这一轮就返回它，没见过就返回 None。
+
+        受理与执行分到不同进程之后，「本地没有」不再等于「不存在」。
+        调用方需要能区分这两种情况，再决定要不要去事实 Store 里读。
+        """
+
+        with self._lock:
+            return self._turns.get(turn_id)
 
     def get_turn_by_run_id(self, run_id: str) -> ChatTurn:
         with self._lock:

@@ -15,7 +15,10 @@ from codeinsight.api.schemas import (
     ChatTurnRequest,
     ChatTurnResponse,
 )
-from codeinsight.application.conversation_service import ConversationService
+from codeinsight.application.conversation_service import (
+    ChatDispatchError,
+    ConversationService,
+)
 from codeinsight.infrastructure.chat_runtime import ChatRuntimeError
 
 
@@ -61,6 +64,10 @@ def create_chat_router(conversation_service: ConversationService) -> APIRouter:
             )
         except ChatRuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except ChatDispatchError as error:
+            # 受理失败：Run 已经留下失败事实，客户端应当知道这一轮没被受理，
+            # 而不是拿着一个永远不会有人执行的 202 等下去。
+            raise HTTPException(status_code=503, detail=str(error)) from error
         except (ValueError, OSError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return ChatTurnResponse(**turn.as_dict())

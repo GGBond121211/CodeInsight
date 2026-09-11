@@ -308,5 +308,6 @@ class ChatTurnResponse(BaseModel):
     result: dict[str, object] | None
     error: str | None
     reasoning_available: bool
+    task_id: str | None = None
     created_at_epoch_ms: int
     updated_at_epoch_ms: int

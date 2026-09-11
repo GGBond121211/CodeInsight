@@ -53,6 +53,9 @@ class ChatTurn:
     error: str | None = None
     reasoning_available: bool = False
     created_at_epoch_ms: int = 0
+    # Q-011：受理这一轮的后台任务标识。它由 API 在写 Run 时生成，
+    # 客户端用它查询调度状态；正文与它无关。
+    task_id: str | None = None
     updated_at_epoch_ms: int = 0
 
     def __post_init__(self) -> None:
@@ -83,6 +86,7 @@ class ChatTurn:
             "assistant_message": self.assistant_message,
             "result": self.result,
             "error": self.error,
+            "task_id": self.task_id,
             "reasoning_available": self.reasoning_available,
             "created_at_epoch_ms": self.created_at_epoch_ms,
             "updated_at_epoch_ms": self.updated_at_epoch_ms,

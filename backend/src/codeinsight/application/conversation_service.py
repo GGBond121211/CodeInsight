@@ -11,6 +11,7 @@ import hashlib
 import inspect
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -18,6 +19,11 @@ from uuid import uuid4
 
 from codeinsight.agent.change_workflow import run_change_workflow_to_preview
 from codeinsight.agent.tool_loop import ToolLoopConfig
+from codeinsight.application.agent_run_dispatcher import (
+    AgentRunDispatcher,
+    CallbackAgentRunTransport,
+    TransportRejected,
+)
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.code_understanding_route import (
     run_code_understanding_answer,
@@ -35,15 +41,36 @@ from codeinsight.application.scope_redirect import (
     build_scope_redirect_message,
 )
 from codeinsight.application.session_service import SessionContext, SessionService
+from codeinsight.domain.agent_run import (
+    CANCELLED,
+    COMPLETED,
+    FAILED,
+    MANUAL_REQUIRED,
+    QUEUED,
+    RUNNING,
+    TASK_AGENT_RUN,
+    UNKNOWN,
+    WAITING_APPROVAL,
+    WAITING_VALIDATION,
+    AgentRunRecord,
+    AgentRunTask,
+)
 from codeinsight.domain.answer import AutoAnswer
 from codeinsight.domain.change import MODE_ISOLATED_WRITE, MODE_READ_ONLY, TenantScope
 from codeinsight.domain.chat import (
+    CHAT_CANCELLED,
     CHAT_COMPLETED,
     CHAT_FAILED,
+    CHAT_MANUAL_REQUIRED,
+    CHAT_QUEUED,
+    CHAT_RUNNING,
+    CHAT_UNKNOWN,
     CHAT_WAITING_APPROVAL,
+    CHAT_WAITING_VALIDATION,
     ChatTurn,
 )
 from codeinsight.domain.errors import ModelCallError, ModelConfigurationError, ModelResponseError
+from codeinsight.domain.ports import AgentRunStore
 from codeinsight.domain.trace import (
     ANSWER_READY,
     APPROVAL_GRANTED,
@@ -57,9 +84,14 @@ from codeinsight.domain.trace import (
     RETRIEVAL_STARTED,
     SESSION_LOADED,
     STEP_STARTED,
+    TASK_QUEUED,
     VALIDATION_PREFLIGHT,
 )
-from codeinsight.infrastructure.chat_runtime import ChatExecution, ChatRuntime
+from codeinsight.infrastructure.chat_runtime import (
+    ChatExecution,
+    ChatRuntime,
+    ChatRuntimeError,
+)
 from codeinsight.infrastructure.gateway_errors import GatewayError
 from codeinsight.infrastructure.memory_store import InMemoryMemoryStore
 from codeinsight.infrastructure.model_gateway import CacheContext, resolve_route_budget
@@ -75,6 +107,31 @@ from codeinsight.ingestion.scanner import scan_repository
 # SubQuestionAnswer。
 
 INDEX_VERSION = "conversation-scan-v1"
+
+# 一次 Chat Agent Run 的策略版本与受理期限。期限只约束「这一轮多久之内必须
+# 跑完」，不是模型的超时；超时后的处理见 recovery_decision。
+CHAT_RUN_POLICY_VERSION = "chat-agent-run-v1"
+DEFAULT_RUN_DEADLINE_MS = 10 * 60 * 1000
+
+_CHAT_STATUS_BY_RUN_STATUS: dict[str, str] = {
+    QUEUED: CHAT_QUEUED,
+    RUNNING: CHAT_RUNNING,
+    WAITING_APPROVAL: CHAT_WAITING_APPROVAL,
+    WAITING_VALIDATION: CHAT_WAITING_VALIDATION,
+    COMPLETED: CHAT_COMPLETED,
+    FAILED: CHAT_FAILED,
+    CANCELLED: CHAT_CANCELLED,
+    UNKNOWN: CHAT_UNKNOWN,
+    MANUAL_REQUIRED: CHAT_MANUAL_REQUIRED,
+}
+
+
+class ChatDispatchError(RuntimeError):
+    """这一轮没有成功交给 Worker。
+
+    Run 已经留下失败事实（FAILED / MANUAL_REQUIRED），所以调用方看到的是
+    「受理失败但可查」，而不是一个悬在半空的 202。
+    """
 ModelFactory = Callable[[], object]
 EmbeddingFactory = Callable[[], object]
 RerankerFactory = Callable[[], Reranker]
@@ -95,6 +152,58 @@ class _SessionWorkspace:
     repo_id: str
     source_root: Path
     effective_root: Path
+
+
+def _turn_id_for(session_id: str, client_turn_id: str | None) -> str:
+    """本轮的 turn_id。
+
+    带 client_turn_id 时按它推导，而不是随机生成：这样「同一个请求重发」在
+    不同进程、不同时刻都会算出同一个 turn_id，agent_runs 上的唯一约束就替
+    我们挡住了第二个 Run。随机 ID 只能靠进程内字典去重，重启即失效。
+    """
+
+    if client_turn_id is None:
+        return f"turn-{uuid4().hex[:16]}"
+    digest = hashlib.sha256(f"{session_id}:{client_turn_id}".encode()).hexdigest()
+    return f"turn-{digest[:16]}"
+
+
+def _turn_from_run_record(
+    record: AgentRunRecord, *, user_message: str, task_type: str
+) -> ChatTurn:
+    """把持久化的 Run 事实翻译成一轮对话的公开状态。
+
+    只在「本进程没见过这一轮，但 Store 里确实有它」时使用：这时返回 404 会让
+    界面以为消息丢了，而事实其实一直在。分类结果来自重发时的同一条消息。
+    """
+
+    return ChatTurn(
+        turn_id=record.turn_id,
+        session_id=record.session_id,
+        run_id=record.run_id,
+        task_type=task_type,
+        status=_CHAT_STATUS_BY_RUN_STATUS.get(record.status, CHAT_FAILED),
+        user_message=user_message,
+        error=record.error_class,
+        created_at_epoch_ms=record.updated_at_epoch_ms,
+        updated_at_epoch_ms=record.updated_at_epoch_ms,
+        task_id=record.task_id,
+    )
+
+
+@dataclass(frozen=True)
+class _PendingTurn:
+    """进程内投递所需的上下文。
+
+    它是「API 进程与 Worker 进程尚未分离」的唯一残留：Worker 还拿不到分类结果
+    与工作区参数，只能由受理它的进程暂时替它拿着。Task 5 让 Worker 只凭 run_id
+    重建上下文之后，这个结构就会消失。
+    """
+
+    turn_input: _TurnInput
+    classification: ChatTaskClassification
+    show_debug_reasoning: bool
+    message: str
 
 
 @dataclass(frozen=True)
@@ -145,6 +254,30 @@ def default_session_service(*, max_recent_turns: int = 12) -> SessionService:
     )
 
 
+def default_agent_run_store() -> AgentRunStore:
+    """按环境装配 Agent Run 事实层。配了 MySQL 就用真表，否则退回进程内存。
+
+    与 default_session_service 同样的理由：Run 的事实只存在进程内存里时，
+    API 一重启，「这一轮到底跑没跑」就没人答得上来。
+    """
+
+    from codeinsight.infrastructure.db.engine import (
+        MySqlConfig,
+        create_all_tables,
+        create_db_engine,
+        create_session_factory,
+    )
+    from codeinsight.infrastructure.db.stores import MySqlAgentRunStore
+    from codeinsight.infrastructure.run_store import InMemoryAgentRunStore
+
+    mysql = MySqlConfig.from_env()
+    if mysql is None:
+        return InMemoryAgentRunStore()
+    engine = create_db_engine(mysql)
+    create_all_tables(engine)
+    return MySqlAgentRunStore(create_session_factory(engine))
+
+
 class ConversationService:
     """把用户体验上的一个对话映射到内部多种 Agent 路径。"""
 
@@ -158,6 +291,8 @@ class ConversationService:
         session_service: SessionService | None = None,
         runtime: ChatRuntime | None = None,
         mcp_client_factory=None,
+        agent_run_dispatcher: AgentRunDispatcher | None = None,
+        agent_run_store: AgentRunStore | None = None,
     ) -> None:
         self._model_factory = model_factory
         self._embedding_factory = embedding_factory
@@ -173,6 +308,15 @@ class ConversationService:
         )
         self.session_service = session_service or default_session_service()
         self.runtime = runtime or ChatRuntime()
+        self.agent_run_store = agent_run_store or default_agent_run_store()
+        self.agent_run_dispatcher = agent_run_dispatcher or AgentRunDispatcher(
+            store=self.agent_run_store,
+            transport=CallbackAgentRunTransport(self._schedule_turn),
+        )
+        self._pending_turns: dict[str, _PendingTurn] = {}
+        # 投递那一刻的受理快照。202 要回答的是「我刚受理了哪一轮」，
+        # 而不是「它现在跑到哪了」——后者会在响应组装时被 Worker 抢先改写。
+        self._accepted_turns: dict[str, ChatTurn] = {}
         self._turn_inputs: dict[str, _TurnInput] = {}
         self._client_turns: dict[tuple[str, str], ChatTurn] = {}
         self._client_turn_lock = threading.RLock()
@@ -225,6 +369,13 @@ class ConversationService:
         validation_profile: str = "python_compile",
         show_debug_reasoning: bool = False,
     ) -> ChatTurn:
+        """受理一轮对话：先把 Run 写成事实，再把它交给 Worker。
+
+        返回值代表「这一轮已被受理」，不代表回答已经产生。模型与工具调用在 Worker
+        侧执行——放在 API 线程里，一个慢模型就能把整个 HTTP 服务拖住，而进程一重启，
+        这一轮连痕迹都不会留下。
+        """
+
         if not message.strip():
             raise ValueError("message 不能为空")
         root, repo_id, repo_fingerprint, contains_workspace_state = (
@@ -232,14 +383,6 @@ class ConversationService:
                 session_id, repository_root, refresh_fingerprint=False
             )
         )
-        if client_turn_id is not None:
-            with self._client_turn_lock:
-                existing = self._client_turns.get((session_id, client_turn_id))
-                if existing is not None:
-                    existing_input = self._turn_inputs.get(existing.turn_id)
-                    if existing_input is not None and existing_input.repo_id != repo_id:
-                        raise ValueError("client_turn_id 不能跨仓库复用")
-                    return self.runtime.get_turn(existing.turn_id)
         context = self.session_service.get_or_create_session(
             session_id=session_id,
             scope=TenantScope(),
@@ -252,6 +395,21 @@ class ConversationService:
             message,
             has_active_code_goal=context.active_goal is not None,
         )
+
+        turn_id = _turn_id_for(session_id, client_turn_id)
+        existing = self.agent_run_store.find_run_by_turn(turn_id)
+        if existing is not None:
+            # 同一条消息重发：返回同一条事实，不再跑一遍模型。本进程没见过它时
+            # （例如 API 重启过），就用 Store 里的事实回答，而不是报 404。
+            known = self.runtime.get_turn_or_none(turn_id)
+            if known is not None:
+                return known
+            return _turn_from_run_record(
+                existing,
+                user_message=message.strip(),
+                task_type=classification.task_type,
+            )
+
         turn_input = _TurnInput(
             str(root),
             repo_id,
@@ -260,20 +418,46 @@ class ConversationService:
             limit,
             contains_workspace_state,
         )
-        def worker(turn: ChatTurn, debug: bool) -> ChatExecution:
-            return self._execute_turn(turn, turn_input, classification, debug)
-
-        turn = self.runtime.submit(
+        task = AgentRunTask(
+            task_id=f"task-{uuid4().hex[:16]}",
             session_id=session_id,
-            task_type=classification.task_type,
-            user_message=message.strip(),
-            show_debug_reasoning=show_debug_reasoning,
-            worker=worker,
+            turn_id=turn_id,
+            run_id=f"chat-run-{uuid4().hex[:16]}",
+            task_kind=TASK_AGENT_RUN,
+            idempotency_key=client_turn_id or turn_id,
+            policy_version=CHAT_RUN_POLICY_VERSION,
+            deadline_epoch_ms=int(time.time() * 1000) + DEFAULT_RUN_DEADLINE_MS,
         )
+        self._pending_turns[task.task_id] = _PendingTurn(
+            turn_input=turn_input,
+            classification=classification,
+            show_debug_reasoning=show_debug_reasoning,
+            message=message.strip(),
+        )
+        try:
+            record = self.agent_run_dispatcher.dispatch(task)
+        finally:
+            self._pending_turns.pop(task.task_id, None)
+        if record.status != QUEUED:
+            raise ChatDispatchError(record.error_class or "DISPATCH_FAILED")
+
+        turn = self._accepted_turns.pop(task.task_id, None)
+        if turn is None:
+            turn = self.runtime.get_turn_or_none(turn_id)
+        if turn is None:
+            raise ChatDispatchError("DISPATCH_FAILED")
         self._turn_inputs[turn.turn_id] = turn_input
-        if client_turn_id is not None:
-            with self._client_turn_lock:
-                self._client_turns[(session_id, client_turn_id)] = turn
+        self.runtime.emit(
+            turn.run_id,
+            TASK_QUEUED,
+            {
+                "turn_id": turn.turn_id,
+                "run_id": turn.run_id,
+                "task_id": task.task_id,
+                "task_kind": task.task_kind,
+                "status": QUEUED,
+            },
+        )
         self.runtime.emit(
             turn.run_id,
             INTENT_CLASSIFIED,
@@ -288,6 +472,35 @@ class ConversationService:
             },
         )
         return turn
+
+    def _schedule_turn(self, task: AgentRunTask) -> str:
+        """进程内投递：把任务交给本进程的线程池执行。
+
+        它也是 TransportRejected 的来源之一——同一会话上一轮还没结束时，ChatRuntime
+        会拒绝再开一轮。这个拒绝必须原样交回 API（409），不能被当成「通道故障」。
+        """
+
+        pending = self._pending_turns.get(task.task_id)
+        if pending is None:
+            raise TransportRejected(f"任务 {task.task_id} 的进程内上下文已经不在")
+        try:
+            turn = self.runtime.submit(
+                session_id=task.session_id,
+                task_type=pending.classification.task_type,
+                user_message=pending.message,
+                show_debug_reasoning=pending.show_debug_reasoning,
+                worker=lambda current, debug: self._execute_turn(
+                    current, pending.turn_input, pending.classification, debug
+                ),
+                turn_id=task.turn_id,
+                run_id=task.run_id,
+                task_id=task.task_id,
+            )
+        except ChatRuntimeError as error:
+            raise TransportRejected(str(error)) from error
+        self._accepted_turns[task.task_id] = turn
+        return turn.turn_id
+
 
     def _resolve_session_repository(
         self,

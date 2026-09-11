@@ -33,6 +33,15 @@ from codeinsight.domain.ports import AgentRunStore
 # 交人工对账，而不是自动重放一遍。
 DISPATCH_FAILED = "DISPATCH_FAILED"
 DISPATCH_UNKNOWN = "DISPATCH_UNKNOWN"
+DISPATCH_REJECTED = "DISPATCH_REJECTED"
+
+
+class TransportRejected(RuntimeError):
+    """投递被业务规则拒绝（例如同一会话已有在跑的 Run）。
+
+    它和「通道坏了」不是一回事：任务根本没发出去，调用方必须看到真实原因，
+    而不是收到一次静默失败。Run 仍会留下一条失败事实。
+    """
 
 
 @runtime_checkable
@@ -60,6 +69,20 @@ class InMemoryAgentRunTransport:
             raise self.failure
         self._published.append(task)
         return f"memory-{len(self._published)}"
+
+
+class CallbackAgentRunTransport:
+    """把投递接到一个进程内回调上：单进程模式与单元测试使用。
+
+    跨进程执行要换成 CeleryAgentRunTransport。这里保留回调，是因为 API 进程
+    仍然持有 Worker 需要的进程内上下文。
+    """
+
+    def __init__(self, callback: Callable[[AgentRunTask], str]) -> None:
+        self._callback = callback
+
+    def publish(self, task: AgentRunTask) -> str:
+        return self._callback(task)
 
 
 class AgentRunDispatcher:
@@ -107,16 +130,29 @@ class AgentRunDispatcher:
     def _publish(self, task: AgentRunTask, record: AgentRunRecord) -> AgentRunRecord:
         try:
             self._transport.publish(task)
+        except TransportRejected:
+            self._mark_failed(record, error_class=DISPATCH_REJECTED, needs_attention=False)
+            raise
         except Exception:
             ambiguous = task.may_have_side_effects
-            stopped = record.advanced(
-                status=MANUAL_REQUIRED if ambiguous else FAILED,
-                updated_at_epoch_ms=self._clock_ms(),
+            self._mark_failed(
+                record,
                 error_class=DISPATCH_UNKNOWN if ambiguous else DISPATCH_FAILED,
+                needs_attention=ambiguous,
             )
-            self._store.save_run(stopped)
-            return stopped
+            return self._store.get_run(record.run_id) or record
         return record
+
+    def _mark_failed(
+        self, record: AgentRunRecord, *, error_class: str, needs_attention: bool
+    ) -> AgentRunRecord:
+        stopped = record.advanced(
+            status=MANUAL_REQUIRED if needs_attention else FAILED,
+            updated_at_epoch_ms=self._clock_ms(),
+            error_class=error_class,
+        )
+        self._store.save_run(stopped)
+        return stopped
 
 
 def _now_ms() -> int:
