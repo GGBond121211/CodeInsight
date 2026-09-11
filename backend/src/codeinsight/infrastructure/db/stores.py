@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import Engine, and_, delete, insert, or_, select, update
+from sqlalchemy import Engine, and_, delete, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
@@ -852,6 +852,15 @@ class MySqlAgentRunStore:
         )
         with self._session_factory() as db:
             return tuple(_agent_run_from_row(row) for row in db.scalars(statement))
+
+    def count_queued_runs(self) -> int:
+        statement = (
+            select(func.count())
+            .select_from(AgentRunRow)
+            .where(AgentRunRow.status == QUEUED)
+        )
+        with self._session_factory() as db:
+            return int(db.scalar(statement) or 0)
 
     def claim_run(
         self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int

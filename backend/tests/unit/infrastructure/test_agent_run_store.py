@@ -190,6 +190,24 @@ def test_open_runs_respect_the_limit(store: AgentRunStore) -> None:
     assert [item.run_id for item in opened] == ["r-running", "r-approval"]
 
 
+def test_count_queued_runs_counts_only_runs_waiting_for_a_worker(
+    store: AgentRunStore,
+) -> None:
+    """队列上限要数的是「在等领取」：跑着的、等人的、终态都不算。"""
+
+    _seed_mixed_states(store)
+    assert store.count_queued_runs() == 1
+
+    # 被领走之后等待队列就空了：占容量的是「在等」，不是「在跑」。
+    assert (
+        store.claim_run(
+            "r-queued", worker_id="worker-a", lease_until_epoch_ms=_now_ms() + 60_000
+        )
+        is not None
+    )
+    assert store.count_queued_runs() == 0
+
+
 # 租约 CAS
 
 
@@ -288,4 +306,3 @@ def test_events_replay_after_a_sequence(tmp_path: Path) -> None:
 
     tail = log.read_events("run-1", after_sequence=1)
     assert [event.sequence for event in tail] == [2, 3]
-

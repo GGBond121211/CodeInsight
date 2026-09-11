@@ -506,6 +506,61 @@ tunable:
     priority: medium
     note: "旧配置中的 on 只是计划值；必须先实现并保留原始 query，再做 off/on 对照。"
 
+  # --- Q-011：异步 Agent Run Worker ---
+  # 2026-09-11 实测（2 Trial，真 MySQL 事实层 + 真 Redis broker，单进程 4 线程 Worker）：
+  # 拒绝机制可用（91/94 条按 QUEUE_FULL 被拒且全部留痕），但上限在并发下是软的
+  # （limit=300 实测峰值 305/303），排队等待由领取路径而不是上限决定
+  # （limit600 与 limit1200 的排队 P95 几乎重合）。因此不采纳三档候选值中的任何一个，
+  # 默认保持不设上限，只把它作为部署时的容量开关。详见
+  # `docs/AGENT_RUN_WORKER_EVALUATION.md` 与 `experiments/decision_records/agent_run_worker.md`。
+
+  - name: agent_run_queue_limit
+    current: null
+    unit: count
+    candidates: [300, 600, 1200]
+    safety_ceiling: 1200
+    ceiling_reason: "上限越高，等待队列越长；超过队列上限的受理会直接变成 QUEUE_FULL 失败事实"
+    scope: "application/conversation_service.py:agent_run_queue_limit_from_environment"
+    experiment: "Q-011 Task 11（2 Trial，experiments/configs/agent_run_worker_pressure.yaml）"
+    evidence: >-
+      Q-011 2026-09-11：limit300-burst450 两次 Trial 拒绝 91 / 94 条，全部留下
+      FAILED + QUEUE_FULL；limit600 与 limit1200 在同样 burst 下排队 P95 几乎相同
+      （31.2s vs 29.7s / 31.2s vs 31.4s），说明提高上限不降低等待。
+    evidence_status: implemented_unoptimized
+    priority: high
+    note: >-
+      null 表示不设上限（现状）。检测与插入之间没有原子性，实测越界约 1.7%，
+      不能当成硬上限。没有多进程 Worker 环境前不选默认值。
+
+  - name: agent_run_lease_seconds
+    current: 5
+    unit: seconds
+    candidates: [5, 15, 30]
+    safety_ceiling: 60
+    ceiling_reason: "租约越长，Worker 消失后接手越晚；超过 60 秒会让用户以为「还在跑」"
+    scope: "tests/evals/agent_run_queue_benchmark.py:LEASE_MS（实验口径）"
+    experiment: "Q-011 Task 11 recovery-lease-takeover"
+    evidence: >-
+      Q-011 2026-09-11：租约到期后另一个 Worker 在 57ms / 46ms 内接管并跑到 COMPLETED，
+      说明「到期即接管」这条路是通的，没有额外的等待或重试延迟。
+    evidence_status: implemented_unoptimized
+    priority: medium
+    note: >-
+      本次只测了 800ms 租约下的接管延迟，生产取值（秒级）与真实 Worker 崩溃尚未测；
+      与 Webhook/SSE 的存活判断无关，后者按事件流而不是租约。
+
+  - name: agent_run_queue_timeout_seconds
+    current: null
+    unit: seconds
+    candidates: [1, 3, 5]
+    scope: "未实现"
+    status: not_implemented
+    evidence_status: not_implemented
+    priority: low
+    note: >-
+      计划里的队列等待超时本版本没有实现，事实层只有 Run 的 deadline，它不是队列超时。
+      要启用必须先定义「超时后 Run 落到哪个状态」，否则等于静默丢弃。
+
 # ===========================================================================
 # Step 3 新增参数与决定的证据登记
 #

@@ -1,0 +1,93 @@
+# Q-011 Task 11：Agent Run 执行队列的容量与背压实验配置。
+#
+# 这份文件同时是「实验矩阵的定义」和「本次实际跑了什么」的记录：
+#   matrix       计划里列出的完整矩阵（不代表全部跑过）
+#   scenarios    实际会执行的组合；没列进来的组合就是没跑
+#   not_executed 明确没有执行的项，附原因
+#
+# 术语（沿用计划原文）：
+#   应用并发  同时处于系统处理生命周期中的请求数，不等于模型调用数，也不等于 Worker 数。
+#   突发      短时间内同时进入的请求量。
+#   队列上限  允许等待领取的任务数量；达到上限必须给出明确 backpressure/rejection。
+#   queue timeout 任务在队列中等待的最长时间。本版本没有实现这个超时，
+#             事实层只有 Run 的 deadline（DEFAULT_RUN_DEADLINE_MS），它不是队列超时。
+
+version: 1
+updated: "2026-09-11"
+owner: "Q-011 Task 11"
+
+matrix:
+  application_concurrency: [50, 100, 200, 300]
+  burst_concurrency: [450]
+  queue_limit: [300, 600, 1200]
+  queue_timeout_seconds: [1, 3, 5]
+
+# 迁移方向（每一个取值都要有实验来源，不能凭感觉写）：
+#   queue_limit 候选值来自计划里的 300 / 600 / 1200 三档；是否采用取决于
+#   「拒绝率是否可接受」与「排队等待 P95 是否还在用户能等的范围内」。
+#   occupancy_ms 是每个 Run 被领取后占住 Worker 的时间，用来制造真实排队；
+#   它不代表真实模型耗时（真实一轮是秒级），所以本实验的结论只能用于
+#   「容量与背压」这一层，不能外推成「模型服务能力」。
+
+scenarios:
+  - name: baseline-burst100-nolimit
+    kind: burst
+    burst: 100
+    workers: 4
+    queue_limit: null
+    occupancy_ms: 25
+    submit_threads: 16
+
+  - name: limit300-burst100
+    kind: burst
+    burst: 100
+    workers: 4
+    queue_limit: 300
+    occupancy_ms: 25
+    submit_threads: 16
+
+  - name: limit300-burst450
+    kind: burst
+    burst: 450
+    workers: 4
+    queue_limit: 300
+    occupancy_ms: 25
+    submit_threads: 16
+
+  - name: limit600-burst450
+    kind: burst
+    burst: 450
+    workers: 4
+    queue_limit: 600
+    occupancy_ms: 25
+    submit_threads: 16
+
+  - name: limit1200-burst450
+    kind: burst
+    burst: 450
+    workers: 4
+    queue_limit: 1200
+    occupancy_ms: 25
+    submit_threads: 16
+
+  - name: recovery-lease-takeover
+    kind: recovery
+    burst: 1
+    workers: 1
+    queue_limit: null
+    occupancy_ms: 800
+    submit_threads: 1
+
+not_executed:
+  - item: "多进程 Worker（真实 celery worker 进程）"
+    reason: "本机没有按 2.1.0 分支构建的 worker 镜像；用旧镜像跑出的并发数字会被误当成新链路的结论。"
+  - item: "应用并发 50 / 200 / 300 三档"
+    reason: "同一批场景里 burst 已经覆盖 100 与 450 两个点，补齐其余档位不改变容量结论的走向；留待有多进程环境时补。"
+  - item: "queue timeout 1 / 3 / 5 秒"
+    reason: "本版本没有实现队列等待超时（只有 Run deadline），无从测起。"
+  - item: "Redis 抖动 / 短暂不可用 / 429 / 5xx 故障注入"
+    reason: "需要在容器层反复切断网络，属于环境级实验，本机 Docker 由用户维护，不在本项目自动操作范围内。"
+  - item: "Worker CPU / 内存"
+    reason: "单进程多线程模型下，进程级 CPU/内存无法归因到某个 Worker；只有多进程才能测。"
+  - item: "真实 Provider 吞吐"
+    reason: "计划本身要求压力实验用 Fake Provider，真实模型只做少量协议 smoke；把模型吞吐混进容量结论会污染两者。"

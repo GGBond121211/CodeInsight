@@ -34,6 +34,9 @@ from codeinsight.domain.ports import AgentRunStore
 DISPATCH_FAILED = "DISPATCH_FAILED"
 DISPATCH_UNKNOWN = "DISPATCH_UNKNOWN"
 DISPATCH_REJECTED = "DISPATCH_REJECTED"
+# 队列满不是「通道坏了」，而是「现在不收」。它必须自己占一个错误类别：
+# 混进 DISPATCH_REJECTED 之后，运维分不清是容量问题还是这个请求本身被拒。
+QUEUE_FULL = "QUEUE_FULL"
 
 
 class TransportRejected(RuntimeError):
@@ -41,6 +44,14 @@ class TransportRejected(RuntimeError):
 
     它和「通道坏了」不是一回事：任务根本没发出去，调用方必须看到真实原因，
     而不是收到一次静默失败。Run 仍会留下一条失败事实。
+    """
+
+
+class QueueFullRejected(TransportRejected):
+    """等待领取的 Run 已达上限，这一轮没有被受理。
+
+    它和「通道坏了」的区别在于可预期：背压是设计内的行为，调用方应当退避重试，
+    而不是当成故障来排查。
     """
 
 
@@ -99,10 +110,14 @@ class AgentRunDispatcher:
         store: AgentRunStore,
         transport: AgentRunTransport,
         clock_ms: Callable[[], int] | None = None,
+        queue_limit: int | None = None,
     ) -> None:
         self._store = store
         self._transport = transport
         self._clock_ms = clock_ms or _now_ms
+        if queue_limit is not None and queue_limit < 1:
+            raise ValueError("queue_limit 必须为正整数或 None")
+        self._queue_limit = queue_limit
 
     def dispatch(self, task: AgentRunTask) -> AgentRunRecord:
         """创建（或返回已有的）Run，并把任务投给 Worker。"""
@@ -125,8 +140,25 @@ class AgentRunDispatcher:
             max_attempts=task.max_attempts,
             options=task.options,
         )
+        if self._queue_full():
+            # 拒绝也要留事实：否则压测里「被拒了多少」只能靠日志数，
+            # 而日志不是可查询的账。这里先落一条 FAILED/QUEUE_FULL 再抛。
+            stopped = record.advanced(
+                status=FAILED,
+                updated_at_epoch_ms=self._clock_ms(),
+                error_class=QUEUE_FULL,
+            )
+            self._store.save_run(stopped)
+            raise QueueFullRejected(
+                f"等待领取的 Run 已达上限 {self._queue_limit}，这一轮没有被受理。"
+            )
         self._store.save_run(record)
         return self._publish(task, record)
+
+    def _queue_full(self) -> bool:
+        if self._queue_limit is None:
+            return False
+        return self._store.count_queued_runs() >= self._queue_limit
 
     def dispatch_continuation(
         self,
@@ -201,4 +233,3 @@ class AgentRunDispatcher:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
-

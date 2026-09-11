@@ -18,6 +18,7 @@ from dataclasses import replace
 
 from codeinsight.domain.agent_run import (
     OPEN_AGENT_RUN_STATUSES,
+    QUEUED,
     RUNNING,
     AgentRunRecord,
 )
@@ -202,6 +203,10 @@ class InMemoryAgentRunStore:
             ]
         opened.sort(key=lambda item: item.updated_at_epoch_ms)
         return tuple(opened[:limit])
+
+    def count_queued_runs(self) -> int:
+        with self._lock:
+            return sum(1 for record in self._runs.values() if record.status == QUEUED)
 
     def claim_run(
         self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int

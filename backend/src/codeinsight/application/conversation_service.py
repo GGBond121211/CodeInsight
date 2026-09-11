@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import os
 import re
 import threading
 import time
@@ -292,6 +293,28 @@ def _turn_input_from_context(context: AgentRunContext) -> _TurnInput:
 
 
 
+ENV_AGENT_RUN_QUEUE_LIMIT = "CODEINSIGHT_AGENT_RUN_QUEUE_LIMIT"
+
+
+def agent_run_queue_limit_from_environment() -> int | None:
+    """允许同时等待领取的 Run 上限。未配置即不设上限。
+
+    默认不设上限是刻意的：单进程部署里「队列」就是本进程的一个回调，加上限
+    只会多一种本地跑不起来的方式。上限是给多 Worker 部署调的容量参数，
+    取值必须由压力实验给出，不能凭感觉挑一个好看的数。
+    """
+
+    raw = os.environ.get(ENV_AGENT_RUN_QUEUE_LIMIT, "").strip()
+    if not raw:
+        return None
+    value = int(raw)
+    if value < 1:
+        raise ValueError(
+            f"{ENV_AGENT_RUN_QUEUE_LIMIT} 必须为正整数或留空，收到 {raw!r}"
+        )
+    return value
+
+
 def default_agent_run_store() -> AgentRunStore:
     """按环境装配 Agent Run 事实层。配了 MySQL 就用真表，否则退回进程内存。
 
@@ -357,7 +380,9 @@ class ConversationService:
                 self._schedule_turn
             )
             agent_run_dispatcher = AgentRunDispatcher(
-                store=self.agent_run_store, transport=agent_run_transport
+                store=self.agent_run_store,
+                transport=agent_run_transport,
+                queue_limit=agent_run_queue_limit_from_environment(),
             )
         self.agent_run_dispatcher = agent_run_dispatcher
         self.agent_run_context_loader = AgentRunContextLoader(
@@ -539,7 +564,12 @@ class ConversationService:
                     "through_sequence": str(context.memory.compacted_through_sequence),
                 },
             )
-        record = self.agent_run_dispatcher.dispatch(task)
+        try:
+            record = self.agent_run_dispatcher.dispatch(task)
+        except TransportRejected as error:
+            # 投递被业务规则挡下（例如队列已满）：Run 已经留下失败事实，
+            # 调用方要看到真实原因，而不是拿一个永远不会有人执行的 202。
+            raise ChatDispatchError(str(error)) from error
         if record.status != QUEUED:
             raise ChatDispatchError(record.error_class or "DISPATCH_FAILED")
 

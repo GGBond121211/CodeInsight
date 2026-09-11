@@ -213,3 +213,8 @@ class AgentRunStore(Protocol):
     def claim_run(
         self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int
     ) -> AgentRunRecord | None: ...
+
+    # 还在等 Worker 领取的 Run 数量。队列上限与背压按它判断：它数的是
+    # 「受理了但还没开始跑」的事实，不是 broker 里的消息条数——后者在消息
+    # 被领取之后就查不到了。
+    def count_queued_runs(self) -> int: ...
