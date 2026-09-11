@@ -36,6 +36,27 @@ RepositoryMap 分页导航和 LSP/SCIP 只读工具。升级边界与未验证�
 
 我目前专注于项目的后端开发，重点是 Python、FastAPI、RAG、检索评测和 LangGraph 工作流。React 前端只用于把后端能力做成一个可以操作的本地演示页面，主要由 Codex 辅助完成；我负责前后端 HTTP API 的边界、接口联调和整体运行流程，不把这个项目当作前端能力展示。
 
+## 2.1.0 开发分支：异步 Agent Run（未发布）
+
+`codex/2.1.0-development` 分支把统一 Chat 的执行改成「受理即事实、执行交给 Worker」：
+
+- `POST /api/v2/chat/turns` 不再等模型：先把这一轮写成 Run 事实再投递，接口立刻返回 202，
+  由 `AgentRunWorker` 按租约领取并执行整段 Tool Loop。
+- Run、Task、Event 都有可查询的事实层（配了 MySQL 用真表，否则退回进程内存）。进程重启、
+  SSE 断线后可以按 `session_id → turn_id → run_id → task_id → attempt_id` 回放；恢复不了
+  的状态显式落到 `UNKNOWN` / `MANUAL_REQUIRED`，不重放可能已经改过工作区的操作。
+- 修改任务拆成四步：Preview → 用户审批 → 隔离 workspace apply → `ValidationWorker`
+  按登记好的 profile 校验 → 完成 / 有限修复 1 轮 / 交人工。
+- SSE 只订阅持久事件流：连上来先回放已发生的 sequence，再订阅增量并去重，终态自动停流。
+- 队列有明确背压：`CODEINSIGHT_AGENT_RUN_QUEUE_LIMIT` 到上限时拒绝受理，并留下
+  `FAILED` + `QUEUE_FULL` 事实；broker 不可达时只读任务落 `FAILED`、续跑落
+  `MANUAL_REQUIRED`，不会出现「已排队但永远没人执行」的假象。
+
+边界与上面同一套标准：跨进程执行要显式配 Redis broker 与 MySQL 事实层，默认的单进程部署仍是
+进程内回调投递；队列容量、并发与恢复的实测范围（含没有测的部分）见
+[docs/AGENT_RUN_WORKER_EVALUATION.md](docs/AGENT_RUN_WORKER_EVALUATION.md)。本分支未发布，
+也没有推到 GitHub。
+
 ![CodeInsight Smart Answer](docs/assets/codeinsight-smart-answer.png)
 
 ## 为什么做这个项目
@@ -330,6 +351,10 @@ npm.cmd run build
 ```
 
 自动化测试使用确定性的 fake model 和 fake embedding adapter，不会消耗付费模型额度。
+
+2.1.0 开发分支最近一次完整回归（`tests/unit` + `tests/integration`）：`813 passed, 55 skipped`，Ruff 通过；跳过的是需要真实 MySQL、Redis 或 Docker 的用例。依赖 MySQL 的集成用例必须单独运行——它们会清空测试库，与其余用例混跑会互相干扰。
+
+真实模型验收按 `AGENTS.md` 的授权与预算执行：单次连续周期上限 1000 万 token，请求级 `max_retries=0`，只做最小必要场景。
 
 
 

@@ -49,6 +49,7 @@ from codeinsight.domain.agent_run import (  # noqa: E402
     COMPLETED,
     QUEUED,
     TASK_AGENT_RUN,
+    TASK_RESUME_AFTER_APPROVAL,
     AgentRunTask,
 )
 from codeinsight.infrastructure.celery_agent_dispatcher import (  # noqa: E402
@@ -87,6 +88,7 @@ class Scenario:
     occupancy_ms: int
     submit_threads: int = 16
     kind: str = "burst"
+    broker_url: str = "redis://127.0.0.1:6399/1"
 
 
 def _mysql_config() -> MySqlConfig:
@@ -153,13 +155,15 @@ def _redis_latency_report(samples: int = 40) -> dict[str, Any]:
     }
 
 
-def _task(index: int, scenario: str) -> AgentRunTask:
+def _task(index: int, scenario: str, *, kind: str = TASK_AGENT_RUN) -> AgentRunTask:
+    """一次投递要用的事实。kind 只有 broker 不可用的硬用例会换。"""
+
     return AgentRunTask(
         task_id=f"task-{scenario}-{index}",
         session_id=f"session-{scenario}-{index}",
         turn_id=f"turn-{scenario}-{index}",
         run_id=f"run-{scenario}-{index}",
-        task_kind=TASK_AGENT_RUN,
+        task_kind=kind,
         idempotency_key=f"turn-{scenario}-{index}",
         policy_version="q011-queue-benchmark-v1",
         deadline_epoch_ms=int(time.time() * 1000) + 10 * 60 * 1000,
@@ -291,6 +295,7 @@ def _run_burst(
     sampler.start()
 
     started = time.perf_counter()
+    cpu_started = time.process_time()
     with ThreadPoolExecutor(max_workers=min(scenario.burst, scenario.submit_threads)) as pool:
         list(pool.map(submit, range(scenario.burst)))
     dispatch_seconds = time.perf_counter() - started
@@ -349,6 +354,12 @@ def _run_burst(
         },
         "drain_seconds": round(makespan_seconds - dispatch_seconds, 3),
         "makespan_seconds": round(makespan_seconds, 3),
+        # 单进程实验里 CPU 只能记到进程粒度：它不是「每个 Worker 的资源」，
+        # 也不能外推成多进程容量。
+        "cpu_seconds": round(time.process_time() - cpu_started, 3),
+        "cpu_ms_per_run": round((time.process_time() - cpu_started) / accepted * 1000, 2)
+        if accepted
+        else None,
         "throughput_per_second": round(accepted / makespan_seconds, 1)
         if makespan_seconds > 0 and accepted
         else None,
@@ -399,6 +410,48 @@ def _run_recovery(*, scenario: Scenario, store: MySqlAgentRunStore) -> dict[str,
         "recovery_ms": takeover_ms - lease_expiry_ms,
         "takeover_worker": takeover.worker_id,
         "status_reached": COMPLETED,
+    }
+
+
+def _run_broker_down(*, scenario: Scenario, store: MySqlAgentRunStore) -> dict[str, Any]:
+    """Hard Case：broker 连不上时，投递失败必须留下明确事实。
+
+    计划里最怕的状态是「已排队但永远不会有人执行」。这里把 broker 指到一个没人监听的
+    端口，检查两条：只读任务落到 FAILED，可能已经产生副作用的续跑落到 MANUAL_REQUIRED，
+    而且没有一条停在 QUEUED。
+    """
+
+    from celery import Celery
+
+    broken = Celery("codeinsight-broken", broker=scenario.broker_url, backend=None)
+    broken.conf.update(
+        broker_connection_retry_on_startup=False,
+        task_publish_retry=False,
+        task_publish_retry_policy={"max_retries": 0},
+        broker_transport_options={"max_retries": 0, "socket_connect_timeout": 2},
+    )
+    dispatcher = AgentRunDispatcher(
+        store=store,
+        transport=CeleryAgentRunTransport(broken),
+        queue_limit=None,
+    )
+
+    seen: dict[str, int] = {}
+    for index in range(scenario.burst):
+        kind = TASK_RESUME_AFTER_APPROVAL if index % 2 else TASK_AGENT_RUN
+        task = _task(index, scenario.name, kind=kind)
+        # 投递失败由 _publish 记成事实，不往外抛：这里要看的正是它记下了什么。
+        record = dispatcher.dispatch(task)
+        key = f"{record.status}/{record.error_class}"
+        seen[key] = seen.get(key, 0) + 1
+
+    return {
+        "scenario": scenario.name,
+        "kind": "broker_down",
+        "broker_url": scenario.broker_url,
+        "attempts": scenario.burst,
+        "outcomes": seen,
+        "left_queued": store.count_queued_runs(),
     }
 
 
@@ -454,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if scenario.kind == "recovery":
             outcome = _run_recovery(scenario=scenario, store=store)
+        elif scenario.kind == "broker_down":
+            outcome = _run_broker_down(scenario=scenario, store=store)
         else:
             outcome = _run_burst(scenario=scenario, store=store, dispatcher=dispatcher)
         print(f"[q011] {scenario.name} -> {json.dumps(outcome, ensure_ascii=False)}")

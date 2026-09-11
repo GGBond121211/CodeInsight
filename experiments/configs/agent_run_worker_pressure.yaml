@@ -78,6 +78,18 @@ scenarios:
     occupancy_ms: 800
     submit_threads: 1
 
+  # Hard Case：broker 指到一个没人监听的端口，投递必须失败得明明白白。
+  # 期望的两种落点：只读任务 FAILED/DISPATCH_FAILED；续跑 MANUAL_REQUIRED/
+  # DISPATCH_UNKNOWN（它可能已经写过工作区，不能自动重放）。两种都不许停在 QUEUED。
+  - name: hardcase-broker-down
+    kind: broker_down
+    burst: 20
+    workers: 1
+    queue_limit: null
+    occupancy_ms: 1
+    submit_threads: 1
+    broker_url: "redis://127.0.0.1:6399/1"
+
 not_executed:
   - item: "多进程 Worker（真实 celery worker 进程）"
     reason: "本机没有按 2.1.0 分支构建的 worker 镜像；用旧镜像跑出的并发数字会被误当成新链路的结论。"
@@ -87,7 +99,7 @@ not_executed:
     reason: "本版本没有实现队列等待超时（只有 Run deadline），无从测起。"
   - item: "Redis 抖动 / 短暂不可用 / 429 / 5xx 故障注入"
     reason: "需要在容器层反复切断网络，属于环境级实验，本机 Docker 由用户维护，不在本项目自动操作范围内。"
-  - item: "Worker CPU / 内存"
-    reason: "单进程多线程模型下，进程级 CPU/内存无法归因到某个 Worker；只有多进程才能测。"
+  - item: "Worker 内存与逐 Worker 资源归因"
+    reason: "单进程多线程模型下只能记进程级 CPU；内存与逐 Worker 归因要等多进程环境。"
   - item: "真实 Provider 吞吐"
     reason: "计划本身要求压力实验用 Fake Provider，真实模型只做少量协议 smoke；把模型吞吐混进容量结论会污染两者。"
