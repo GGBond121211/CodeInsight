@@ -252,6 +252,87 @@ class WorkingMemory:
         return replace(self, selected_evidence_ids=self.selected_evidence_ids + (evidence_id,))
 
 
+SESSION_SUMMARY_VERSION = "session-summary-v1"
+
+
+class SessionCompactionError(Exception):
+    """结构化摘要生成失败。
+
+    压缩失败时必须保留最近完整消息，并让调用方看到明确失败，不能静默丢
+    历史：丢掉的历史在恢复场景里无法再取回。
+    """
+
+
+@dataclass(frozen=True)
+class SessionCompactionSummary:
+    """一个压缩边界的结构化摘要。
+
+    它是模型可见的 Surface，不是代码证据：摘要里的 evidence_ids 只能作为
+    重新检索的线索，任何代码事实都要重新取证才能进入答案。
+
+    ``previous_text`` 原样保留上一段已定稿摘要，不重新摘要它。重复压缩
+    同一段旧历史，会让每一轮都在上一轮的压缩结果上再压缩一次，几轮之后
+    细节全部失真。
+    """
+
+    boundary_id: str
+    source_sequence_range: tuple[int, int]
+    previous_text: str | None = None
+    active_goal: str | None = None
+    confirmed_decisions: tuple[str, ...] = ()
+    rejected_approaches: tuple[str, ...] = ()
+    important_files: tuple[str, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    test_failures: tuple[str, ...] = ()
+    pending_actions: tuple[str, ...] = ()
+    open_questions: tuple[str, ...] = ()
+    # 被压缩轮次的逐轮片段。被丢弃的原文不会写回 Session Store，这里是它
+    # 唯一留下的记录，因此不能省。
+    turn_snippets: tuple[str, ...] = ()
+    summary_version: str = SESSION_SUMMARY_VERSION
+
+    def __post_init__(self) -> None:
+        if not self.boundary_id.strip():
+            raise ValueError("压缩边界必须有 ID")
+        if not self.summary_version.strip():
+            raise ValueError("摘要版本不能为空")
+        first, last = self.source_sequence_range
+        if first <= 0 or last < first:
+            raise ValueError("摘要来源轮次区间不合法")
+
+    def render(self) -> str:
+        """渲染成模型可见文本；顺序固定，便于用哈希判断边界能否复用。"""
+        lines: list[str] = []
+        if self.previous_text:
+            lines.append(self.previous_text)
+        lines.append(
+            f"[压缩边界 {self.boundary_id} 覆盖第 "
+            f"{self.source_sequence_range[0]}-{self.source_sequence_range[1]} 轮]"
+        )
+        lines.append("以下为自动压缩的恢复线索，不是代码证据，需以当前检索结果为准：")
+        if self.active_goal:
+            lines.append(f"当前目标：{self.active_goal}")
+        for label, values in (
+            ("已确认结论", self.confirmed_decisions),
+            ("已否决方案", self.rejected_approaches),
+            ("涉及文件", self.important_files),
+            ("历史证据编号", self.evidence_ids),
+            ("测试失败", self.test_failures),
+            ("待办动作", self.pending_actions),
+            ("未决问题", self.open_questions),
+        ):
+            if values:
+                lines.append(f"{label}：" + " | ".join(values))
+        for snippet in self.turn_snippets:
+            lines.append(snippet)
+        return "\n".join(lines)
+
+    @property
+    def summary_hash(self) -> str:
+        """摘要内容哈希；用于判断同一段边界能否原样复用。"""
+        return hashlib.sha256(self.render().encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class SessionMemory:
     """跨 Run 的对话状态。
@@ -269,6 +350,11 @@ class SessionMemory:
     summary: str | None = None
     compacted_through_sequence: int = 0
     compaction_count: int = 0
+    # Q-010：压缩边界与其内容哈希。有边界才谈得上「不重复压缩同一段历史」，
+    # 有哈希才谈得上「边界没变就原样复用」。
+    compaction_boundary_id: str | None = None
+    summary_hash: str | None = None
+    structured_summary: SessionCompactionSummary | None = None
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
@@ -277,6 +363,13 @@ class SessionMemory:
             raise ValueError("compacted_through_sequence 不能为负")
         if self.compaction_count < 0:
             raise ValueError("compaction_count 不能为负")
+        if self.summary_hash is not None and self.structured_summary is None:
+            raise ValueError("有摘要哈希就必须有结构化摘要")
+        if (
+            self.structured_summary is not None
+            and self.structured_summary.summary_hash != self.summary_hash
+        ):
+            raise ValueError("摘要哈希与结构化摘要不一致")
         expected_sequence = self.compacted_through_sequence + 1
         for turn in self.recent_turns:
             if turn.sequence != expected_sequence:
@@ -293,6 +386,10 @@ class SessionCompactionResult:
     tokens_before: int
     tokens_after: int
     summary_updated: bool
+    # 本次压缩产生的边界 ID；没有丢弃任何轮次时为 None。
+    boundary_id: str | None = None
+    # 摘要生成失败时的稳定错误类别。失败必须可见，且历史保持完整。
+    failure_class: str | None = None
 
     def __post_init__(self) -> None:
         if self.tokens_before < 0 or self.tokens_after < 0:

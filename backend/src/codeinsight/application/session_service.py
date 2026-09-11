@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
@@ -20,10 +21,13 @@ from codeinsight.domain.memory import (
     LAYER_SEMANTIC,
     LAYER_SESSION,
     LAYER_WORKING,
+    SESSION_SUMMARY_VERSION,
     MemoryCacheKey,
     MemoryRecord,
     SemanticMemory,
+    SessionCompactionError,
     SessionCompactionResult,
+    SessionCompactionSummary,
     SessionMemory,
     WorkingMemory,
 )
@@ -480,19 +484,49 @@ class SessionService:
                 (), sequences, before, before, False
             )
 
-        summary = _build_compaction_summary(memory.summary, dropped)
+        last_sequence = dropped[-1].sequence
+        compaction_count = memory.compaction_count + 1
+        boundary_id = _compaction_boundary_id(
+            memory.session_id, last_sequence, compaction_count
+        )
+        try:
+            structured = _build_structured_summary(
+                boundary_id=boundary_id,
+                previous=memory.structured_summary,
+                existing_summary=memory.summary,
+                dropped=dropped,
+                active_goal=_active_goal_text(context.active_goal),
+                confirmed_conclusions=memory.confirmed_conclusions,
+                rejected_approaches=memory.rejected_approaches,
+            )
+        except SessionCompactionError:
+            # 摘要建不起来时保持历史完整，并把失败类别交给调用方观测。
+            sequences = tuple(turn.sequence for turn in original_turns)
+            return context, SessionCompactionResult(
+                (),
+                sequences,
+                before,
+                before,
+                False,
+                None,
+                "SUMMARY_BUILD_FAILED",
+            )
+        summary = structured.render()
         compacted_memory = replace(
             memory,
             recent_turns=tuple(kept),
             summary=summary,
-            compacted_through_sequence=dropped[-1].sequence,
-            compaction_count=memory.compaction_count + 1,
+            compacted_through_sequence=last_sequence,
+            compaction_count=compaction_count,
+            compaction_boundary_id=boundary_id,
+            summary_hash=structured.summary_hash,
+            structured_summary=structured,
         )
         compacted_session = replace(
             context.session,
             recent_turns=tuple(kept),
             summary=summary,
-            compacted_through_sequence=dropped[-1].sequence,
+            compacted_through_sequence=last_sequence,
         )
         compacted_context = replace(
             context,
@@ -507,6 +541,7 @@ class SessionService:
             tokens_before=before,
             tokens_after=after,
             summary_updated=True,
+            boundary_id=boundary_id,
         )
         return compacted_context, result
 
@@ -695,19 +730,132 @@ def _session_history_text(memory: SessionMemory) -> str:
     return "\n".join(parts)
 
 
-def _build_compaction_summary(
-    existing: str | None,
+_PATH_PATTERN = re.compile(
+    r"[A-Za-z0-9_./\\-]+\.(?:py|ts|tsx|js|jsx|json|md|toml|ya?ml|sql|css|html)"
+)
+_EVIDENCE_ID_PATTERN = re.compile(r"\bE[0-9]{1,4}\b")
+_FAILURE_LINE_PATTERN = re.compile(
+    r"^(?:FAILED|ERROR|AssertionError|Traceback|[A-Za-z_.]+Error:).*"
+)
+
+
+def _extract_in_order(pattern: re.Pattern[str], text: str, *, limit: int) -> list[str]:
+    """按出现顺序去重取前 limit 个匹配，保持可复现。"""
+    found: list[str] = []
+    for match in pattern.finditer(text):
+        value = match.group(0).strip()
+        if value and value not in found:
+            found.append(value)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def _build_structured_summary(
+    *,
+    boundary_id: str,
+    previous: SessionCompactionSummary | None,
+    existing_summary: str | None,
     dropped: list[ConversationTurn],
-) -> str:
-    lines = [
-        "自动压缩历史（仅用于恢复线索，不是代码证据；需以当前检索结果为准）："
-    ]
-    if existing:
-        lines.append("已有摘要：" + existing[:600])
+    active_goal: str | None,
+    confirmed_conclusions: tuple[str, ...],
+    rejected_approaches: tuple[str, ...],
+) -> SessionCompactionSummary:
+    """把被丢弃的轮次压成一个确定性的结构化摘要。
+
+    这里只用规则提取，不调用模型：压缩是恢复线索，不是结论。调用模型生成
+    摘要会同时引入第二次成本和一个新的、无法审计的事实来源。
+    """
+    if not dropped:
+        raise SessionCompactionError("没有可压缩的轮次")
+    text = "\n".join(turn.content for turn in dropped)
+    failures: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if _FAILURE_LINE_PATTERN.match(line) and line not in failures:
+            failures.append(line[:160])
+        if len(failures) >= 8:
+            break
+    questions: list[str] = []
     for turn in dropped:
-        snippet = " ".join(turn.content.split())[:120]
-        lines.append(f"第 {turn.sequence} 轮 {turn.role}：{snippet}")
-    return "\n".join(lines)[:1400]
+        if turn.role != "user":
+            continue
+        stripped = " ".join(turn.content.split())
+        if not stripped:
+            continue
+        if stripped.endswith(("?", "？")) and stripped not in questions:
+            questions.append(stripped[:160])
+        if len(questions) >= 6:
+            break
+    snippets: list[str] = []
+    for turn in dropped:
+        collapsed = " ".join(turn.content.split())
+        snippets.append(f"第 {turn.sequence} 轮 {turn.role}：{collapsed[:120]}")
+    return SessionCompactionSummary(
+        boundary_id=boundary_id,
+        source_sequence_range=(dropped[0].sequence, dropped[-1].sequence),
+        previous_text=(
+            previous.render() if previous is not None else existing_summary or None
+        ),
+        active_goal=active_goal,
+        confirmed_decisions=confirmed_conclusions,
+        rejected_approaches=rejected_approaches,
+        important_files=tuple(_extract_in_order(_PATH_PATTERN, text, limit=20)),
+        evidence_ids=tuple(_extract_in_order(_EVIDENCE_ID_PATTERN, text, limit=40)),
+        test_failures=tuple(failures),
+        pending_actions=(),
+        open_questions=tuple(questions),
+        turn_snippets=tuple(snippets),
+    )
+
+
+def _active_goal_text(goal: CodeGoal | None) -> str | None:
+    """摘要里只放目标正文，不放 goal_id 这类内部标识。"""
+    if goal is None:
+        return None
+    text = " ".join(goal.user_goal.split())
+    return text[:200] if text else None
+
+
+def _compaction_boundary_id(session_id: str, last_sequence: int, count: int) -> str:
+    """确定性边界 ID：同一 Session 的同一段历史永远得到同一个 ID。"""
+    return f"cmp-{session_id[:12]}-{last_sequence}-{count}"
+
+
+def _structured_summary_from_payload(
+    raw: object,
+) -> SessionCompactionSummary | None:
+    """从持久化载荷恢复结构化摘要；缺字段按版本默认值补齐。"""
+    if not isinstance(raw, dict):
+        return None
+    sequence_range = raw.get("source_sequence_range")
+    if not isinstance(sequence_range, (list, tuple)) or len(sequence_range) != 2:
+        return None
+    return SessionCompactionSummary(
+        boundary_id=str(raw["boundary_id"]),
+        source_sequence_range=(int(sequence_range[0]), int(sequence_range[1])),
+        previous_text=(
+            str(raw["previous_text"]) if raw.get("previous_text") is not None else None
+        ),
+        active_goal=(
+            str(raw["active_goal"]) if raw.get("active_goal") is not None else None
+        ),
+        confirmed_decisions=tuple(
+            str(value) for value in raw.get("confirmed_decisions", ())
+        ),
+        rejected_approaches=tuple(
+            str(value) for value in raw.get("rejected_approaches", ())
+        ),
+        important_files=tuple(str(value) for value in raw.get("important_files", ())),
+        evidence_ids=tuple(str(value) for value in raw.get("evidence_ids", ())),
+        test_failures=tuple(str(value) for value in raw.get("test_failures", ())),
+        pending_actions=tuple(str(value) for value in raw.get("pending_actions", ())),
+        open_questions=tuple(str(value) for value in raw.get("open_questions", ())),
+        turn_snippets=tuple(str(value) for value in raw.get("turn_snippets", ())),
+        summary_version=str(
+            raw.get("summary_version", SESSION_SUMMARY_VERSION)
+        ),
+    )
 
 
 def _session_memory_to_payload(memory: SessionMemory) -> dict[str, object]:
@@ -721,6 +869,13 @@ def _session_memory_to_payload(memory: SessionMemory) -> dict[str, object]:
         "summary": memory.summary,
         "compacted_through_sequence": memory.compacted_through_sequence,
         "compaction_count": memory.compaction_count,
+        "compaction_boundary_id": memory.compaction_boundary_id,
+        "summary_hash": memory.summary_hash,
+        "structured_summary": (
+            asdict(memory.structured_summary)
+            if memory.structured_summary is not None
+            else None
+        ),
     }
 
 
@@ -758,6 +913,19 @@ def _session_memory_from_payload(payload: dict[str, object]) -> SessionMemory:
         summary=str(payload["summary"]) if payload.get("summary") is not None else None,
         compacted_through_sequence=int(payload.get("compacted_through_sequence", 0)),
         compaction_count=int(payload.get("compaction_count", 0)),
+        compaction_boundary_id=(
+            str(payload["compaction_boundary_id"])
+            if payload.get("compaction_boundary_id") is not None
+            else None
+        ),
+        summary_hash=(
+            str(payload["summary_hash"])
+            if payload.get("summary_hash") is not None
+            else None
+        ),
+        structured_summary=_structured_summary_from_payload(
+            payload.get("structured_summary")
+        ),
     )
 
 

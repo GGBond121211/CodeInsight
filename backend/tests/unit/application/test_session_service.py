@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from codeinsight.application.session_service import SessionService
 from codeinsight.domain.change import MODE_READ_ONLY, TenantScope
-from codeinsight.domain.memory import SemanticMemory, WorkingMemory
+from codeinsight.domain.memory import (
+    SESSION_SUMMARY_VERSION,
+    SemanticMemory,
+    SessionCompactionError,
+    WorkingMemory,
+)
 from codeinsight.infrastructure.memory_store import InMemoryMemoryStore
 from codeinsight.infrastructure.redis_cache import CacheUnavailableError, InMemoryCache
 from codeinsight.infrastructure.run_store import InMemorySessionStore
@@ -207,3 +214,178 @@ def test_long_session_auto_compacts_old_turns_and_keeps_sequence_continuity() ->
     restored = service.get_or_create_session(**kwargs)
     assert restored.session.compacted_through_sequence == 3
     assert [turn.sequence for turn in restored.session.recent_turns] == [4, 5]
+
+
+def _long_session(
+    service: SessionService, contents: list[str]
+) -> tuple[dict[str, object], object]:
+    kwargs: dict[str, object] = {
+        "session_id": "session-boundary",
+        "scope": SCOPE,
+        "repo_id": "repo-boundary",
+        "repo_fingerprint": "fingerprint-b",
+        "index_version": "index-b",
+    }
+    context = service.get_or_create_session(**kwargs)
+    for number, content in enumerate(contents, start=1):
+        context = service.append_turn(
+            context,
+            role="user" if number % 2 else "assistant",
+            content=content,
+            repo_fingerprint=str(kwargs["repo_fingerprint"]),
+            index_version=str(kwargs["index_version"]),
+        )
+    return kwargs, context
+
+
+def test_compaction_writes_a_boundary_id_and_matching_summary_hash() -> None:
+    service = SessionService(
+        InMemorySessionStore(), InMemoryMemoryStore(), max_recent_turns=2
+    )
+    _, context = _long_session(
+        service, [f"第 {number} 轮内容" for number in range(1, 5)]
+    )
+
+    memory = context.memory  # type: ignore[attr-defined]
+    assert memory.compaction_boundary_id is not None
+    assert memory.structured_summary is not None
+    assert memory.structured_summary.boundary_id == memory.compaction_boundary_id
+    assert memory.structured_summary.summary_hash == memory.summary_hash
+    assert memory.structured_summary.summary_version == SESSION_SUMMARY_VERSION
+    assert memory.summary == memory.structured_summary.render()
+
+
+def test_structured_summary_extracts_files_evidence_and_failures() -> None:
+    service = SessionService(
+        InMemorySessionStore(), InMemoryMemoryStore(), max_recent_turns=2
+    )
+    # 只压缩第 1 轮，让结构化字段与它一一对应，不受后续边界干扰。
+    _, context = _long_session(
+        service,
+        [
+            "请看 backend/src/codeinsight/domain/memory.py 的 E12 证据"
+            + "\n"
+            + "FAILED tests/unit/test_x.py::test_y"
+            + "\n"
+            + "还要不要保留 BM25？",
+            "继续",
+            "结束",
+        ],
+    )
+
+    summary = context.memory.structured_summary  # type: ignore[attr-defined]
+    assert summary is not None
+    assert summary.source_sequence_range == (1, 1)
+    assert "backend/src/codeinsight/domain/memory.py" in summary.important_files
+    assert "E12" in summary.evidence_ids
+    assert any("FAILED" in line for line in summary.test_failures)
+    assert any("BM25" in question for question in summary.open_questions)
+    # 逐轮片段也随摘要保留，被丢弃的原文不是彻底消失。
+    assert any("E12" in snippet for snippet in summary.turn_snippets)
+
+
+def test_second_compaction_keeps_the_previous_summary_verbatim() -> None:
+    service = SessionService(
+        InMemorySessionStore(), InMemoryMemoryStore(), max_recent_turns=2
+    )
+    kwargs, context = _long_session(
+        service, [f"第 {number} 轮内容" for number in range(1, 4)]
+    )
+    first = context.memory.structured_summary  # type: ignore[attr-defined]
+    assert first is not None
+    first_hash = first.summary_hash
+
+    context = service.append_turn(
+        context,
+        role="user",
+        content="第 4 轮内容",
+        repo_fingerprint=str(kwargs["repo_fingerprint"]),
+        index_version=str(kwargs["index_version"]),
+    )
+    second = context.memory.structured_summary  # type: ignore[attr-defined]
+    assert second is not None
+    assert second.boundary_id != first.boundary_id
+    # 上一段摘要原样保留，没有在下一次压缩里被重新摘要一次。
+    assert second.previous_text == first.render()
+    assert first.summary_hash == first_hash
+    for snippet in first.turn_snippets:
+        assert snippet in second.render()
+
+
+def test_rebuilt_service_restores_summary_boundary_and_recent_turns() -> None:
+    session_store = InMemorySessionStore()
+    memory_store = InMemoryMemoryStore()
+    kwargs: dict[str, object] = {
+        "session_id": "session-restore",
+        "scope": SCOPE,
+        "repo_id": "repo-restore",
+        "repo_fingerprint": "fingerprint-r",
+        "index_version": "index-r",
+    }
+    service = SessionService(session_store, memory_store, max_recent_turns=2)
+    context = service.get_or_create_session(**kwargs)
+    for number in range(1, 5):
+        context = service.append_turn(
+            context,
+            role="user" if number % 2 else "assistant",
+            content=f"第 {number} 轮内容",
+            repo_fingerprint=str(kwargs["repo_fingerprint"]),
+            index_version=str(kwargs["index_version"]),
+        )
+
+    rebuilt = SessionService(session_store, memory_store, max_recent_turns=2)
+    restored = rebuilt.get_or_create_session(**kwargs)
+
+    assert restored.memory.compaction_boundary_id == context.memory.compaction_boundary_id
+    assert restored.memory.summary_hash == context.memory.summary_hash
+    assert restored.memory.structured_summary == context.memory.structured_summary
+    assert restored.memory.summary == context.memory.summary
+    assert [turn.sequence for turn in restored.memory.recent_turns] == [3, 4]
+
+
+def test_summary_build_failure_keeps_history_and_reports_the_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codeinsight.application import session_service as module
+
+    def explode(**_: object) -> None:
+        raise SessionCompactionError("注入的摘要失败")
+
+    monkeypatch.setattr(module, "_build_structured_summary", explode)
+    service = SessionService(
+        InMemorySessionStore(), InMemoryMemoryStore(), max_recent_turns=2
+    )
+    _, context = _long_session(
+        service, [f"第 {number} 轮内容" for number in range(1, 5)]
+    )
+
+    # 失败时历史保持完整：既没有丢轮次，也没有产生半截摘要。
+    assert [turn.sequence for turn in context.memory.recent_turns] == [1, 2, 3, 4]  # type: ignore[attr-defined]
+    assert context.memory.summary is None  # type: ignore[attr-defined]
+    assert context.memory.compaction_boundary_id is None  # type: ignore[attr-defined]
+
+
+def test_compact_session_reports_the_failure_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    from codeinsight.application import session_service as module
+
+    service = SessionService(InMemorySessionStore(), InMemoryMemoryStore())
+    kwargs, context = _long_session(
+        service, [f"第 {number} 轮内容" for number in range(1, 5)]
+    )
+
+    def explode(**_: object) -> None:
+        raise SessionCompactionError("注入的摘要失败")
+
+    monkeypatch.setattr(module, "_build_structured_summary", explode)
+    compacted, result = service.compact_session(
+        context,
+        repo_fingerprint=str(kwargs["repo_fingerprint"]),
+        index_version=str(kwargs["index_version"]),
+        max_recent_turns=2,
+    )
+
+    assert result.failure_class == "SUMMARY_BUILD_FAILED"
+    assert result.dropped_turn_sequences == ()
+    assert result.summary_updated is False
+    assert result.boundary_id is None
+    assert [turn.sequence for turn in compacted.memory.recent_turns] == [1, 2, 3, 4]
