@@ -130,6 +130,9 @@ class GatewayRequest:
     # 本次请求的工作上下文窗口。None 表示调用方没有声明预算，此时不做
     # overflow guard；应用入口一律通过 resolve_route_budget 显式传入。
     context_window_tokens: int | None = None
+    # 本次请求所依据的 Session 压缩边界。它进入 surface 指纹，用于判断
+    # 「压缩之后前缀是否还被复用」，而不是把边界本身写进缓存键。
+    compaction_boundary_id: str | None = None
     # 聊天 Run 可把 Gateway 生命周期事件送入自己的实时事件流。
     event_log: object | None = None
 
@@ -419,6 +422,11 @@ class ModelGateway:
         self._stats_lock = threading.RLock()
         self.requests_total = 0
         self.semantic_cache_hits = 0
+        # 上下文保留口径：声明了工作窗口的请求里，有多少在原样状态下装得下。
+        # 它和 provider prompt cache 命中率是两件事，必须分开计数。
+        self.context_retention_checked = 0
+        self.context_retention_pass = 0
+        self.context_retention_overflow = 0
 
     def complete(self, request: GatewayRequest) -> GatewayResponse:
         route = self.routes.get(request.scene)
@@ -568,8 +576,14 @@ class ModelGateway:
         if window is None:
             return
         total = request.estimated_input_tokens + request.reserved_output_tokens
+        with self._stats_lock:
+            self.context_retention_checked += 1
         if total <= window:
+            with self._stats_lock:
+                self.context_retention_pass += 1
             return
+        with self._stats_lock:
+            self.context_retention_overflow += 1
         self._emit(
             request,
             CONTEXT_OVERFLOW,
@@ -775,6 +789,9 @@ class ModelGateway:
             records = tuple(self.cost_records)
             requests_total = self.requests_total
             semantic_cache_hits = self.semantic_cache_hits
+            retention_checked = self.context_retention_checked
+            retention_pass = self.context_retention_pass
+            retention_overflow = self.context_retention_overflow
         input_tokens = sum(record.input_tokens for record in records)
         cache_read_tokens = sum(record.cached_tokens for record in records)
         cache_miss_tokens = sum(_cost_cache_miss(record) for record in records)
@@ -787,6 +804,20 @@ class ModelGateway:
             "requests": requests_total,
             "provider_attempts": len(records),
             "successful_attempts": sum(record.error_class is None for record in records),
+            # 三个缓存口径必须分开看：上游 prompt cache 命中、Gateway 语义
+            # response cache 命中、上下文原样装得下。混成一个数字会让人把
+            # 「本地缓存省了一次调用」误读成「上游前缀命中率高」。
+            "provider_prompt_cache_read_tokens": cache_read_tokens,
+            "provider_prompt_cache_miss_tokens": cache_miss_tokens,
+            "provider_prompt_cache_hit_ratio": (
+                cache_read_tokens / (cache_read_tokens + cache_miss_tokens)
+                if cache_read_tokens + cache_miss_tokens
+                else 0.0
+            ),
+            "semantic_response_cache_hits": semantic_cache_hits,
+            "context_retention_checked": retention_checked,
+            "context_retention_pass": retention_pass,
+            "context_retention_overflow": retention_overflow,
             "semantic_cache_hits": semantic_cache_hits,
             "input_tokens": input_tokens,
             "cache_read_tokens": cache_read_tokens,
@@ -1114,6 +1145,7 @@ class GatewayChatModel:
         run_id: str | None = None,
         event_log=None,
         cache_context: CacheContext | None = None,
+        compaction_boundary_id: str | None = None,
     ) -> ModelCompletion:
         budget = resolve_route_budget("explain")
         request_user_prompt = self._assemble_user_prompt(system_prompt, user_prompt, budget)
@@ -1138,6 +1170,7 @@ class GatewayChatModel:
                 event_log=event_log,
                 cache_context=cache_context,
                 context_window_tokens=budget.context_window_tokens,
+                compaction_boundary_id=compaction_boundary_id,
             )
         )
         return ModelCompletion(
@@ -1182,6 +1215,7 @@ class GatewayChatModel:
         run_id: str | None = None,
         event_log=None,
         cache_context: CacheContext | None = None,
+        compaction_boundary_id: str | None = None,
     ) -> ModelCompletion:
         """执行不带结构化 JSON 约束的文本回答。
 
@@ -1212,6 +1246,7 @@ class GatewayChatModel:
                 event_log=event_log,
                 cache_context=cache_context,
                 context_window_tokens=budget.context_window_tokens,
+                compaction_boundary_id=compaction_boundary_id,
             )
         )
         return ModelCompletion(
@@ -1231,6 +1266,7 @@ class GatewayChatModel:
         run_id: str | None = None,
         event_log=None,
         cache_context: CacheContext | None = None,
+        compaction_boundary_id: str | None = None,
     ) -> ToolModelResponse:
         budget = resolve_route_budget("change-plan")
         messages = tuple(messages)
@@ -1250,6 +1286,7 @@ class GatewayChatModel:
                 event_log=event_log,
                 cache_context=cache_context,
                 context_window_tokens=budget.context_window_tokens,
+                compaction_boundary_id=compaction_boundary_id,
             )
         )
         return ToolModelResponse(

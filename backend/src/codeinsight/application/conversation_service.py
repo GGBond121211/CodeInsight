@@ -457,6 +457,7 @@ class ConversationService:
                         turn_input.contains_workspace_state
                         or classification.task_type == "change"
                     ),
+                    compaction_boundary_id=context.memory.compaction_boundary_id,
                 )
                 if goal_type == "change":
                     execution = self._execute_change(turn, turn_input, bound_model)
@@ -932,6 +933,7 @@ class _RunBoundModel:
         repo_id: str,
         repo_fingerprint: str,
         contains_workspace_state: bool,
+        compaction_boundary_id: str | None = None,
     ) -> None:
         self._base = base
         self._history = history
@@ -946,6 +948,7 @@ class _RunBoundModel:
             personalized=True,
         )
         self.model = getattr(base, "model", "unknown")
+        self._compaction_boundary_id = compaction_boundary_id
 
     def complete(self, system_prompt: str, user_prompt: str):
         result = _call_with_run_context(
@@ -955,6 +958,7 @@ class _RunBoundModel:
             run_id=self._runtime.get_turn(self._turn_id).run_id,
             event_log=self._runtime.event_log,
             cache_context=self._cache_context,
+            compaction_boundary_id=self._compaction_boundary_id,
         )
         self._publish_reasoning(result)
         return result
@@ -981,6 +985,7 @@ class _RunBoundModel:
             run_id=self._runtime.get_turn(self._turn_id).run_id,
             event_log=self._runtime.event_log,
             cache_context=self._cache_context,
+            compaction_boundary_id=self._compaction_boundary_id,
         )
         self._publish_reasoning(result)
         return result
@@ -1007,6 +1012,7 @@ class _RunBoundModel:
             run_id=self._runtime.get_turn(self._turn_id).run_id,
             event_log=self._runtime.event_log,
             cache_context=self._cache_context,
+            compaction_boundary_id=self._compaction_boundary_id,
         )
         self._publish_reasoning(result)
         return result
@@ -1033,7 +1039,9 @@ class _RunBoundModel:
             )
 
 
-def _call_with_run_context(method, *args, run_id: str, event_log, cache_context=None):
+def _call_with_run_context(
+    method, *args, run_id: str, event_log, cache_context=None, compaction_boundary_id=None
+):
     """兼容旧 FakeModel，同时给新版 Gateway 传递 run 绑定信息。"""
     try:
         parameters = inspect.signature(method).parameters
@@ -1050,6 +1058,8 @@ def _call_with_run_context(method, *args, run_id: str, event_log, cache_context=
         kwargs["event_log"] = event_log
     if accepts_kwargs or "cache_context" in parameters:
         kwargs["cache_context"] = cache_context
+    if accepts_kwargs or "compaction_boundary_id" in parameters:
+        kwargs["compaction_boundary_id"] = compaction_boundary_id
     return method(*args, **kwargs)
 
 

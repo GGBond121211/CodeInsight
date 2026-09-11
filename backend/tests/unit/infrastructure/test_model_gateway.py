@@ -232,6 +232,78 @@ def test_structured_output_truncated_at_max_tokens_is_recognized() -> None:
     assert "structured_output_truncated" in details
 
 
+def test_usage_summary_keeps_the_three_cache_views_apart() -> None:
+    cached = ProviderResponse("{\"ok\":true}", (), "deepseek-v4-flash", 80, 20, 30, "stop")
+    provider = FakeProviderAdapter(
+        {"deepseek-v4-flash": [cached, _success("deepseek-v4-flash")]}
+    )
+    gateway = ModelGateway(provider=provider)
+
+    gateway.complete(
+        _request(
+            context_window_tokens=1_000,
+            estimated_input_tokens=50,
+            reserved_output_tokens=50,
+        )
+    )
+    gateway.complete(
+        _request(
+            request_id="req-2",
+            context_window_tokens=1_000,
+            estimated_input_tokens=50,
+            reserved_output_tokens=50,
+        )
+    )
+    summary = gateway.usage_summary()
+
+    # 上游 prompt cache 是「同一次调用里有多少输入命中了前缀缓存」；
+    # 语义 response cache 是「整个请求被本地复用，根本没发出去」。
+    assert summary["provider_prompt_cache_read_tokens"] == 30
+    assert summary["provider_prompt_cache_miss_tokens"] == 130
+    assert summary["provider_prompt_cache_hit_ratio"] == pytest.approx(30 / 160)
+    assert summary["semantic_response_cache_hits"] == 0
+    assert summary["semantic_cache_hits"] == summary["semantic_response_cache_hits"]
+
+
+def test_usage_summary_counts_context_retention_separately() -> None:
+    provider = FakeProviderAdapter(
+        {
+            "deepseek-v4-flash": [
+                _success("deepseek-v4-flash"),
+                _success("deepseek-v4-flash"),
+            ]
+        }
+    )
+    gateway = ModelGateway(provider=provider)
+
+    without_window = _request()
+    assert without_window.context_window_tokens is None
+    gateway.complete(without_window)
+    gateway.complete(
+        _request(
+            request_id="req-2",
+            context_window_tokens=1_000,
+            estimated_input_tokens=50,
+            reserved_output_tokens=50,
+        )
+    )
+    with pytest.raises(ContextOverflowGatewayError):
+        gateway.complete(
+            _request(
+                request_id="req-3",
+                context_window_tokens=100,
+                estimated_input_tokens=200,
+                reserved_output_tokens=50,
+            )
+        )
+    summary = gateway.usage_summary()
+
+    # 没声明窗口的请求不算「保留通过」，它只是没被检查。
+    assert summary["context_retention_checked"] == 2
+    assert summary["context_retention_pass"] == 1
+    assert summary["context_retention_overflow"] == 1
+
+
 def test_registry_uses_deepseek_as_best_and_cheapest_capable_fallback() -> None:
     registry = default_model_registry()
     routes = default_routes(registry)
