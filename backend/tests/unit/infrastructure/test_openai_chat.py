@@ -9,6 +9,7 @@ from codeinsight.domain.errors import (
     ModelConfigurationError,
     ModelResponseError,
 )
+from codeinsight.infrastructure.chat_endpoint import EXPECTED_CHAT_BASE_URL
 from codeinsight.infrastructure.openai_chat import OpenAIChatModel, parse_model_answer
 
 
@@ -116,11 +117,12 @@ def test_environment_uses_project_gateway_base_url(monkeypatch) -> None:
     )
 
     assert model.model == "test-model"
-    assert captured["base_url"] == "https://api.frontier-intelligence.tech/v1"
+    assert captured["base_url"] == EXPECTED_CHAT_BASE_URL
 
 
 def test_environment_rejects_non_project_chat_endpoint() -> None:
-    with pytest.raises(ModelConfigurationError, match="api.frontier-intelligence.tech/v1"):
+    # 断言只引用常量：换中转站时改 chat_endpoint.py 一处，不需要同步改测试字面量。
+    with pytest.raises(ModelConfigurationError, match="CODEINSIGHT_BASE_URL"):
         OpenAIChatModel.from_environment(
             {
                 "CODEINSIGHT_API_KEY": "test-key",
