@@ -40,7 +40,7 @@ def estimate_messages_tokens(messages: object) -> int:
     return estimate_tokens(json.dumps(messages, ensure_ascii=False, default=str))
 
 
-CONTEXT_LIFECYCLE_POLICY_VERSION = "deepseek-harness-adapted-v1-95"
+CONTEXT_LIFECYCLE_POLICY_VERSION = "deepseek-harness-adapted-v2-input-budget"
 
 # 单次模型调用的输出预留。它同时是 ContextAssembler 的输入硬上限扣减项和
 # Provider 请求的 max_tokens，因此只能有一个来源：以前 assembler 默认 1000、
@@ -51,8 +51,9 @@ DEFAULT_MAX_OUTPUT_TOKENS = 40_960
 def scale_tokens(total: int, ratio: float) -> int:
     """按比例换算 token 阈值。
 
-    用十进制定点而不是浮点乘法：128000 * 0.95 必须恰好落在 121600，
-    任何一位漂移都会让压缩提前或推迟一整轮，进而让回归结果不稳定。
+    用十进制定点而不是浮点乘法：87040 * 0.95 必须恰好落在 82688，而不是
+    82687.999…。任何一位漂移都会让压缩提前或推迟一整轮，同一条会话轨迹
+    就可能在不同机器上产生不同的压缩次数。
     """
     if total < 0:
         raise ValueError("token 数不能为负")
@@ -67,12 +68,27 @@ class ContextLifecyclePolicy:
     触发比例是**压缩的压力阈值**：达到它就执行压缩，不是压缩后只剩余额。
     0.95 比参考实现的 0.80 更晚，留给下一轮输出和工具结果的空间更少，
     因此必须和 overflow guard、工具结果裁剪一起使用，不能单独生效。
+
+    分母是**可用输入预算**（上下文窗口减去本轮输出预留），不是原始窗口。
+    用原始窗口算出来的 0.95 × 128000 = 121600 永远不可能被触发：请求在
+    87040 就已经被 Gateway 的 overflow guard 拒收，压缩没有机会执行。
+    这个错误在 Q-010 第一版真实存在，因此现在由
+    ``verify_trigger_reachable`` 在构造路由预算时显式拒绝。
     """
 
     context_window_tokens: int = 128_000
     compaction_threshold_ratio: float = 0.95
     retain_recent_ratio: float = 0.16
-    summary_max_output_tokens: int = 8_192
+    # 摘要的 token 上限，由 session_service 在渲染后强制执行。本项目的摘要由
+    # 确定性规则生成、不调用模型，所以它不是「模型输出上限」；它约束的是
+    # summary 文本本身。没有这个上限时，previous_text 会随每次压缩累积，
+    # 最终把摘要本身撑成超预算的正文。
+    summary_max_tokens: int = 8_192
+    # 非历史部分的固定开销预留：explain system prompt（约 381）、只读工具
+    # schema（约 1036）、Router prompt（约 443）和当前问题。实测合计约 1880
+    # token，这里取 4096（约 2.2 倍余量）。本层只能测到 Session 历史；不扣掉
+    # 这部分，历史涨到触发点时整个请求已经越过拒收线。
+    non_history_reserve_tokens: int = 4_096
     compaction_retries: int = 1
     overflow_retries: int = 1
     version: str = CONTEXT_LIFECYCLE_POLICY_VERSION
@@ -84,27 +100,66 @@ class ContextLifecyclePolicy:
             raise ValueError("compaction_threshold_ratio 必须落在 (0, 1]")
         if not 0 < self.retain_recent_ratio < 1:
             raise ValueError("retain_recent_ratio 必须落在 (0, 1)")
-        if self.summary_max_output_tokens <= 0:
-            raise ValueError("summary_max_output_tokens 必须为正")
+        if self.summary_max_tokens <= 0:
+            raise ValueError("summary_max_tokens 必须为正")
+        if self.non_history_reserve_tokens < 0:
+            raise ValueError("non_history_reserve_tokens 不能为负")
         if self.compaction_retries < 0 or self.overflow_retries < 0:
             raise ValueError("重试预算不能为负")
         if not self.version.strip():
             raise ValueError("策略版本不能为空")
 
-    @property
-    def compaction_trigger_tokens(self) -> int:
-        """开始执行压缩的输入压力阈值；达到即触发。"""
-        return scale_tokens(self.context_window_tokens, self.compaction_threshold_ratio)
+    def compaction_trigger_tokens(self, reserved_output_tokens: int) -> int:
+        """开始执行压缩的输入压力阈值；达到即触发。
+
+        分母是可用输入预算，不是原始窗口：121600 这种取值永远不可达。
+        """
+        return scale_tokens(
+            self.input_allowance(reserved_output_tokens),
+            self.compaction_threshold_ratio,
+        )
+
+    def session_history_budget(self, reserved_output_tokens: int) -> int:
+        """留给 Session 历史的 token 预算。
+
+        触发点再扣掉非历史固定开销：本层只能测到历史，而触发点描述的是整个
+        请求。不扣掉这部分，历史刚好达到触发点时请求已经超窗。
+        """
+        budget = (
+            self.compaction_trigger_tokens(reserved_output_tokens)
+            - self.non_history_reserve_tokens
+        )
+        if budget <= 0:
+            raise ValueError("非历史预留吃掉了整个触发预算")
+        if budget <= self.retained_recent_tokens:
+            raise ValueError("历史预算必须大于压缩后保留预算，否则压缩没有收益")
+        return budget
+
+    def verify_trigger_reachable(self, reserved_output_tokens: int) -> None:
+        """断言压缩触发点落在拒收线以内、且压缩确实能腾出空间。
+
+        Q-010 第一版遗漏的就是这条不变量：当时 0.95 乘的是原始窗口，
+        触发点 121600 比输出预留后的输入上限 87040 还高，压缩在算术上
+        不可能被执行，而单元测试只验证了策略对象自己的数字，没有验证可达性。
+        """
+        trigger = self.compaction_trigger_tokens(reserved_output_tokens)
+        allowance = self.input_allowance(reserved_output_tokens)
+        if trigger >= allowance:
+            raise ValueError(
+                f"压缩触发点 {trigger} 必须低于输入上限 {allowance}，"
+                "否则压缩永远不会被触发"
+            )
+        self.session_history_budget(reserved_output_tokens)
 
     @property
     def retained_recent_tokens(self) -> int:
         """压缩后按原文保留的最近上下文预算。"""
         return scale_tokens(self.context_window_tokens, self.retain_recent_ratio)
 
-    def should_compact(self, input_tokens: int) -> bool:
+    def should_compact(self, input_tokens: int, *, reserved_output_tokens: int) -> bool:
         if input_tokens < 0:
             raise ValueError("input_tokens 不能为负")
-        return input_tokens >= self.compaction_trigger_tokens
+        return input_tokens >= self.compaction_trigger_tokens(reserved_output_tokens)
 
     def input_allowance(self, reserved_output_tokens: int) -> int:
         """输出预留之后的输入硬上限。"""

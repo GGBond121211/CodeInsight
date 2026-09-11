@@ -415,6 +415,24 @@ tunable:
     priority: high
     note: "计划明确要求在没有评测前不得把 repair 默认设为 2；当前按 1 起步。"
 
+  # --- Q-010：长会话上下文生命周期 ---
+  # 完整取值、派生关系和不变量写在 experiments/configs/context_lifecycle_128k.yaml，
+  # 这里只登记「运行时真正被读到的那个数字」，避免两处各写一套参数表。
+  - name: session_history_budget
+    current: 78592
+    unit: tokens
+    candidates: [65536, 78592, 98304]
+    safety_ceiling: 87040
+    ceiling_reason: "超过 87040（窗口减输出预留）的请求会被 Gateway 的 overflow guard 直接拒收，压缩没有机会执行"
+    scope: "application/context_budget.py:ContextLifecyclePolicy.session_history_budget"
+    evidence: >-
+      Q-010 2026-09-11：= floor(87040 * 0.95) - 4096。分母改成可用输入预算之前，
+      压缩触发点是 121600，比拒收线还高，压缩在算术上不可达；实测也只有
+      「保留轮数」在驱动压缩。
+    evidence_status: implemented_unoptimized
+    priority: high
+    note: "到达即压缩；压缩后的保留预算是 20480（retain_recent_ratio 0.16）。"
+
   - name: hnsw_m
     current: 16
     unit: count

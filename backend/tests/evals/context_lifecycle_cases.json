@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "dataset_id": "codeinsight-context-lifecycle-long-horizon",
-  "dataset_version": "2.1.0-q010-v1",
-  "source_commit": "b923101",
+  "dataset_version": "2.1.0-q010-v2",
+  "source_commit": "f3b567e",
   "description": "Q-010 长会话上下文生命周期评测。fake 模式验证链路结构；real 模式只跑小批量，用来证明同一套压缩/保留/恢复链路在真实模型下成立。",
   "metrics": [
     "compaction_trigger_rate",
@@ -14,12 +14,16 @@
     "session_restore_hit_turns",
     "context_retention_pass",
     "latency_p50_ms",
-    "latency_p95_ms"
+    "latency_p95_ms",
+    "compaction_trigger_counts",
+    "budget_compacted_turns",
+    "max_history_tokens"
   ],
   "fixture_root": "backend/tests/fixtures/sample_repo",
   "runtime": {
     "eval_recent_turns_default": 4,
-    "note": "线上公开 Session 默认 24 轮保留；评测刻意调小以在 20 轮内触发多次压缩。session_recent_turns 可按 case 覆盖。"
+    "note": "线上公开 Session 默认 24 轮保留；评测刻意调小以在 20 轮内触发多次压缩。session_recent_turns 可按 case 覆盖。",
+    "message_padding_chars": "可选；按 case 给每条 user 消息追加固定填充，用来在不跑真实长会话的情况下把历史推过 token 预算。session_recent_turns 同时放大，保证压缩不可能由保留轮数解释。"
   },
   "cases": [
     {
@@ -215,6 +219,69 @@
         "src/shop/pricing.py 的输出结构是什么？",
         "pricing.py 里最容易被误读的一段是哪里？",
         "总结 pricing.py 的定价流程"
+      ]
+    },
+    {
+      "id": "lh-06-token-budget-compaction",
+      "scenario": [
+        "token_budget_compaction_without_turn_limit",
+        "post_compaction_recall"
+      ],
+      "split": "dev",
+      "session_recent_turns": 200,
+      "restart_after_turn": null,
+      "repeat_of": {
+        "16": 1
+      },
+      "fake_tool_payload_chars": 6000,
+      "fake_fail_on_call": 2,
+      "message_padding_chars": 40000,
+      "turns": [
+        "解释一下 src/shop/fulfillment/pipeline.py 里派送线路的主流程",
+        "src/shop/fulfillment/ledger.py 的账本记录是在哪个环节写入的？",
+        "src/shop/shipping/workflow.py 与 pipeline.py 之间的调用关系是什么？",
+        "src/shop/pricing.py 的打折规则在哪里被读到？",
+        "src/shop/refunds.py 的退款入口从哪里进来？",
+        "src/shop/inventory.py 扣减库存的时机是什么？",
+        "src/shop/validation.py 校验失败会怎样影响 pipeline.py？",
+        "src/shop/api.py 暴露了哪些跟派送相关的接口？",
+        "src/shop/config.py 里哪些开关会改变派送行为？",
+        "src/shop/models.py 的订单结构里哪些字段决定线路？",
+        "src/shop/reporting.py 统计派送数据的数据源是什么？",
+        "src/shop/service.py 是入口还是编排层？",
+        "src/shop/admin/records.py 与 customer/records.py 的区别是什么？",
+        "src/shop/fulfillment/entrypoint.py 在流程中的位置是什么？",
+        "把刚才提到的派送主流程按调用顺序再讲一遍",
+        "解释一下 src/shop/fulfillment/pipeline.py 里派送线路的主流程",
+        "src/shop/fulfillment/ledger.py 的写入失败会怎样暴露？",
+        "总结这次长会话里确认过的关键结论"
+      ]
+    },
+    {
+      "id": "lh-07-token-budget-real-smoke",
+      "scenario": [
+        "real_model_token_budget_compaction",
+        "small_batch_not_full_suite"
+      ],
+      "split": "real",
+      "session_recent_turns": 200,
+      "restart_after_turn": null,
+      "repeat_of": {
+        "5": 1,
+        "7": 1
+      },
+      "fake_tool_payload_chars": 6000,
+      "fake_fail_on_call": 2,
+      "message_padding_chars": 50000,
+      "turns": [
+        "解释一下 src/shop/fulfillment/pipeline.py 里派送线路的主流程",
+        "src/shop/fulfillment/ledger.py 的账本是在哪个环节写入的？",
+        "src/shop/shipping/workflow.py 与 pipeline.py 的调用关系是什么？",
+        "src/shop/inventory.py 扣减库存的时机是什么？",
+        "把刚才提到的派送主流程按调用顺序再讲一遍",
+        "src/shop/fulfillment/entrypoint.py 在流程中的位置是什么？",
+        "解释一下 src/shop/fulfillment/pipeline.py 里派送线路的主流程",
+        "总结这次会话里确认过的派送关键结论"
       ]
     }
   ]

@@ -6,7 +6,7 @@
 schema_version: 1
 profile_id: context-lifecycle-128k-20260911
 status: implemented_unoptimized
-policy_version: deepseek-harness-adapted-v1-95
+policy_version: deepseek-harness-adapted-v2-input-budget
 
 # ---------------------------------------------------------------------------
 # 策略参数
@@ -14,28 +14,57 @@ policy_version: deepseek-harness-adapted-v1-95
 # 95% 是**触发压缩的压力阈值**，不是「压缩后剩余 95%」。它比 DeepSeek
 # Harness 参考的 80% 更晚，留给下一轮输出和工具结果的空间更少，因此必须和
 # overflow guard、工具结果裁剪一起使用，不能单独生效。
+#
+# 2026-09-11 修正（Q-010 第二阶段）：分母从「原始窗口」改成「可用输入预算」。
+# 用原始窗口算出的 0.95 x 128000 = 121600 比输出预留后的输入上限 87040 还高，
+# 压缩在算术上永远不可能触发（第一版的「压缩触发率」全部由保留轮数解释）。
+# 现在的触发点 82688 落在拒收线以内，并由 verify_trigger_reachable 在构造
+# 路由预算时断言。
 # ---------------------------------------------------------------------------
 policy:
+  input_budget_denominator:
+    value: 87040
+    meaning: context_window_tokens - reserved_output_tokens
+    source: backend/src/codeinsight/application/context_budget.py:input_allowance
+    evidence_status: implemented_unoptimized
   context_window_tokens:
     value: 128000
     source: backend/src/codeinsight/application/context_budget.py
     evidence_status: implemented_unoptimized
+  reserved_output_tokens:
+    value: 40960
+    source: CODEINSIGHT_MAX_OUTPUT_TOKENS；与 Provider 请求的 max_tokens 同源
+    evidence_status: user_fixed_not_tuned
   compaction_threshold_ratio:
     value: 0.95
-    derived_trigger_tokens: 121600
+    derived_trigger_tokens: 82688
+    derived_from: floor(87040 * 0.95)
     source: 用户明确指定，覆盖参考实现的 0.80
     evidence_status: user_specified_not_tuned
+  non_history_reserve_tokens:
+    value: 4096
+    source: 实测非历史开销约 1880（explain system 381 + 只读工具 schema 1036 + Router 443），取约 2.2 倍余量
+    evidence_status: measured_unoptimized
+  session_history_budget:
+    value: 78592
+    derived_from: 82688 - 4096
+    meaning: 会话历史估算超过它就执行压缩；这是运行时真正被读到的数字
+    evidence_status: implemented_unoptimized
   retain_recent_ratio:
     value: 0.16
     derived_retained_tokens: 20480
     source: 参考实现取值
     evidence_status: implemented_unoptimized
-  summary_max_output_tokens:
+  summary_max_tokens:
     value: 8192
-    source: 参考实现取值；本项目摘要由确定性规则生成，不调用模型
+    source: 参考实现取值；本项目摘要由确定性规则生成，不调用模型，因此这一项约束的是摘要文本本身，不是模型输出上限
     evidence_status: implemented_unoptimized
   compaction_retries: 1
   overflow_retries: 1
+  invariant: >-
+    trigger(82688) 必须低于 input_allowance(87040)，且 history_budget(78592)
+    必须大于 retained(20480)。前者保证压缩可达，后者保证压缩有收益；
+    两条都由 resolve_route_budget 在构造时调用 verify_trigger_reachable 断言。
 
 # ---------------------------------------------------------------------------
 # 三条路线共用的 Context Surface
@@ -107,16 +136,17 @@ eval_local_limits:
 # ---------------------------------------------------------------------------
 dataset:
   path: backend/tests/evals/context_lifecycle_cases.json
-  version: 2.1.0-q010-v1
-  case_count: 6
-  turns_total: 94
+  version: 2.1.0-q010-v2
+  case_count: 8
+  turns_total: 120
   split_tagging:
-    real: [lh-00-real-smoke]
-    dev: [lh-01-long-explain, lh-02-large-tool-output, lh-03-tool-failure]
+    real: [lh-00-real-smoke, lh-07-token-budget-real-smoke]
+    dev: [lh-01-long-explain, lh-02-large-tool-output, lh-03-tool-failure, lh-06-token-budget-compaction]
     regression: [lh-04-restart-restore, lh-05-repeated-request]
   fixture_root: backend/tests/fixtures/sample_repo
   scenarios:
     - 同一代码任务的长会话（26 / 20 / 16 / 14 / 12 轮）
+    - 只可能由 token 预算解释的压缩（保留轮数放大到 200 轮，靠 message_padding_chars 把历史推过 78592）
     - 用户中途纠正目标
     - 多次大工具输出（单条工具结果 900,000 字符）
     - 多次可恢复的工具失败
@@ -149,6 +179,9 @@ metrics:
   reported:
     - compaction_trigger_rate
     - compaction_events
+    - compaction_trigger_counts
+    - budget_compacted_turns
+    - max_history_tokens
     - summary_present_turns
     - overflow_rate
     - context_retention_pass
@@ -165,6 +198,24 @@ metrics:
     - 参数最优取值                      # 本配置没有任何 A/B 支撑
 
 # ---------------------------------------------------------------------------
+# 压缩触发点口径（2026-09-11 新增）
+#
+# compaction_trigger_rate 会把两种完全不同的压缩混成一个数字：
+#   retained_window        历史长度超过「保留轮数」触发。评测把
+#                          session_recent_turns 调到 4，第 3 轮起每轮都触发。
+#   session_history_budget 历史估算超过 token 预算触发，与轮数无关。
+# 读结果时必须分开看：只看总触发率会把「评测故意调小保留轮数」误读成
+# 「上下文预算在起作用」。lh-06 把保留轮数放大到 200，专门用来隔离后者。
+# ---------------------------------------------------------------------------
+compaction_trigger_semantics:
+  retained_window:
+    source: application/session_service.py:append_turn
+    event_fields: [compaction_count, through_sequence]
+  session_history_budget:
+    source: application/conversation_service.py:_enforce_session_budget
+    event_fields: [trigger, outcome, surface_tokens_before, surface_tokens_after, limit_tokens, retained_tokens, dropped_turns, compaction_count, boundary_id]
+
+# ---------------------------------------------------------------------------
 # 证据边界
 # ---------------------------------------------------------------------------
 evidence_boundary:
@@ -172,4 +223,3 @@ evidence_boundary:
   real_mode: 只跑少量轮次证明同一套链路在真实模型下成立，不做质量对照。
   real_requests: 客户端 max_retries=0，请求级输出上限，累计 Token 上限。
   not_production: 本地/评测证据不得表述成生产指标或已调优结论。
-

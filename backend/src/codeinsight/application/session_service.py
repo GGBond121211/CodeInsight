@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, replace
 
-from codeinsight.application.context_budget import estimate_tokens
+from codeinsight.application.context_budget import ContextLifecyclePolicy, estimate_tokens
 from codeinsight.domain.change import (
     GOAL_ACTIVE,
     CodeGoal,
@@ -59,6 +59,7 @@ class SessionService:
         *,
         cache_ttl_seconds: int = 300,
         max_recent_turns: int = 24,
+        summary_max_tokens: int | None = None,
     ) -> None:
         if cache_ttl_seconds <= 0:
             raise ValueError("cache_ttl_seconds 必须为正")
@@ -69,6 +70,14 @@ class SessionService:
         self._cache = cache
         self._cache_ttl_seconds = cache_ttl_seconds
         self._max_recent_turns = max_recent_turns
+        # 摘要上限来自生命周期策略的单一来源；显式传参只为测试和灰度。
+        self._summary_max_tokens = (
+            summary_max_tokens
+            if summary_max_tokens is not None
+            else ContextLifecyclePolicy().summary_max_tokens
+        )
+        if self._summary_max_tokens <= 0:
+            raise ValueError("summary_max_tokens 必须为正")
 
     def get_or_create_session(
         self,
@@ -469,7 +478,18 @@ class SessionService:
         def over_budget() -> bool:
             if max_context_tokens is None:
                 return False
-            candidate = replace(memory, recent_turns=tuple(kept))
+            # 候选 Memory 必须带上「如果现在停下」的边界，否则剩余轮次的
+            # sequence 与 compacted_through_sequence 对不上，SessionMemory 的
+            # 连续性校验会直接拒绝构造。这条路径在 Q-010 第一版从未被执行，
+            # 因此这个错误一直没有暴露。
+            boundary = (
+                dropped[-1].sequence if dropped else memory.compacted_through_sequence
+            )
+            candidate = replace(
+                memory,
+                recent_turns=tuple(kept),
+                compacted_through_sequence=boundary,
+            )
             return estimate_tokens(_session_history_text(candidate)) > max_context_tokens
 
         while kept and (
@@ -511,6 +531,7 @@ class SessionService:
                 None,
                 "SUMMARY_BUILD_FAILED",
             )
+        structured = _enforce_summary_budget(structured, self._summary_max_tokens)
         summary = structured.render()
         compacted_memory = replace(
             memory,
@@ -730,9 +751,55 @@ def _session_history_text(memory: SessionMemory) -> str:
     return "\n".join(parts)
 
 
+def _enforce_summary_budget(
+    summary: SessionCompactionSummary, max_tokens: int
+) -> SessionCompactionSummary:
+    """把渲染后的摘要压到 token 上限以内。
+
+    先丢最旧的逐轮片段——它们是体积主体，也是信息密度最低的部分；仍然超限
+    再截断上一段已定稿摘要。目标、已确认结论、失败和待办保留到最后，它们
+    才是恢复对话必需的线索。没有这个上限时，previous_text 会随每次压缩累积，
+    摘要本身最终撑成超预算的正文，压缩就白做了。
+    """
+    if max_tokens <= 0:
+        raise ValueError("summary_max_tokens 必须为正")
+    if estimate_tokens(summary.render()) <= max_tokens:
+        return summary
+    snippets = list(summary.turn_snippets)
+    while snippets:
+        snippets.pop(0)
+        candidate = replace(summary, turn_snippets=tuple(snippets))
+        if estimate_tokens(candidate.render()) <= max_tokens:
+            return candidate
+    trimmed = replace(summary, turn_snippets=())
+    if estimate_tokens(trimmed.render()) <= max_tokens or not summary.previous_text:
+        return trimmed
+    without_previous = replace(trimmed, previous_text=None)
+    remaining = max_tokens - estimate_tokens(without_previous.render())
+    if remaining <= 0:
+        return without_previous
+    # estimate_tokens 是 utf8 字节 / 4；按剩余预算反推可保留的字符数，并从
+    # 尾部保留——尾部是最近一次边界的内容，比更早的边界更值得留。
+    keep = remaining * 4
+    previous = summary.previous_text
+    while keep > 0:
+        candidate = replace(without_previous, previous_text=previous[-keep:])
+        if estimate_tokens(candidate.render()) <= max_tokens:
+            return candidate
+        keep = int(keep * 0.8)
+    return without_previous
+
+
+# 重复次数必须带上限：无界的 [A-Za-z0-9_./\\-]+ 遇到「一整段没有点的长词
+# 字符」时，会在每个起始位置一路回溯到结尾，退化成二次复杂度。压缩要扫描
+# 被丢弃的全部正文，只要正文里出现一大段 base64、压缩 JSON 或长标识符，
+# 一次压缩就会从毫秒级涨到几十秒。实测 40KB 的连续词字符这一处就要 30 秒。
 _PATH_PATTERN = re.compile(
-    r"[A-Za-z0-9_./\\-]+\.(?:py|ts|tsx|js|jsx|json|md|toml|ya?ml|sql|css|html)"
+    r"[A-Za-z0-9_./\\-]{1,200}\.(?:py|ts|tsx|js|jsx|json|md|toml|ya?ml|sql|css|html)"
 )
+# 压缩摘要要扫描被丢弃的全部正文。给扫描量一个上界，使压缩成本与正文形状
+# 无关：文件名和证据编号是恢复线索，不是证据本身，扫到前 200K 字符足够。
+_SUMMARY_SCAN_CHARS = 200_000
 _EVIDENCE_ID_PATTERN = re.compile(r"\bE[0-9]{1,4}\b")
 _FAILURE_LINE_PATTERN = re.compile(
     r"^(?:FAILED|ERROR|AssertionError|Traceback|[A-Za-z_.]+Error:).*"
@@ -769,6 +836,8 @@ def _build_structured_summary(
     if not dropped:
         raise SessionCompactionError("没有可压缩的轮次")
     text = "\n".join(turn.content for turn in dropped)
+    # 正则只扫有界长度；摘要里的文件名与证据编号是恢复线索，不是证据。
+    scan_text = text[:_SUMMARY_SCAN_CHARS]
     failures: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -800,8 +869,12 @@ def _build_structured_summary(
         active_goal=active_goal,
         confirmed_decisions=confirmed_conclusions,
         rejected_approaches=rejected_approaches,
-        important_files=tuple(_extract_in_order(_PATH_PATTERN, text, limit=20)),
-        evidence_ids=tuple(_extract_in_order(_EVIDENCE_ID_PATTERN, text, limit=40)),
+        important_files=tuple(
+            _extract_in_order(_PATH_PATTERN, scan_text, limit=20)
+        ),
+        evidence_ids=tuple(
+            _extract_in_order(_EVIDENCE_ID_PATTERN, scan_text, limit=40)
+        ),
         test_failures=tuple(failures),
         pending_actions=(),
         open_questions=tuple(questions),

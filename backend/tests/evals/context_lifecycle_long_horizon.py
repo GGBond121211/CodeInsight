@@ -62,6 +62,12 @@ EVAL_RATE_LIMIT_CAPACITY = 64_000_000
 EVAL_RATE_LIMIT_REFILL_PER_SECOND = 2_000_000
 EVAL_TENANT_TOKEN_LIMIT = 64_000_000
 
+# 用例可以把 message_padding_chars 打开，给每条 user 消息追加一段固定填充。
+# 用途只有一个：在没有真实长会话的前提下把 Session 历史推过 token 预算，从而
+# 让「按 token 压缩」这条路径在评测里也能被触发。填充是确定性的，因此
+# message_sha256 仍然可复现。
+PADDING_UNIT = "def handle_request(payload): return ledger.append(payload)  # filler"
+
 
 def _load_project_env() -> None:
     """为真实模式读取项目根 .env；不打印、不持久化任何密钥。"""
@@ -312,6 +318,47 @@ def _event_counts(events) -> dict[str, int]:
     return counts
 
 
+def _as_int(value: object, default: int = 0) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _compaction_detail(events) -> tuple[list[str], dict]:
+    """把一次轮次的压缩按触发点分类。
+
+    Q-010 第一版里评测报出的「压缩触发率」其实全是「保留轮数」驱动的：评测把
+    ``session_recent_turns`` 调到 4，第 3 轮起每轮都压缩，和 token 预算无关。
+    这里把触发点单独记下来，读结果的人才能分清两种压缩。
+    """
+    triggers = sorted(
+        {
+            str(event.payload.get("trigger") or "retained_window")
+            for event in events
+            if event.event_type == "context_compacted"
+        }
+    )
+    detail = next(
+        (
+            event.payload
+            for event in reversed(events)
+            if event.event_type == "context_compacted"
+            and event.payload.get("trigger") == "session_history_budget"
+        ),
+        None,
+    )
+    if detail is None:
+        return triggers, {}
+    return triggers, {
+        "outcome": str(detail.get("outcome") or ""),
+        "surface_tokens_before": _as_int(detail.get("surface_tokens_before")),
+        "surface_tokens_after": _as_int(detail.get("surface_tokens_after")),
+        "limit_tokens": _as_int(detail.get("limit_tokens")),
+        "dropped_turns": _as_int(detail.get("dropped_turns")),
+    }
+
+
 def _last_payload(events, event_type: str) -> dict:
     for event in reversed(events):
         if event.event_type == event_type:
@@ -433,6 +480,11 @@ def _run_case(
     messages = list(case["turns"])
     repeat_of = {int(key): int(value) for key, value in (case.get("repeat_of") or {}).items()}
     restart_after = case.get("restart_after_turn")
+    padding_chars = int(case.get("message_padding_chars", 0) or 0)
+    padding = ""
+    if padding_chars > 0:
+        repeats = padding_chars // len(PADDING_UNIT) + 1
+        padding = (PADDING_UNIT * repeats)[:padding_chars]
     turns: list[dict] = []
     latencies: list[float] = []
     restarts = 0
@@ -445,6 +497,8 @@ def _run_case(
             user_message = (
                 messages[repeat_of[index] - 1] if index in repeat_of else original_message
             )
+            if padding:
+                user_message = f"{user_message} {padding}"
             started = perf_counter()
             record: dict = {
                 "turn": index,
@@ -475,6 +529,7 @@ def _run_case(
                 latencies.append(latency)
                 events = _turn_events(client, actual["run_id"])
                 counts = _event_counts(events)
+                compaction_triggers, budget_compaction = _compaction_detail(events)
                 assembled = _last_payload(events, "context_assembled")
                 loaded = _last_payload(events, "session_loaded")
                 result = actual.get("result")
@@ -501,9 +556,15 @@ def _run_case(
                         "answer_chars": len(str(actual.get("assistant_message") or "")),
                         "latency_ms": latency,
                         "history_turns": int(assembled.get("history_turns", 0) or 0),
+                        "history_tokens": _as_int(assembled.get("history_tokens")),
+                        "history_budget_tokens": _as_int(
+                            assembled.get("history_budget_tokens")
+                        ),
                         "summary_present": assembled.get("summary_present") == "true",
                         "session_cache_hit": loaded.get("cache_hit") == "true",
                         "compacted": counts.get("context_compacted", 0) > 0,
+                        "compaction_triggers": compaction_triggers,
+                        "budget_compaction": budget_compaction or None,
                         "overflow": counts.get("context_overflow", 0) > 0,
                         "model_calls": counts.get("model_called", 0),
                         "loop_status": loop.get("loop_status"),
@@ -592,6 +653,10 @@ def _summarize(records: list[dict], usage: dict) -> dict[str, object]:
         reason = str(turn.get("loop_termination_reason") or "").strip()
         if reason:
             reasons[reason] = reasons.get(reason, 0) + 1
+    trigger_counts: dict[str, int] = {}
+    for turn in turns:
+        for trigger in turn.get("compaction_triggers") or ():
+            trigger_counts[trigger] = trigger_counts.get(trigger, 0) + 1
     cache_read = int(usage.get("provider_prompt_cache_read_tokens", 0) or 0)
     cache_miss = int(usage.get("provider_prompt_cache_miss_tokens", 0) or 0)
     checked = int(usage.get("context_retention_checked", 0) or 0)
@@ -609,6 +674,23 @@ def _summarize(records: list[dict], usage: dict) -> dict[str, object]:
             else 0.0
         ),
         "compaction_events": sum(1 for turn in turns if turn.get("compacted")),
+        # 轮数压缩和 token 预算压缩的触发原因完全不同，混成一个数字会把
+        # 「评测把保留轮数调到 4」误读成「上下文预算在起作用」。
+        "compaction_trigger_counts": dict(sorted(trigger_counts.items())),
+        "budget_compacted_turns": sum(
+            1 for turn in turns if turn.get("budget_compaction")
+        ),
+        "max_history_tokens": max(
+            (int(turn.get("history_tokens", 0) or 0) for turn in turns), default=0
+        ),
+        "history_budget_tokens": next(
+            (
+                int(turn.get("history_budget_tokens", 0) or 0)
+                for turn in turns
+                if turn.get("history_budget_tokens")
+            ),
+            0,
+        ),
         # 轮询状态 COMPLETED 只说明 HTTP 轮次跑完，不代表循环收口成功；把两者
         # 分开报，避免「26 轮 0 失败」掩盖 12 轮循环停在 STUCK 的事实。
         "answered_turns": sum(1 for turn in turns if turn.get("outcome") == "answered"),

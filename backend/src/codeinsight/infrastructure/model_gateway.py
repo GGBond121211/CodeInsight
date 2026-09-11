@@ -89,12 +89,30 @@ class RouteBudget:
         """扣掉输出预留之后的输入硬上限。"""
         return self.context_window_tokens - self.reserved_output_tokens
 
+    @property
+    def policy(self) -> ContextLifecyclePolicy:
+        """本预算对应的生命周期策略；窗口来自预算，比例取策略单一来源。"""
+        return ContextLifecyclePolicy(context_window_tokens=self.context_window_tokens)
+
+    @property
+    def compaction_trigger_tokens(self) -> int:
+        """压缩触发点，分母是可用输入预算而不是原始窗口。"""
+        return self.policy.compaction_trigger_tokens(self.reserved_output_tokens)
+
+    @property
+    def session_history_budget(self) -> int:
+        """Session 历史的 token 预算；超过它就该压缩。"""
+        return self.policy.session_history_budget(self.reserved_output_tokens)
+
 
 def resolve_route_budget(
     scene: str, *, policy: ContextLifecyclePolicy | None = None
 ) -> RouteBudget:
     """解析场景预算；窗口取共享策略，输出上限取当前配置。"""
     selected = policy or ContextLifecyclePolicy()
+    # 构造即校验：触发点必须落在拒收线以内。Q-010 第一版用原始窗口当分母，
+    # 得到 121600 这个永远不可达的触发点，而没有任何地方会发现。
+    selected.verify_trigger_reachable(configured_max_output_tokens())
     return RouteBudget(
         scene=scene,
         context_window_tokens=selected.context_window_tokens,

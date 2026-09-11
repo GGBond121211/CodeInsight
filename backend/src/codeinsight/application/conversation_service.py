@@ -24,6 +24,7 @@ from codeinsight.application.code_understanding_route import (
     to_auto_answer,
     uses_code_understanding,
 )
+from codeinsight.application.context_budget import estimate_tokens
 from codeinsight.application.conversation_router import (
     ChatTaskClassification,
     classify_chat_task,
@@ -61,7 +62,7 @@ from codeinsight.domain.trace import (
 from codeinsight.infrastructure.chat_runtime import ChatExecution, ChatRuntime
 from codeinsight.infrastructure.gateway_errors import GatewayError
 from codeinsight.infrastructure.memory_store import InMemoryMemoryStore
-from codeinsight.infrastructure.model_gateway import CacheContext
+from codeinsight.infrastructure.model_gateway import CacheContext, resolve_route_budget
 from codeinsight.infrastructure.redaction import redact_sensitive
 from codeinsight.infrastructure.redis_cache import RedisCache
 from codeinsight.infrastructure.reranker import Reranker
@@ -391,6 +392,72 @@ class ConversationService:
             return self.runtime.cancel_waiting(turn_id)
         raise ValueError("运行中的聊天任务只能通过后端自然收敛，暂不支持强制终止")
 
+    def _enforce_session_budget(
+        self,
+        turn: ChatTurn,
+        context: SessionContext,
+        *,
+        scene: str,
+        repo_fingerprint: str,
+    ) -> SessionContext:
+        """这轮请求发出之前，按 token 预算压缩 Session 历史。
+
+        Q-010 第一版的 95% 触发点乘的是原始窗口（121600），比输出预留后的
+        输入上限（87040）还高，而且没有任何调用方——压缩实际只由「保留轮数」
+        驱动。这里改成按可用输入预算计算，并且在发请求之前真正执行。
+
+        重试次数取策略的 ``compaction_retries``。仍然超预算时不再静默重试，
+        交给 Gateway 的 overflow guard 拒收并留下事件：继续压缩一个已经压到
+        保留窗口的历史，只会既丢掉上下文又换不来空间。
+        """
+        budget = resolve_route_budget(scene)
+        policy = budget.policy
+        limit = budget.session_history_budget
+        surface = estimate_tokens(_render_session_context(context))
+        if surface < limit:
+            return context
+        for _ in range(policy.compaction_retries + 1):
+            compacted, result = self.session_service.compact_session(
+                context,
+                repo_fingerprint=repo_fingerprint,
+                index_version=INDEX_VERSION,
+                max_context_tokens=policy.retained_recent_tokens,
+            )
+            if not result.dropped_turn_sequences:
+                self.runtime.emit(
+                    turn.run_id,
+                    CONTEXT_COMPACTED,
+                    {
+                        "trigger": "session_history_budget",
+                        "outcome": "no_progress",
+                        "surface_tokens": str(surface),
+                        "limit_tokens": str(limit),
+                        "failure_class": str(result.failure_class or ""),
+                    },
+                )
+                return compacted
+            context = compacted
+            after = estimate_tokens(_render_session_context(context))
+            self.runtime.emit(
+                turn.run_id,
+                CONTEXT_COMPACTED,
+                {
+                    "trigger": "session_history_budget",
+                    "outcome": "compacted",
+                    "surface_tokens_before": str(surface),
+                    "surface_tokens_after": str(after),
+                    "limit_tokens": str(limit),
+                    "retained_tokens": str(policy.retained_recent_tokens),
+                    "dropped_turns": str(len(result.dropped_turn_sequences)),
+                    "compaction_count": str(context.memory.compaction_count),
+                    "boundary_id": str(result.boundary_id or ""),
+                },
+            )
+            if after < limit:
+                return context
+            surface = after
+        return context
+
     def _execute_turn(
         self,
         turn: ChatTurn,
@@ -444,6 +511,7 @@ class ConversationService:
                     },
                 )
             goal_type = classification.task_type
+            request_scene = "change-plan" if goal_type == "change" else "explain"
             if goal_type in {"change", "explain"}:
                 mode = MODE_ISOLATED_WRITE if goal_type == "change" else MODE_READ_ONLY
                 context = self.session_service.continue_or_create_goal(
@@ -460,6 +528,12 @@ class ConversationService:
                     repo_fingerprint=turn_input.repo_fingerprint,
                     index_version=INDEX_VERSION,
                 )
+            context = self._enforce_session_budget(
+                turn,
+                context,
+                scene=request_scene,
+                repo_fingerprint=turn_input.repo_fingerprint,
+            )
             current_user_sequence = (
                 context.memory.recent_turns[-1].sequence
                 if context.memory.recent_turns
@@ -470,6 +544,10 @@ class ConversationService:
                 CONTEXT_ASSEMBLED,
                 {
                     "history_turns": str(len(context.memory.recent_turns)),
+                    "history_tokens": str(estimate_tokens(_render_session_context(context))),
+                    "history_budget_tokens": str(
+                        resolve_route_budget(request_scene).session_history_budget
+                    ),
                     "summary_present": str(bool(context.memory.summary)).lower(),
                     "active_goal": str(context.active_goal is not None).lower(),
                 },
