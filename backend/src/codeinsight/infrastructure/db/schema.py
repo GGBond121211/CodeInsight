@@ -314,6 +314,30 @@ class WorkspaceRow(Base):
     is_disposed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+class AgentRunOutputRow(Base):
+    """一次 Agent Run 尝试的公开产出。
+
+    为什么单独一张表，而不是给 agent_runs 加几列：agent_runs 的契约是「只存标识、
+    状态、租约与参数」（谁在领、第几次 attempt），加进正文之后，那张表的每一行都
+    变成一个内容对象，恢复巡检、队列计数与租约 CAS 都要拖着它走。产出是另一类
+    事实，用主键关联、按需读取。
+
+    attempt 保留下来是为了回答「这是第几次尝试的产出」：审批续跑会覆盖它，覆盖
+    之前的那一版属于上一手，不该被当成当前结论。
+    """
+
+    __tablename__ = "agent_run_outputs"
+    __table_args__ = (TABLE_ARGS,)
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    task_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    assistant_message: Mapped[str] = mapped_column(Text, nullable=False)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at_epoch_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class AgentRunRow(Base):
     """后台 Agent Run 的调度事实，与 run_events 一起支撑重启后恢复。
 

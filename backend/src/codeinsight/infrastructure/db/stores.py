@@ -29,6 +29,7 @@ from codeinsight.domain.agent_run import (
     QUEUED,
     RUNNING,
     AgentRunRecord,
+    RunOutput,
     RunRequestOptions,
 )
 from codeinsight.domain.change import (
@@ -43,6 +44,7 @@ from codeinsight.domain.change import (
 from codeinsight.domain.memory import MemoryRecord
 from codeinsight.domain.trace import AuditRecord, IdempotencyKey, RunEvent, TraceContext
 from codeinsight.infrastructure.db.schema import (
+    AgentRunOutputRow,
     AgentRunRow,
     ApprovalRow,
     AuditRecordRow,
@@ -861,6 +863,46 @@ class MySqlAgentRunStore:
         )
         with self._session_factory() as db:
             return int(db.scalar(statement) or 0)
+
+    def save_output(self, output: RunOutput) -> None:
+        """产出按 run_id 覆盖写：续跑产出的是这一轮当前的说法，不是历史堆积。"""
+
+        payload = (
+            json.dumps(output.result, ensure_ascii=False)
+            if output.result is not None
+            else None
+        )
+        with self._session_factory() as db:
+            row = db.get(AgentRunOutputRow, output.run_id)
+            if row is None:
+                row = AgentRunOutputRow(run_id=output.run_id)
+                db.add(row)
+            row.attempt = output.attempt
+            row.task_type = output.task_type
+            row.assistant_message = output.assistant_message
+            row.result_json = payload
+            row.error_class = output.error_class
+            row.updated_at_epoch_ms = output.updated_at_epoch_ms
+            db.commit()
+
+    def get_output(self, run_id: str) -> RunOutput | None:
+        with self._session_factory() as db:
+            row = db.get(AgentRunOutputRow, run_id)
+            if row is None:
+                return None
+            parsed = None
+            if row.result_json:
+                loaded = json.loads(row.result_json)
+                parsed = loaded if isinstance(loaded, dict) else None
+            return RunOutput(
+                run_id=row.run_id,
+                attempt=row.attempt,
+                task_type=row.task_type,
+                assistant_message=row.assistant_message,
+                result=parsed,
+                error_class=row.error_class,
+                updated_at_epoch_ms=row.updated_at_epoch_ms,
+            )
 
     def claim_run(
         self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int

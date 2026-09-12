@@ -280,6 +280,35 @@ class AgentRunTask:
 
 
 @dataclass(frozen=True)
+class RunOutput:
+    """一次 Agent Run 尝试的产出，落成事实供别的进程读。
+
+    它和 AgentRunRecord 的分工：Record 回答「这一轮跑到哪儿了」，RunOutput 回答
+    「这一轮说出了什么」。分开是必要的——「已排队但没人执行」和「跑完了但答案没
+    传回来」是两种不同的故障，混在一张表里就分不出来。
+
+    只存公开产出：给用户看的正文与结果载荷。模型隐藏推理、原始供应商响应与
+    凭据都不在这里（debug_reasoning 有自己的落点）。
+    """
+
+    run_id: str
+    attempt: int
+    task_type: str
+    assistant_message: str
+    result: dict[str, object] | None = None
+    error_class: str | None = None
+    updated_at_epoch_ms: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.run_id.strip():
+            raise ValueError("run_id 不能为空")
+        if self.attempt < 1:
+            raise ValueError("attempt 必须为正")
+        if self.updated_at_epoch_ms < 0:
+            raise ValueError("时间戳不能为负")
+
+
+@dataclass(frozen=True)
 class AgentRunRecord:
     """一次 Agent Run 的可持久化事实。
 

@@ -87,7 +87,8 @@ def create_chat_router(conversation_service: ConversationService) -> APIRouter:
     @router.get("/turns/{turn_id}", response_model=ChatTurnResponse)
     def get_turn(turn_id: str) -> ChatTurnResponse:
         try:
-            turn = conversation_service.runtime.get_turn(turn_id)
+            # 执行可能在别的进程：读不出来就回退到事实层，不要用 404 谎报丢失。
+            turn = conversation_service.resolve_turn(turn_id)
         except ChatRuntimeError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         return ChatTurnResponse(**turn.as_dict())
@@ -95,7 +96,7 @@ def create_chat_router(conversation_service: ConversationService) -> APIRouter:
     @router.get("/runs/{run_id}", response_model=ChatTurnResponse)
     def get_run(run_id: str) -> ChatTurnResponse:
         try:
-            turn = conversation_service.runtime.get_turn_by_run_id(run_id)
+            turn = conversation_service.resolve_turn_by_run_id(run_id)
         except ChatRuntimeError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         return ChatTurnResponse(**turn.as_dict())

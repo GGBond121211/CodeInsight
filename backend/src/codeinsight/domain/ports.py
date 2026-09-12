@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from codeinsight.domain.agent_run import AgentRunRecord
+from codeinsight.domain.agent_run import AgentRunRecord, RunOutput
 from codeinsight.domain.change import (
     ChangeApproval,
     CodeGoal,
@@ -218,3 +218,12 @@ class AgentRunStore(Protocol):
     # 「受理了但还没开始跑」的事实，不是 broker 里的消息条数——后者在消息
     # 被领取之后就查不到了。
     def count_queued_runs(self) -> int: ...
+
+    # 这一轮跑出来的结果。受理与执行分开之后，写答案的进程和读答案的进程可以
+    # 不是同一个：答案必须能跨过这条边界，否则 Worker 跑完的那一轮在 API 眼里
+    # 永远是「已排队」。
+    def save_output(self, output: RunOutput) -> None: ...
+
+    # 还没有产出时返回 None（「跑完了但没写产出」与「还没跑完」是两回事，
+    # 调用方按 Run 状态区分）。
+    def get_output(self, run_id: str) -> RunOutput | None: ...

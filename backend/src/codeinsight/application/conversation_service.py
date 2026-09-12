@@ -37,6 +37,7 @@ from codeinsight.application.agent_run_executor import (
     AgentRunContextError,
     AgentRunContextLoader,
     AgentRunExecutor,
+    _last_user_message,
 )
 from codeinsight.application.auto_answer_repository import auto_answer_repository
 from codeinsight.application.code_understanding_route import (
@@ -78,6 +79,7 @@ from codeinsight.domain.agent_run import (
     WAITING_VALIDATION,
     AgentRunRecord,
     AgentRunTask,
+    RunOutput,
     RunRequestOptions,
 )
 from codeinsight.domain.answer import AutoAnswer
@@ -160,6 +162,27 @@ _CHAT_STATUS_BY_RUN_STATUS: dict[str, str] = {
     UNKNOWN: CHAT_UNKNOWN,
     MANUAL_REQUIRED: CHAT_MANUAL_REQUIRED,
 }
+
+# 什么状态下的 Run 应该带着正文出现在用户面前。等审批、等校验与三种终态都算；
+# 「已排队」「正在跑」不算——那两种状态下产出要么还没写，要么属于上一次尝试，
+# 拿它当当前答案是错的。
+_ANSWER_BEARING_RUN_STATUSES: frozenset[str] = frozenset(
+    {
+        WAITING_APPROVAL,
+        WAITING_VALIDATION,
+        COMPLETED,
+        FAILED,
+        CANCELLED,
+        UNKNOWN,
+        MANUAL_REQUIRED,
+    }
+)
+
+
+# 事实层里读不出这一轮问的是什么时显示什么。它是一句「这里没有内容」的标记，
+# 不是编出来的问题：把读不出来伪装成空白，界面会显示一个没有内容的用户气泡，
+# 看起来像用户发了一句空话。
+_MISSING_USER_MESSAGE = "（会话记录里已找不到这一轮的用户消息）"
 
 
 class ChatDispatchError(RuntimeError):
@@ -577,7 +600,10 @@ class ConversationService:
         if turn is None:
             turn = self.runtime.get_turn_or_none(turn_id)
         if turn is None:
-            raise ChatDispatchError("DISPATCH_FAILED")
+            # 跨进程投递：本进程只受理、不执行，运行时里不会长出这一轮。
+            # 202 要回答的是「我刚受理了哪一轮」，那是事实层里的 Run，不是本进程
+            # 的内存——按内存判失败，等于把「受理成功」报成投递失败。
+            turn = self._project_turn(record, base=None)
         self._turn_inputs[turn.turn_id] = turn_input
         self.runtime.emit(
             turn.run_id,
@@ -652,6 +678,7 @@ class ConversationService:
             task, runner=self._runner_for(task, turn, show_debug_reasoning)
         )
         self._record_run_metrics(task, turn, outcome, started_ms=started_ms)
+        self._save_run_output(task, turn, outcome)
         if outcome.execution is None:
             # Worker 自己终止了这一轮。事实层里的状态（UNKNOWN、MANUAL_REQUIRED、
             # FAILED）必须原样变成用户看到的说法：一律显示「失败」，「需要人工对账」
@@ -683,11 +710,22 @@ class ConversationService:
                 claimed=False,
             )
 
+        started_ms = int(time.time() * 1000)
+        # 这一轮是别的进程受理的：turn 只能在 runner 里才拿得到（它需要重建出来
+        # 的上下文）。这里留一个把手，好让跑完之后仍能记指标、写产出。
+        adopted: dict[str, ChatTurn] = {}
+
         def runner(loaded: AgentRunContext) -> ChatExecution:
             turn = self._adopt_turn(record, loaded)
+            adopted["turn"] = turn
             return self._runner_for(task, turn, loaded.options.show_debug_reasoning)(loaded)
 
-        return self.agent_run_worker.handle(task, runner=runner)
+        outcome = self.agent_run_worker.handle(task, runner=runner)
+        turn = adopted.get("turn")
+        if turn is not None:
+            self._record_run_metrics(task, turn, outcome, started_ms=started_ms)
+            self._save_run_output(task, turn, outcome)
+        return outcome
 
     def _adopt_turn(self, record: AgentRunRecord, context: AgentRunContext) -> ChatTurn:
         """把事实层里的这一轮收进本地运行时。
@@ -702,6 +740,151 @@ class ConversationService:
                 record, user_message=context.user_message, task_type=context.task_type
             )
         )
+
+    def _save_run_output(
+        self, task: AgentRunTask, turn: ChatTurn, outcome: AgentRunOutcome
+    ) -> None:
+        """把这一轮的公开产出落成事实。
+
+        受理与执行可能不在同一个进程：只把答案留在内存里，另一个进程读到的就
+        永远是「已排队」。只写公开正文与结果载荷，模型隐藏推理不进这里。
+
+        写失败只吞掉不抛：这一轮的终态已经写进事实层了，产出是它的投影。为了
+        投影失败把一次成功的运行报成失败，或者让消息重投导致同一轮再跑一遍
+        （续跑可能已经改过工作区），代价都比少一次展示大。
+        """
+
+        execution = outcome.execution
+        if execution is None:
+            # Worker 自己终止了这一轮：状态与错误类别已经在 Run 事实里，
+            # 没有正文可写，也不该覆盖上一次尝试留下的产出。
+            return
+        record = self.agent_run_store.get_run(task.run_id)
+        if record is None:
+            return
+        try:
+            self.agent_run_store.save_output(
+                RunOutput(
+                    run_id=task.run_id,
+                    attempt=record.attempt,
+                    task_type=turn.task_type,
+                    assistant_message=execution.assistant_message or "",
+                    result=dict(execution.result) if execution.result else None,
+                    error_class=outcome.error_class,
+                    updated_at_epoch_ms=int(time.time() * 1000),
+                )
+            )
+        except Exception:  # noqa: BLE001 - 见 docstring：投影失败不能改终态
+            pass
+
+    def resolve_turn(self, turn_id: str) -> ChatTurn:
+        """按 turn_id 读一轮对话：本进程见过就用它，否则从事实层重建。
+
+        执行换到别的进程以后，「本进程没见过」不再等于「不存在」。返回 404 会让
+        用户以为消息丢了，而事实其实一直在——所以这里必须回退到事实层。
+        """
+
+        local = self.runtime.get_turn_or_none(turn_id)
+        record = self.agent_run_store.find_run_by_turn(turn_id)
+        if record is None:
+            if local is None:
+                raise ChatRuntimeError("聊天 Run 不存在")
+            return local
+        return self._project_turn(record, base=local)
+
+    def resolve_turn_by_run_id(self, run_id: str) -> ChatTurn:
+        """按 run_id 读同一轮对话。与 resolve_turn 共用同一套回退规则。"""
+
+        local = self.runtime.get_turn_or_none_by_run_id(run_id)
+        record = self.agent_run_store.get_run(run_id)
+        if record is None:
+            if local is None:
+                raise ChatRuntimeError("聊天 Run 不存在")
+            return local
+        return self._project_turn(record, base=local)
+
+    def _project_turn(self, record: AgentRunRecord, *, base: ChatTurn | None) -> ChatTurn:
+        """把 Run 事实投影成一轮对话。
+
+        状态以事实层为准——同一个 Run 只能有一种说法；正文优先用产出事实，没有
+        产出时才回退到本地内存那一份（本地只补事实层还没有的东西）。
+        """
+
+        output = self.agent_run_store.get_output(record.run_id)
+        facts_inputs = self._facts_turn_inputs(record)
+        if facts_inputs is not None:
+            user_message, task_type = facts_inputs
+        elif output is not None:
+            # 提问读不出来了（被后来的压缩挤出保留窗口），但产出事实记得它属于
+            # 哪类任务——那是执行进程当场写下的，不是这里猜的。
+            user_message, task_type = _MISSING_USER_MESSAGE, output.task_type
+        else:
+            # 提问读不出来、也没有产出：这一轮没有任何可展示的输入，硬拼一个
+            # 任务类型只会把「不知道」说成「知道」。
+            raise ChatRuntimeError("这一轮的会话事实不完整，读不出它问的是什么")
+        if base is not None:
+            user_message = base.user_message or user_message
+            if base.task_type:
+                task_type = base.task_type
+        has_answer = record.status in _ANSWER_BEARING_RUN_STATUSES
+        answer = output if has_answer else None
+        return ChatTurn(
+            turn_id=record.turn_id,
+            session_id=record.session_id,
+            run_id=record.run_id,
+            task_type=task_type,
+            status=_CHAT_STATUS_BY_RUN_STATUS.get(record.status, CHAT_FAILED),
+            user_message=user_message,
+            assistant_message=(
+                answer.assistant_message
+                if answer is not None
+                else (base.assistant_message if base else None)
+            ),
+            result=(
+                dict(answer.result)
+                if answer is not None and answer.result
+                else (base.result if base else None)
+            ),
+            error=record.error_class or (output.error_class if output else None),
+            reasoning_available=base.reasoning_available if base else False,
+            created_at_epoch_ms=(
+                base.created_at_epoch_ms if base else record.updated_at_epoch_ms
+            ),
+            updated_at_epoch_ms=record.updated_at_epoch_ms,
+            task_id=record.task_id,
+        )
+
+    def _facts_turn_inputs(self, record: AgentRunRecord) -> tuple[str, str] | None:
+        """这一轮问的是什么、算哪类任务：从 Session 事实读，不用进程内缓存。
+
+        API 重启之后本地什么都没有，界面仍然要能显示「你在问什么」。
+
+        读法与 Worker 的 AgentRunContextLoader 完全一致（同一个 Session 事实、
+        同一个「最后一条用户消息」定义）——两处各写一套，判出来的任务类型就会
+        在受理端和执行端不一致。
+
+        返回 None 表示事实不足以回答「问的是什么」：会话没了，或者这一轮的用户
+        消息已经被后来的压缩挤出保留窗口。那不是异常，只是这一项读不出来。
+        """
+
+        session = self.session_service.load_session(record.session_id)
+        if session is None:
+            return None
+        memory = self.session_service.load_session_memory(
+            session_id=session.session_id,
+            scope=session.scope,
+            repo_id=session.repo_id,
+        )
+        if memory is None:
+            return None
+        try:
+            message = _last_user_message(memory)
+        except AgentRunContextError:
+            return None
+        classification = classify_chat_task(
+            message, has_active_code_goal=session.active_goal_id is not None
+        )
+        return message, classification.task_type
 
     def resolve_run_id(self, turn_id: str) -> str | None:
         """这一轮对应的 run_id：本地运行时优先，其次事实层。
@@ -729,20 +912,6 @@ class ConversationService:
             return turn.status in SETTLED_CHAT_STATUSES
         record = self.agent_run_store.get_run(run_id)
         return record is None or record.status not in OPEN_AGENT_RUN_STATUSES
-
-    def _adopt_turn(self, record: AgentRunRecord, context: AgentRunContext) -> ChatTurn:
-        """把事实层里的这一轮收进本地运行时。
-
-        Worker 进程和 API 进程各有一个运行时。执行体会按 turn_id 读写本地运行时
-        的状态，所以 Worker 侧必须先有这一轮；它的内容全部来自事实层，而不是从
-        另一个进程的内存里搬过来。
-        """
-
-        return self.runtime.adopt_turn(
-            _turn_from_run_record(
-                record, user_message=context.user_message, task_type=context.task_type
-            )
-        )
 
     def _record_run_metrics(
         self,
@@ -1095,7 +1264,7 @@ class ConversationService:
                 raise ValueError("这一轮的审批正在处理中")
             self._approvals_in_flight.add(turn_id)
         try:
-            turn = self.runtime.get_turn(turn_id)
+            turn = self.resolve_turn(turn_id)
             if turn.status != CHAT_WAITING_APPROVAL:
                 raise ValueError("当前轮次不在等待审批状态")
             record = self.agent_run_store.get_run(turn.run_id)
@@ -1132,13 +1301,19 @@ class ConversationService:
                 )
             except TransportRejected as error:
                 raise ChatDispatchError(str(error)) from error
-            return self.runtime.get_turn(turn_id)
+            # 续跑已经登记进事实层，所以按事实回话：跨进程时本进程的运行时根本
+            # 不知道这一轮，按它回话会给出一个过期的「等待审批」。
+            return self.resolve_turn(turn_id)
         finally:
             with self._approval_lock:
                 self._approvals_in_flight.discard(turn_id)
 
     def cancel_turn(self, turn_id: str) -> ChatTurn:
-        turn = self.runtime.get_turn(turn_id)
+        turn = self.resolve_turn(turn_id)
+        if self.runtime.get_turn_or_none(turn_id) is None:
+            # 取消要同时改运行时与变更事实，而运行时只存在于受理那一轮的进程。
+            # 与其在这里假装取消成功，不如说清楚这一轮不归本进程管。
+            raise ValueError("这一轮不在本进程执行，暂不支持取消")
         if turn.status == CHAT_WAITING_APPROVAL:
             self.change_service.cancel(turn.run_id)
             return self.runtime.cancel_waiting(turn_id)
@@ -1219,6 +1394,10 @@ class ConversationService:
     ) -> ChatExecution:
         context: SessionContext | None = None
         try:
+            # 刷新过指纹，说明这次读的缓存键与受理时写下的不是同一条：受理走
+            # 「未扫描」指纹，执行走扫描指纹。两条键之间隔着这一轮的用户消息，
+            # 直接命中旧快照会把它抹掉，所以执行体必须回源事实。
+            read_facts_first = False
             if classification.task_type in {"explain", "change"}:
                 refreshed_root, _, refreshed_fingerprint = _repository_metadata(
                     turn_input.repository_root
@@ -1228,12 +1407,14 @@ class ConversationService:
                     repository_root=str(refreshed_root),
                     repo_fingerprint=refreshed_fingerprint,
                 )
+                read_facts_first = True
             context = self.session_service.get_or_create_session(
                 session_id=turn.session_id,
                 scope=TenantScope(),
                 repo_id=turn_input.repo_id,
                 repo_fingerprint=turn_input.repo_fingerprint,
                 index_version=INDEX_VERSION,
+                fresh=read_facts_first,
             )
             self.runtime.emit(
                 turn.run_id,

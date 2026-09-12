@@ -21,6 +21,7 @@ from codeinsight.domain.agent_run import (
     QUEUED,
     RUNNING,
     AgentRunRecord,
+    RunOutput,
 )
 from codeinsight.domain.change import (
     ChangeApproval,
@@ -168,6 +169,7 @@ class InMemoryAgentRunStore:
 
     def __init__(self) -> None:
         self._runs: dict[str, AgentRunRecord] = {}
+        self._outputs: dict[str, RunOutput] = {}
         self._lock = threading.RLock()
 
     def save_run(self, record: AgentRunRecord) -> None:
@@ -207,6 +209,14 @@ class InMemoryAgentRunStore:
     def count_queued_runs(self) -> int:
         with self._lock:
             return sum(1 for record in self._runs.values() if record.status == QUEUED)
+
+    def save_output(self, output: RunOutput) -> None:
+        with self._lock:
+            self._outputs[output.run_id] = output
+
+    def get_output(self, run_id: str) -> RunOutput | None:
+        with self._lock:
+            return self._outputs.get(run_id)
 
     def claim_run(
         self, run_id: str, *, worker_id: str, lease_until_epoch_ms: int

@@ -29,6 +29,7 @@ from codeinsight.domain.agent_run import (
     WAITING_APPROVAL,
     WAITING_VALIDATION,
     AgentRunRecord,
+    RunOutput,
 )
 from codeinsight.domain.ports import AgentRunStore
 from codeinsight.domain.trace import TASK_QUEUED, TOOL_CALLED, WORKER_CLAIMED, RunEvent
@@ -206,6 +207,69 @@ def test_count_queued_runs_counts_only_runs_waiting_for_a_worker(
         is not None
     )
     assert store.count_queued_runs() == 0
+
+
+# 产出事实：跨进程读答案的依据
+
+
+def test_output_is_absent_until_something_is_written(store: AgentRunStore) -> None:
+    """「还没跑完」和「跑完但没写产出」是两回事，读不到就先返回 None。"""
+
+    assert store.get_output("run-1") is None
+
+
+def test_output_round_trips_through_the_fact_layer(store: AgentRunStore) -> None:
+    """写答案的进程和读答案的进程可以不是同一个：产出必须是可读回的事实。"""
+
+    store.save_output(
+        RunOutput(
+            run_id="run-1",
+            attempt=1,
+            task_type="explain",
+            assistant_message="checkout 会先校验输入。",
+            result={"kind": "code_answer", "citations": ["E1", "E2"]},
+            updated_at_epoch_ms=1_700_000_000_000,
+        )
+    )
+
+    stored = store.get_output("run-1")
+    assert stored is not None
+    assert stored.attempt == 1
+    assert stored.task_type == "explain"
+    assert stored.assistant_message == "checkout 会先校验输入。"
+    # result 是结构化载荷，取回来必须还是结构，而不是被压成字符串。
+    assert stored.result == {"kind": "code_answer", "citations": ["E1", "E2"]}
+    assert stored.error_class is None
+
+
+def test_a_later_attempt_overwrites_the_previous_output(store: AgentRunStore) -> None:
+    """续跑产出的是这一轮当前的说法，不是历史堆积。"""
+
+    store.save_output(
+        RunOutput(
+            run_id="run-1",
+            attempt=1,
+            task_type="change",
+            assistant_message="等待审批",
+            result={"kind": "change_preview"},
+            updated_at_epoch_ms=1_000,
+        )
+    )
+    store.save_output(
+        RunOutput(
+            run_id="run-1",
+            attempt=2,
+            task_type="change",
+            assistant_message="改动已应用",
+            result={"kind": "change_result"},
+            updated_at_epoch_ms=2_000,
+        )
+    )
+
+    stored = store.get_output("run-1")
+    assert stored is not None
+    assert stored.attempt == 2
+    assert stored.assistant_message == "改动已应用"
 
 
 # 租约 CAS
