@@ -236,6 +236,11 @@ uv run uvicorn codeinsight.infrastructure.gateway_server:app --host 127.0.0.1 --
 uv run celery -A codeinsight.agent.worker_tasks.celery_app worker --pool=solo --loglevel=INFO
 ```
 
+同一个 Worker 进程也承载异步 Agent Run（`codeinsight.run_agent`）：配置了
+`CODEINSIGHT_CELERY_BROKER_URL` 时，Agent Run 的投递通道就换成这个 broker，此时**必须有**
+Worker 在跑，否则受理的每一轮只会停在 `QUEUED`；不配 broker 时保持进程内回调投递，
+不需要额外的 Worker 进程。
+
 Gateway 健康检查、模型清单和指标分别位于 `/health`、`/v1/models`、`/metrics`。
 
 Gateway 用量汇总和最近调用明细分别位于 `/v1/usage/summary`、`/v1/usage/calls`。主 API 也提供 `/api/v1/usage/summary`、`/api/v1/usage/calls`，前端通过它们读取实际承载 Auto Answer 的同一进程记录。明细只包含模型、路由、Token、缓存、成本、延迟、错误类别和不可逆请求指纹，不返回原始 prompt、工具参数、模型正文或隐藏推理。字段来源和 cache write 边界见 [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)。
