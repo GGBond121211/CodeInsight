@@ -200,6 +200,9 @@ export interface ChatTurnResponse {
   assistant_message: string | null
   result: Record<string, unknown> | null
   error: string | null
+  task_id?: string | null
+  // Q-011：真正执行这一轮的 Worker 标识；还在排队时为 null。
+  worker_id?: string | null
   reasoning_available: boolean
   created_at_epoch_ms: number
   updated_at_epoch_ms: number

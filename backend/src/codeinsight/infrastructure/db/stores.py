@@ -882,6 +882,7 @@ class MySqlAgentRunStore:
             row.assistant_message = output.assistant_message
             row.result_json = payload
             row.error_class = output.error_class
+            row.worker_id = output.worker_id
             row.updated_at_epoch_ms = output.updated_at_epoch_ms
             db.commit()
 
@@ -901,6 +902,7 @@ class MySqlAgentRunStore:
                 assistant_message=row.assistant_message,
                 result=parsed,
                 error_class=row.error_class,
+                worker_id=row.worker_id,
                 updated_at_epoch_ms=row.updated_at_epoch_ms,
             )
 

@@ -182,6 +182,11 @@ def _apply_additive_compatibility_migrations(engine: Engine) -> None:
             "approval_token",
             "ALTER TABLE agent_runs ADD COLUMN approval_token VARCHAR(255) NULL",
         ),
+        (
+            "agent_run_outputs",
+            "worker_id",
+            "ALTER TABLE agent_run_outputs ADD COLUMN worker_id VARCHAR(128) NULL",
+        ),
     )
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())

@@ -228,6 +228,7 @@ def test_output_round_trips_through_the_fact_layer(store: AgentRunStore) -> None
             task_type="explain",
             assistant_message="checkout 会先校验输入。",
             result={"kind": "code_answer", "citations": ["E1", "E2"]},
+            worker_id="agent-run-worker-4242",
             updated_at_epoch_ms=1_700_000_000_000,
         )
     )
@@ -240,6 +241,9 @@ def test_output_round_trips_through_the_fact_layer(store: AgentRunStore) -> None
     # result 是结构化载荷，取回来必须还是结构，而不是被压成字符串。
     assert stored.result == {"kind": "code_answer", "citations": ["E1", "E2"]}
     assert stored.error_class is None
+    # 「谁执行的」必须活过写入进程：终态会把 Run 记录里的 worker_id 清空，
+    # 只剩产出这一份能回答它。
+    assert stored.worker_id == "agent-run-worker-4242"
 
 
 def test_a_later_attempt_overwrites_the_previous_output(store: AgentRunStore) -> None:

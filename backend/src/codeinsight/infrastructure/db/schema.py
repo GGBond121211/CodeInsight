@@ -335,6 +335,7 @@ class AgentRunOutputRow(Base):
     assistant_message: Mapped[str] = mapped_column(Text, nullable=False)
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     updated_at_epoch_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 

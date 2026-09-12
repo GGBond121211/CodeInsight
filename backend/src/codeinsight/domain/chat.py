@@ -65,6 +65,10 @@ class ChatTurn:
     # Q-011：受理这一轮的后台任务标识。它由 API 在写 Run 时生成，
     # 客户端用它查询调度状态；正文与它无关。
     task_id: str | None = None
+    # Q-011：真正执行这一轮的 Worker 标识。执行换到另一个进程以后，
+    # 「这一轮跑到哪了」由事实层回答，「是谁在跑」也必须能一起回答——
+    # 否则排查时只能去读事件流。没有执行者（还在排队）时为 None。
+    worker_id: str | None = None
     updated_at_epoch_ms: int = 0
 
     def __post_init__(self) -> None:
@@ -96,6 +100,7 @@ class ChatTurn:
             "result": self.result,
             "error": self.error,
             "task_id": self.task_id,
+            "worker_id": self.worker_id,
             "reasoning_available": self.reasoning_available,
             "created_at_epoch_ms": self.created_at_epoch_ms,
             "updated_at_epoch_ms": self.updated_at_epoch_ms,

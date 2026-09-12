@@ -771,6 +771,7 @@ class ConversationService:
                     assistant_message=execution.assistant_message or "",
                     result=dict(execution.result) if execution.result else None,
                     error_class=outcome.error_class,
+                    worker_id=self.agent_run_worker.worker_id,
                     updated_at_epoch_ms=int(time.time() * 1000),
                 )
             )
@@ -846,6 +847,13 @@ class ConversationService:
                 else (base.result if base else None)
             ),
             error=record.error_class or (output.error_class if output else None),
+            # 「谁执行的」跟着产出走，而不是跟着「有没有答案」走：跑失败的那一次
+            # 也是某个进程跑的，排查时同样要知道是哪一个。
+            worker_id=(
+                output.worker_id
+                if output is not None
+                else (base.worker_id if base else None)
+            ),
             reasoning_available=base.reasoning_available if base else False,
             created_at_epoch_ms=(
                 base.created_at_epoch_ms if base else record.updated_at_epoch_ms

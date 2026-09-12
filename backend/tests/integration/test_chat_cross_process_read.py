@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from codeinsight.agent.agent_run_worker import AgentRunWorker
 from codeinsight.application.agent_run_dispatcher import InMemoryAgentRunTransport
 from codeinsight.application.conversation_service import (
     CHAT_RUN_POLICY_VERSION,
@@ -157,6 +158,15 @@ def test_reader_returns_answer_written_by_another_process() -> None:
     transport = InMemoryAgentRunTransport()
     api = _service(store=store, sessions=sessions, transport=transport)
     worker = _service(store=store, sessions=sessions)
+    # 两个「进程」跑在同一个测试进程里，默认 worker_id 都会按 pid 生成，分不出
+    # 是谁跑的。给执行侧一个可区分的标识，下面那条断言才有意义。
+    worker.agent_run_worker = AgentRunWorker(
+        store=worker.agent_run_store,
+        loader=worker.agent_run_context_loader,
+        executor=worker.agent_run_executor,
+        emit=worker.runtime.emit,
+        worker_id="worker-process-b",
+    )
 
     session_id = str(api.create_session(str(FIXTURE_ROOT))["session_id"])
     accepted = api.submit_turn(
@@ -183,6 +193,11 @@ def test_reader_returns_answer_written_by_another_process() -> None:
     by_run = api.resolve_turn_by_run_id(accepted.run_id)
     assert by_run.turn_id == accepted.turn_id
     assert by_run.assistant_message == projected.assistant_message
+
+    # 「是谁在跑」也必须是可读的事实：执行进程的 worker_id 随产出落库，
+    # 读取方不需要去翻事件流，也不该看到受理进程自己的标识。
+    assert projected.worker_id == "worker-process-b"
+    assert projected.worker_id != api.agent_run_worker.worker_id
 
 
 def test_approval_reads_its_preview_from_facts() -> None:

@@ -297,6 +297,10 @@ class RunOutput:
     assistant_message: str
     result: dict[str, object] | None = None
     error_class: str | None = None
+    # 跑出这份产出的进程标识。它随产出一起落库，是因为终态会把 Run 记录里的
+    # 租约与 worker_id 清空（跑完的 Run 不持有租约），「谁执行的」就只能在这里
+    # 或事件流里回答；读取接口要给出这个答案，不能要求调用方去翻事件。
+    worker_id: str | None = None
     updated_at_epoch_ms: int = 0
 
     def __post_init__(self) -> None:
