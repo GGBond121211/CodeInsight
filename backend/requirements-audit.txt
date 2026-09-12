@@ -1,5 +1,5 @@
 # Exported direct runtime requirements for the Step 9 pip-audit job.
-celery>=5.5,<6
+celery>=5.6.3,<6
 fastapi>=0.116,<1
 langgraph>=1,<2
 openai>=2,<3
