@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="18" fill="#0a0806" />
+  <rect x="8" y="8" width="48" height="48" rx="14" fill="none" stroke="#f7cb72" />
+  <text x="32" y="39" fill="#f7cb72" font-family="monospace" font-size="18" font-weight="700" text-anchor="middle">CI</text>
+</svg>

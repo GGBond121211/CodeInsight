@@ -9,9 +9,9 @@ export function EvidenceList({ citations }: EvidenceListProps) {
 
   return (
     <section className="evidence-section" aria-labelledby="evidence-heading">
-      <div className="section-label" id="evidence-heading">
+      <h3 className="evidence-heading" id="evidence-heading">
         已核验的证据
-      </div>
+      </h3>
       <div className="evidence-list">
         {citations.map((citation) => (
           <article className="evidence-row" key={citation.evidence_id}>

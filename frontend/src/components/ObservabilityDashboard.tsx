@@ -13,6 +13,7 @@ interface DashboardState {
   calls: UsageCall[]
   loading: boolean
   error: string | null
+  updatedAtEpochMs: number | null
 }
 
 const EMPTY_STATE: DashboardState = {
@@ -20,6 +21,7 @@ const EMPTY_STATE: DashboardState = {
   calls: [],
   loading: true,
   error: null,
+  updatedAtEpochMs: null,
 }
 
 function formatInteger(value: number): string {
@@ -31,7 +33,7 @@ function formatPercent(value: number): string {
 }
 
 function formatCost(value: string): string {
-  return `☆ ${Number(value).toFixed(4)}`
+  return Number(value).toFixed(4)
 }
 
 function formatLatency(value: number): string {
@@ -72,13 +74,18 @@ function Sparkline({ values }: { values: number[] }) {
   )
 }
 
-function MetricCard({ label, value, caption, trend }: { label: string; value: string; caption: string; trend?: number[] }) {
+function MetricCard({ label, value, caption, trend, trendLabel }: { label: string; value: string; caption: string; trend?: number[]; trendLabel?: string }) {
   return (
     <article className="metric-card">
       <span className="metric-label">{label}</span>
       <strong className="metric-value">{value}</strong>
       <span className="metric-caption">{caption}</span>
-      {trend && <Sparkline values={trend} />}
+      {trend && (
+        <div className="metric-trend">
+          <span className="metric-trend-label">{trendLabel || '趋势'}</span>
+          <Sparkline values={trend} />
+        </div>
+      )}
     </article>
   )
 }
@@ -99,7 +106,7 @@ export function ObservabilityDashboard({ refreshToken }: ObservabilityDashboardP
     setState((current) => ({ ...current, loading: true, error: null }))
     try {
       const [summary, calls] = await Promise.all([usageSummary(), usageCalls()])
-      setState({ summary, calls: calls.data, loading: false, error: null })
+      setState({ summary, calls: calls.data, loading: false, error: null, updatedAtEpochMs: Date.now() })
     } catch (caught) {
       setState((current) => ({
         ...current,
@@ -126,13 +133,17 @@ export function ObservabilityDashboard({ refreshToken }: ObservabilityDashboardP
     <section className="observability-card" aria-labelledby="observability-title">
       <div className="dashboard-header">
         <div>
-          <span className="section-label">Gateway Observability</span>
-          <h2 id="observability-title">调用监测</h2>
+          <h2 id="observability-title">调用监控</h2>
           <p>这里展示实际处理 Auto Answer 的同一 Gateway 进程记录。</p>
         </div>
-        <button className="secondary-action" type="button" onClick={() => void load()} disabled={state.loading}>
-          {state.loading ? '刷新中…' : '刷新监控'}
-        </button>
+        <div className="dashboard-header-meta">
+          <button className="secondary-action" type="button" onClick={() => void load()} disabled={state.loading}>
+            {state.loading ? '刷新中…' : '刷新监控'}
+          </button>
+          <span className="dashboard-updated">
+            {state.updatedAtEpochMs ? `数据截至 ${formatTime(state.updatedAtEpochMs)}` : '正在读取数据'}
+          </span>
+        </div>
       </div>
 
       {state.error && <div className="dashboard-notice" role="status">{state.error}</div>}
@@ -145,6 +156,7 @@ export function ObservabilityDashboard({ refreshToken }: ObservabilityDashboardP
               value={formatInteger(state.summary.requests)}
               caption={`${formatInteger(state.summary.provider_attempts)} 次供应商 attempt`}
               trend={latencyTrend}
+              trendLabel="最近延迟趋势"
             />
             <MetricCard
               label="总 input / output"
@@ -180,7 +192,6 @@ export function ObservabilityDashboard({ refreshToken }: ObservabilityDashboardP
           <div className="calls-section">
             <div className="calls-heading">
               <div>
-                <span className="section-label">Recent attempts</span>
                 <h3>调用明细</h3>
               </div>
               <span className="calls-count">最近 {state.calls.length} 条</span>

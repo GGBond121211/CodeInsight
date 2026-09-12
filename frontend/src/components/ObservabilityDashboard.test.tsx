@@ -57,7 +57,7 @@ it('展示汇总、供应商缓存来源和调用明细', async () => {
   render(<ObservabilityDashboard refreshToken={0} />)
 
   expect(await screen.findByText('70.0%')).toBeInTheDocument()
-  expect(screen.getAllByText('☆ 0.0184')).toHaveLength(2)
+  expect(screen.getAllByText('0.0184')).toHaveLength(2)
   expect(screen.getByText('供应商原生')).toBeInTheDocument()
   expect(screen.getByText('deepseek-v4-flash')).toBeInTheDocument()
   expect(screen.getAllByText('—').length).toBeGreaterThan(0)

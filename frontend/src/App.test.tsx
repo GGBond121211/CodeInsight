@@ -115,7 +115,7 @@ it('提交一轮消息并在实时事件结束后展示回答', async () => {
       session_id: 'session-1',
       repository_root: 'tests/fixtures/sample_repo',
       message: 'checkout 如何校验输入？',
-      show_debug_reasoning: true,
+      show_debug_reasoning: false,
     }),
   )
 })
@@ -259,7 +259,7 @@ it('失败后仍保留模型失败原因和实时事件', async () => {
 
   expect(await screen.findByText('正在调用降级模型 gpt-5.4-mini · 主模型响应格式不合格')).toBeInTheDocument()
   expect(screen.getByText('模型 deepseek-v4-flash 调用失败 · 结构化输出不是有效 JSON')).toBeInTheDocument()
-  expect(screen.getByText('本轮失败，请查看运行详情')).toBeInTheDocument()
+  expect(screen.getByText('本轮执行失败')).toBeInTheDocument()
 })
 
 it('修改前 Sandbox 不可用时展示具体阻塞原因和恢复动作', async () => {
@@ -313,4 +313,68 @@ it('修改前 Sandbox 不可用时展示具体阻塞原因和恢复动作', asyn
   expect(screen.getByText('docker_engine: Access is denied')).toBeInTheDocument()
   expect(screen.getByText('请先恢复 Sandbox，再重新提交修改。')).toBeInTheDocument()
   expect(screen.getByText('正在检查 Sandbox 校验环境')).toBeInTheDocument()
+})
+
+it('等待隔离校验的轮次仍算进行中，不显示成已结束', async () => {
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...completedTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(streamChatEvents).mockResolvedValue(undefined)
+  vi.mocked(getChatTurn).mockResolvedValue({
+    ...completedTurn,
+    status: 'WAITING_VALIDATION',
+    assistant_message: null,
+    result: null,
+  })
+
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(await screen.findByText('等待隔离校验')).toBeInTheDocument()
+  expect(screen.getByText('等待隔离校验返回')).toBeInTheDocument()
+  expect(screen.getByText('正在接收实时事件，请稍候…')).toBeInTheDocument()
+  expect(screen.queryByText('本轮已结束')).not.toBeInTheDocument()
+})
+
+it('需要人工确认的轮次给出明确提示，而不是当成普通失败', async () => {
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...completedTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(streamChatEvents).mockResolvedValue(undefined)
+  vi.mocked(getChatTurn).mockResolvedValue({
+    ...completedTurn,
+    status: 'MANUAL_REQUIRED',
+    assistant_message: null,
+    result: null,
+    error: 'DISPATCH_UNKNOWN',
+  })
+
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(await screen.findByText('需要人工确认')).toBeInTheDocument()
+  expect(screen.getByText('这一轮需要人工确认')).toBeInTheDocument()
+  expect(screen.getByText('这一轮需要人工确认，请查看运行详情。')).toBeInTheDocument()
 })

@@ -1,10 +1,130 @@
 :root {
+  color: #f2f1e9;
+  background: #0f0e0c;
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #17211d;
-  background: #eef1eb;
+    "Atkinson Hyperlegible Next",
+    "Atkinson Hyperlegible",
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+
+  --background: #0f0e0c;
+  --surface-1: #1c1b1b;
+  --surface-2: #25221f;
+  --surface-3: #211e1a;
+  --ink: #0a0806;
+  --ink-card: #1c1b1b;
+  --ink-muted: #2a2723;
+  --text-1: #f2f1e9;
+  --text-2: #d9d4c9;
+  --text-3: #a9a195;
+  --text-on-ink: #f2f1e9;
+  --text-on-ink-muted: #c9c5bd;
+  --border: #332f2a;
+  --border-strong: #5b5245;
+  --accent: #f7cb72;
+  --accent-deep: #eab04d;
+  --accent-subtle: #3a2d18;
+  --success: #2e7d59;
+  --success-bg: #173326;
+  --warning: #a06400;
+  --warning-bg: #3a2a12;
+  --error: #b4473f;
+  --error-bg: #3b1b19;
+  --cool: #65736e;
+  --cool-bg: #202a27;
+  --surface-deep: #100e0c;
+  --surface-composer: #14110e;
+  --surface-message: #25221f;
+  --surface-change: #25211d;
+  --surface-input: #211e1a;
+  --surface-ghost: rgba(242, 241, 233, 0.045);
+  --surface-whisper: rgba(242, 241, 233, 0.05);
+  --surface-soft: rgba(242, 241, 233, 0.06);
+  --surface-accent-strong: rgba(247, 203, 114, 0.08);
+  --surface-ink-wash: rgba(10, 8, 6, 0.24);
+  --surface-warning: rgba(160, 100, 0, 0.16);
+  --surface-accent: rgba(247, 203, 114, 0.07);
+  --surface-accent-faint: rgba(247, 203, 114, 0.06);
+  --surface-accent-hover: rgba(247, 203, 114, 0.1);
+  --line-hairline: rgba(242, 241, 233, 0.1);
+  --line-faint: rgba(242, 241, 233, 0.13);
+  --line-quiet: rgba(242, 241, 233, 0.12);
+  --line-soft: rgba(242, 241, 233, 0.14);
+  --line-header: rgba(242, 241, 233, 0.15);
+  --line-control: rgba(242, 241, 233, 0.17);
+  --line-muted: rgba(242, 241, 233, 0.18);
+  --line-strong: rgba(242, 241, 233, 0.22);
+  --line-dashed: rgba(242, 241, 233, 0.24);
+  --line-accent: rgba(247, 203, 114, 0.22);
+  --line-accent-soft: rgba(247, 203, 114, 0.28);
+  --line-accent-spinner: rgba(247, 203, 114, 0.32);
+  --line-accent-strong: rgba(247, 203, 114, 0.5);
+  --line-accent-message: rgba(247, 203, 114, 0.52);
+  --line-accent-alert: rgba(247, 203, 114, 0.42);
+  --line-accent-faint: rgba(247, 203, 114, 0.16);
+  --line-accent-heavy: rgba(247, 203, 114, 0.6);
+  --line-success: rgba(120, 209, 160, 0.35);
+  --line-success-strong: rgba(120, 209, 160, 0.55);
+  --line-error: rgba(255, 149, 139, 0.46);
+  --line-approval: rgba(215, 183, 200, 0.55);
+  --text-muted-strong: #9e988e;
+  --text-muted: #8f887d;
+  --text-faint: #847d72;
+  --text-soft: #b5aea2;
+  --text-warning: #ffe5a7;
+  --text-alert: #ffd0a0;
+  --text-error: #ffd0ca;
+  --text-error-strong: #ffd78a;
+  --text-error-link: #ffb3a9;
+  --success-strong: #78d1a0;
+  --success-ink: #0d2a1d;
+  --error-strong: #ff958b;
+  --error-ink: #3c100c;
+  --approval-surface: #d7b7c8;
+  --approval-ink: #241b0a;
+  --accent-hover: #ffda8d;
+  --accent-wash: rgba(247, 203, 114, 0.12);
+  --accent-wash-strong: rgba(247, 203, 114, 0.1);
+  --surface-accent-nav: rgba(247, 203, 114, 0.09);
+  --focus-wash: rgba(138, 92, 0, 0.14);
+  --focus-border: rgba(138, 92, 0, 0.5);
+  --focus-wash-soft: rgba(138, 92, 0, 0.1);
+  --ink-muted-wash: rgba(10, 8, 6, 0.62);
+  --ink-wash-faint: rgba(10, 8, 6, 0.02);
+  --hero-border: #2b2823;
+  --hero-dot-strong: rgba(247, 203, 114, 0.18);
+  --hero-dot: rgba(247, 203, 114, 0.13);
+  --hero-dot-soft: rgba(247, 203, 114, 0.11);
+  --hero-tint: rgba(74, 54, 25, 0.36);
+  --hero-ring: rgba(247, 203, 114, 0.035);
+  --hero-ring-soft: rgba(247, 203, 114, 0.025);
+  --ink-wash: rgba(10, 8, 6, 0.18);
+  --line-accent-marker: rgba(247, 203, 114, 0.48);
+  --success-wash: rgba(46, 125, 89, 0.12);
+  --success-wash-soft: rgba(120, 209, 160, 0.1);
+  --error-wash: rgba(180, 71, 63, 0.16);
+  --change-border: rgba(215, 183, 200, 0.55);
+  --validation-border: rgba(120, 209, 160, 0.35);
+  --validation-surface: #100e0c;
+  --validation-text: #ffd0a0;
+  --status-border: rgba(255, 149, 139, 0.46);
+  --font-mono: "Fragment Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --radius-control: 12px;
+  --radius-nested: 16px;
+  --radius-card: 24px;
+  --space-2xs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
 }
 
 * {
@@ -15,9 +135,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 14% 10%, rgba(149, 183, 159, 0.2), transparent 34%),
-    linear-gradient(135deg, #f4f3ee 0%, #e8eee8 100%);
+  background: var(--background);
 }
 
 button,
@@ -32,5 +150,26 @@ button {
 }
 
 code {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 3px;
+}
+
+::selection {
+  color: var(--ink);
+  background: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: var(--text-on-ink);
+    background: var(--background);
+  }
 }

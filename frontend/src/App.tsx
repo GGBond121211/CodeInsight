@@ -138,6 +138,32 @@ function textValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : fallback
 }
 
+function statusClass(status: ChatTurnResponse['status']): string {
+  return status.toLowerCase().replace(/_/g, '-')
+}
+
+const STATUS_LABELS: Record<ChatTurnResponse['status'], string> = {
+  QUEUED: '排队中',
+  RUNNING: '正在运行',
+  WAITING_APPROVAL: '等待审批',
+  WAITING_VALIDATION: '等待隔离校验',
+  COMPLETED: '已完成',
+  FAILED: '执行失败',
+  CANCELLED: '已取消',
+  UNKNOWN: '结果不明',
+  MANUAL_REQUIRED: '需要人工确认',
+}
+
+function statusLabel(status: ChatTurnResponse['status']): string {
+  return STATUS_LABELS[status] || status
+}
+
+const EXAMPLE_QUESTIONS = [
+  'checkout 如何校验输入？',
+  '这次请求从哪里进入系统？',
+  '把这个校验提取成独立函数。',
+]
+
 function ChatResult({
   result,
   approvalPending,
@@ -296,6 +322,7 @@ function ChatResult({
 }
 
 function App() {
+  const [activeView, setActiveView] = useState<'conversation' | 'observability'>('conversation')
   const [repositoryRoot, setRepositoryRoot] = useState('tests/fixtures/sample_repo')
   const [question, setQuestion] = useState('checkout 如何校验输入？')
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -305,7 +332,7 @@ function App() {
   const [reasoning, setReasoning] = useState<DebugReasoningEvent[]>([])
   const [loading, setLoading] = useState(false)
   const [approving, setApproving] = useState(false)
-  const [showDebugReasoning, setShowDebugReasoning] = useState(true)
+  const [showDebugReasoning, setShowDebugReasoning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [usageRefreshToken, setUsageRefreshToken] = useState(0)
   const eventCursor = useRef(0)
@@ -315,6 +342,7 @@ function App() {
   const pendingApproval = activeTurn?.status === 'WAITING_APPROVAL'
   const failed = activeTurn?.status === 'FAILED'
   const manualAttention = needsAttention(activeTurn?.status)
+  const lastUserQuestion = [...messages].reverse().find((message) => message.role === 'user')?.content || ''
 
   function addAssistantMessage(turn: ChatTurnResponse) {
     const assistantMessage = turn.assistant_message
@@ -422,177 +450,265 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="hero">
-        <div className="brand-mark" aria-hidden="true">CI</div>
-        <div>
-          <span className="eyebrow">统一 Session · 代码理解与修改</span>
-          <h1>CodeInsight</h1>
-          <p>在一个对话中连续理解代码、追问上下文，并在确认 diff 后安全修改。</p>
-        </div>
-        <div className="local-badge"><span className="pulse" /> 本地调试模式</div>
-      </header>
+      <div className="workspace-shell">
+        <aside className="app-sidebar" aria-label="CodeInsight 工作台">
+          <div className="sidebar-brand">
+            <div className="brand-mark" aria-hidden="true">CI</div>
+            <div>
+              <strong>CodeInsight</strong>
+              <span>local workspace</span>
+            </div>
+          </div>
 
-      <div className="conversation-layout">
-        <aside className="question-card conversation-controls">
-          <div className="mode-tabs" aria-label="对话模式">
-            <button className="mode-tab active" type="button" aria-current="page">Conversation</button>
+          <nav className="sidebar-nav" aria-label="页面导航">
+            <button
+              className={`sidebar-nav-item ${activeView === 'conversation' ? 'active' : ''}`}
+              type="button"
+              aria-label="Conversation"
+              aria-current={activeView === 'conversation' ? 'page' : undefined}
+              onClick={() => setActiveView('conversation')}
+            >
+              <span className="nav-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="presentation"><path d="M5 6.5h14M5 12h9M5 17.5h14" /></svg>
+              </span>
+              <span className="nav-copy"><strong>会话</strong><small>Conversation</small></span>
+            </button>
+            <button
+              className={`sidebar-nav-item ${activeView === 'observability' ? 'active' : ''}`}
+              type="button"
+              aria-label="调用监控"
+              aria-current={activeView === 'observability' ? 'page' : undefined}
+              onClick={() => setActiveView('observability')}
+            >
+              <span className="nav-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="presentation"><path d="M6 5v14M6 12h7M13 12V7h5M13 12v5h5" /></svg>
+              </span>
+              <span className="nav-copy"><strong>调用监控</strong><small>Observability</small></span>
+            </button>
+          </nav>
+
+          <div className="sidebar-divider" />
+          <div className="sidebar-session-card">
+            <div className="sidebar-session-top">
+              <span className={`session-dot ${sessionId ? 'connected' : ''}`} />
+              <span>{sessionId ? 'ACTIVE' : 'READY'}</span>
+            </div>
+            <strong>{sessionId ? `Session ${sessionId.slice(0, 12)}…` : '尚未创建 Session'}</strong>
+            <span>一个用户 · 一个连续上下文</span>
           </div>
-          <label>
-            仓库路径
-            <input
-              value={repositoryRoot}
-              onChange={(event) => setRepositoryRoot(event.target.value)}
-              placeholder="C:\\repos\\project"
-              required
-              disabled={running || pendingApproval}
-            />
-          </label>
-          <div className="session-status">
-            <span className={`session-dot ${sessionId ? 'connected' : ''}`} />
-            {sessionId ? `Session ${sessionId.slice(0, 18)}…` : '尚未创建 Session，首次发送时自动创建'}
-          </div>
-          <label className="debug-toggle">
-            <input
-              type="checkbox"
-              checked={showDebugReasoning}
-              onChange={(event) => setShowDebugReasoning(event.target.checked)}
-            />
-            <span>调试显示模型、降级链和供应商原生 reasoning</span>
-          </label>
-          <p className="field-hint">
-            只有 API 明确返回 reasoning_content/thinking 时才会显示；未返回时会明确标记，不会本地编造。
-          </p>
-          <div className="control-note">
-            <strong>同一 Session 的两条路径</strong>
-            <span>普通聊天 → 自然语言回答，不访问仓库</span>
-            <span>代码理解 → 只读检索与引用回答</span>
-            <span>修改请求 → MCP 探索 → diff 预览 → 开发模式自动审批/生产模式人工审批 → 隔离校验</span>
+          <div className="sidebar-footer">
+            <span className="local-dot" />
+            <span><strong>LOCAL WORKSPACE</strong><small>events and traces stay here</small></span>
           </div>
         </aside>
 
-        <section className="conversation-card" aria-label="CodeInsight 对话">
-          <div className="conversation-header">
-            <div>
-              <span className="section-label">Live Agent Run</span>
-              <h2>代码对话</h2>
+        <section className="workspace-content">
+          <header className="workspace-topbar">
+            <h1>{activeView === 'conversation' ? '代码会话' : '调用监控'}</h1>
+            <div className="topbar-meta">
+              <span className="topbar-mode"><span className="pulse" /> 本地模式</span>
+              <span className="topbar-session">{sessionId ? `Session ${sessionId.slice(0, 12)}…` : '未创建 Session'}</span>
             </div>
-            {activeTurn && (
-              <span className={`status-pill ${pendingApproval || manualAttention ? 'warning' : ''}`}>
-                {activeTurn.status}
-              </span>
-            )}
-          </div>
+          </header>
 
-          <div className="message-list" aria-live="polite">
-            {messages.length === 0 && !activeTurn && (
-              <div className="empty-state conversation-empty">
-                <span className="empty-glyph">⌁</span>
-                <h2>从一个代码问题开始</h2>
-                <p>下一轮会自动带上这一轮的公开对话上下文；理解和修改不再是两个孤立页面。</p>
-              </div>
-            )}
-            {messages.map((message) => (
-              <article className={`message-bubble ${message.role}`} key={message.id}>
-                <div className="message-author">{message.role === 'user' ? '你' : 'CodeInsight'}</div>
-                <p>{message.content}</p>
-                {message.role === 'assistant' && (
-                  <ChatResult
-                    result={message.result}
-                    approvalPending={pendingApproval && activeTurn?.turn_id === message.turnId}
-                    onApprove={() => void approve()}
-                    approving={approving}
-                  />
-                )}
-              </article>
-            ))}
-          </div>
-
-          {activeTurn && (
-            running || pendingApproval || failed || manualAttention || reasoning.length > 0 || (showDebugReasoning && events.length > 0)
-          ) && (
-            <section className="run-progress" aria-label="实时运行状态">
-              <div className="run-progress-heading">
-                <div className={`spinner ${running || pendingApproval ? '' : 'done'}`} aria-hidden="true" />
-                <div>
-                  <strong>
-                    {pendingApproval
-                      ? '等待你的审批'
-                      : waitingValidation
-                        ? '等待隔离校验返回'
-                        : running
-                          ? 'Agent 正在运行'
-                          : manualAttention
-                            ? '这一轮需要人工确认'
-                            : failed
-                              ? '本轮失败，请查看运行详情'
-                              : '本轮已结束'}
-                  </strong>
-                  <span>{activeTurn.run_id}</span>
-                </div>
-              </div>
-              <ol className="event-timeline">
-                {events.slice(-8).map((event) => (
-                  <li key={event.event_id}>
-                    <span className="timeline-dot" />
-                    <span>{eventLabel(event)}</span>
-                    <time>{formatTime(event.occurred_at_epoch_ms)}</time>
-                  </li>
-                ))}
-              </ol>
-              {showDebugReasoning && (
-                <details className="reasoning-panel" open={reasoning.length > 0}>
-                  <summary>供应商原生 reasoning（仅本地调试实时显示）</summary>
-                  {reasoning.length > 0 ? (
-                    reasoning.map((item, index) => (
-                      <div className="reasoning-block" key={`${item.occurred_at_epoch_ms}-${index}`}>
-                        <span>{item.model}</span>
-                        <p>{item.content}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="reasoning-empty">当前 Provider 尚未返回 reasoning_content/thinking。</p>
+          {activeView === 'conversation' ? (
+            <div className="conversation-page">
+              <section className="conversation-card" aria-label="CodeInsight 对话" aria-busy={running || pendingApproval}>
+                <div className="conversation-header">
+                  <div>
+                    <div className="conversation-state"><span className={`live-dot ${activeTurn ? 'is-active' : 'is-idle'}`} /> {activeTurn ? 'Agent Run' : 'Ready for a question'}</div>
+                    <h2>代码对话</h2>
+                  </div>
+                  {activeTurn && (
+                    <span className={`status-pill ${statusClass(activeTurn.status)}`} role="status" aria-live="polite">
+                      {statusLabel(activeTurn.status)}
+                    </span>
                   )}
-                </details>
-              )}
-            </section>
-          )}
+                </div>
 
-          {error && <div className="error-state inline-error" role="alert"><strong>请求失败</strong><span>{error}</span></div>}
+                <div className="message-list" aria-live="polite" aria-busy={running}>
+                  {messages.length === 0 && !activeTurn && (
+                    <div className="empty-state conversation-empty">
+                      <div className="empty-marker" aria-hidden="true"><span className="empty-marker-dot" /></div>
+                      <h2>从一个代码问题开始</h2>
+                      <p>下一轮会自动带上这一轮的公开对话上下文；理解和修改不再是两个孤立页面。</p>
+                      <div className="empty-hints" aria-label="示例问题">
+                        {EXAMPLE_QUESTIONS.map((example) => (
+                          <button type="button" key={example} onClick={() => setQuestion(example)}>
+                            {example}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {messages.map((message) => (
+                    <article className={`message-bubble ${message.role}`} key={message.id}>
+                      <div className="message-author">{message.role === 'user' ? '你' : 'CodeInsight'}</div>
+                      <p>{message.content}</p>
+                      {message.role === 'assistant' && (
+                        <ChatResult
+                          result={message.result}
+                          approvalPending={pendingApproval && activeTurn?.turn_id === message.turnId}
+                          onApprove={() => void approve()}
+                          approving={approving}
+                        />
+                      )}
+                    </article>
+                  ))}
+                </div>
 
-          <form
-            className="chat-composer"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void submit()
-            }}
-          >
-            <textarea
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              placeholder="例如：刚才的 checkout 校验在哪里？或者：把这个校验提取成独立函数。"
-              rows={3}
-              disabled={loading || pendingApproval}
-              required
-            />
-            <div className="composer-footer">
-              <span>
-                {running || pendingApproval
-                  ? pendingApproval
-                    ? '请先处理上面的修改审批。'
-                    : '正在接收实时事件，请稍候…'
-                  : manualAttention
-                    ? '这一轮需要人工确认，请查看运行详情。'
-                    : 'Enter 发送一轮新的对话'}
-              </span>
-              <button className="primary-action" disabled={loading || pendingApproval || !question.trim()} type="submit">
-                {loading ? '处理中…' : '发送消息'}
-              </button>
+                {activeTurn && (
+                  running || pendingApproval || failed || manualAttention || reasoning.length > 0 || (showDebugReasoning && events.length > 0)
+                ) && (
+                  <section className="run-progress" aria-label="实时运行状态" aria-live="polite">
+                    <div className="run-progress-heading">
+                      <div className={`spinner ${running || pendingApproval ? '' : 'done'}`} aria-hidden="true"><span /></div>
+                      <div>
+                        <strong>
+                          {pendingApproval
+                            ? '等待你的审批'
+                            : waitingValidation
+                              ? '等待隔离校验返回'
+                              : running
+                                ? 'Agent 正在运行'
+                                : manualAttention
+                                  ? '这一轮需要人工确认'
+                                  : failed
+                                    ? '本轮执行失败'
+                                    : '本轮已结束'}
+                        </strong>
+                        <span className="run-id">{activeTurn.run_id}</span>
+                      </div>
+                      <span className="run-stage">{events.length ? `${events.length} events` : 'waiting for events'}</span>
+                    </div>
+                    <ol className="event-timeline">
+                      {events.slice(-8).map((event) => (
+                        <li key={event.event_id}>
+                          <span className="timeline-dot" />
+                          <span>{eventLabel(event)}</span>
+                          <time>{formatTime(event.occurred_at_epoch_ms)}</time>
+                        </li>
+                      ))}
+                    </ol>
+                    {showDebugReasoning && (
+                      <details className="reasoning-panel" open={reasoning.length > 0}>
+                        <summary>供应商原生 reasoning（仅本地调试实时显示）</summary>
+                        {reasoning.length > 0 ? (
+                          reasoning.map((item, index) => (
+                            <div className="reasoning-block" key={`${item.occurred_at_epoch_ms}-${index}`}>
+                              <span>{item.model}</span>
+                              <p>{item.content}</p>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="reasoning-empty">当前 Provider 尚未返回 reasoning_content/thinking。</p>
+                        )}
+                      </details>
+                    )}
+                  </section>
+                )}
+
+                {error && (
+                  <div className="error-state inline-error" role="alert">
+                    <div>
+                      <strong>请求失败</strong>
+                      <span>{error}</span>
+                    </div>
+                    {lastUserQuestion && (
+                      <button className="text-action" type="button" onClick={() => setQuestion(lastUserQuestion)}>
+                        带回输入框
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <form
+                  className="chat-composer"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void submit()
+                  }}
+                >
+                  <div className="composer-heading">
+                    <span className="composer-title">下一轮对话</span>
+                    <span className="composer-hint">Enter 发送一轮新的对话</span>
+                  </div>
+                  <textarea
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    placeholder="例如：刚才的 checkout 校验在哪里？或者：把这个校验提取成独立函数。"
+                    rows={3}
+                    disabled={loading || pendingApproval}
+                    required
+                  />
+                  <div className="composer-footer">
+                    <span>
+                      {running
+                        ? '正在接收实时事件，请稍候…'
+                        : pendingApproval
+                          ? '请先处理上面的修改审批。'
+                          : manualAttention
+                            ? '这一轮需要人工确认，请查看运行详情。'
+                            : '支持中文、英文或中英混合问题'}
+                    </span>
+                    <button className="primary-action" disabled={loading || pendingApproval || !question.trim()} type="submit">
+                      {loading ? '处理中…' : '发送消息'}
+                    </button>
+                  </div>
+                </form>
+              </section>
+
+              <aside className="environment-card" aria-label="环境信息">
+                <div className="environment-heading">
+                  <h2>环境信息</h2>
+                </div>
+                <label>
+                  <span>仓库路径</span>
+                  <input
+                    value={repositoryRoot}
+                    onChange={(event) => setRepositoryRoot(event.target.value)}
+                    placeholder="C:\\repos\\project"
+                    aria-label="仓库路径"
+                    aria-describedby="repository-path-hint"
+                    maxLength={260}
+                    required
+                    disabled={running || pendingApproval}
+                  />
+                  <span id="repository-path-hint" className="field-hint">后端可访问的本地路径；默认示例可直接运行。</span>
+                </label>
+                <div className="session-status">
+                  <span className={`session-dot ${sessionId ? 'connected' : ''}`} />
+                  {sessionId ? `Session ${sessionId.slice(0, 18)}…` : '首次发送时自动创建 Session'}
+                </div>
+                <button
+                  className={`debug-mode-button ${showDebugReasoning ? 'enabled' : ''}`}
+                  type="button"
+                  aria-pressed={showDebugReasoning}
+                  disabled={running || pendingApproval}
+                  onClick={() => setShowDebugReasoning((current) => !current)}
+                >
+                  <span className="debug-mode-dot" aria-hidden="true" />
+                  <span className="debug-mode-copy">
+                    <strong>{showDebugReasoning ? '调试模式' : '正常使用模式'}</strong>
+                    <small>{showDebugReasoning ? '显示模型、降级链和原生 reasoning' : '只显示用户可读结果'}</small>
+                  </span>
+                  <span className="debug-mode-switch" aria-hidden="true"><span /></span>
+                </button>
+                <p className="environment-note">只有 API 明确返回 reasoning_content/thinking 时才会显示；未返回时不会本地编造。</p>
+                <div className="environment-routes">
+                  <strong>同一 Session 的两条路径</strong>
+                  <span>代码理解 → 只读检索与引用回答</span>
+                  <span>修改请求 → MCP 探索 → diff 预览 → 用户审批 → 隔离校验</span>
+                </div>
+              </aside>
             </div>
-          </form>
+          ) : (
+            <div className="monitoring-page">
+              <ObservabilityDashboard refreshToken={usageRefreshToken} />
+            </div>
+          )}
         </section>
       </div>
-
-      <ObservabilityDashboard refreshToken={usageRefreshToken} />
     </main>
   )
 }
