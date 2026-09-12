@@ -195,7 +195,7 @@ def test_public_session_factory_reads_the_environment(monkeypatch) -> None:
     assert context.session.session_id == "session-factory"
 
 
-def test_repository_version_change_does_not_reuse_the_cached_surface() -> None:
+def test_repository_version_change_keeps_history_but_not_the_cached_surface() -> None:
     session_store = InMemorySessionStore()
     memory_store = InMemoryMemoryStore()
     service = SessionService(session_store, memory_store, InMemoryCache(), max_recent_turns=2)
@@ -218,11 +218,13 @@ def test_repository_version_change_does_not_reuse_the_cached_surface() -> None:
     same = service.get_or_create_session(**base)
     assert [turn.content for turn in same.memory.recent_turns] == ["旧仓库版本的问题"]
 
-    # 仓库指纹或索引版本一变，缓存键就不同，不能复用旧的 Session surface。
+    # 仓库指纹或索引版本一变，缓存键就不同，不能复用旧的 Session surface；
+    # 但对话历史按 session 保留——索引重建不是清空对话的理由（见 DEC-0076）。
     newer = service.get_or_create_session(
         **{**base, "repo_fingerprint": "fingerprint-new", "index_version": "index-new"}
     )
     assert newer.cache_hit is False
+    assert [turn.content for turn in newer.memory.recent_turns] == ["旧仓库版本的问题"]
 
 
 def test_long_session_auto_compacts_old_turns_and_keeps_sequence_continuity() -> None:

@@ -772,6 +772,14 @@ class SessionService:
 
 
 def _record_id(layer: str, owner_id: str, *, scope: TenantScope, repo_id: str) -> str:
+    """记忆记录的稳定标识：owner 的选择就是作用域的声明。
+
+    Session 记忆按 session_id、Working 记忆按 run_id，只有 Semantic 记忆按
+    index_version——索引派生出来的结论随索引失效，对话历史不随索引重建清空
+    （index_version 每次重建都会变，包括换分块参数、换 embedding 模型这类与
+    仓库内容无关的重建）。缓存键另带仓库版本，防的是复用别个版本的检索 surface，
+    不是共享对话，两者不要混成一条规则。
+    """
     raw = ":".join((layer, scope.tenant_id, scope.user_id, repo_id, owner_id))
     return f"{layer}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 

@@ -1,4 +1,4 @@
-"""公开会话的事实层恢复：进程重建、仓库版本隔离、Redis 故障回源。
+"""公开会话的事实层恢复：进程重建、仓库版本与缓存 surface、Redis 故障回源。
 
 需要配置好的 MySQL 测试库，未配置时整体跳过（见 conftest）。
 """
@@ -57,8 +57,16 @@ def test_rebuilt_service_restores_summary_boundary_and_recent_tail(session_facto
     assert [turn.sequence for turn in rebuilt.memory.recent_turns] == [3, 4]
 
 
-def test_repository_version_change_does_not_reuse_the_old_surface(session_factory) -> None:
-    service = _service(session_factory)
+def test_repository_version_change_keeps_history_but_not_the_cached_surface(
+    session_factory,
+) -> None:
+    """重新索引仓库：对话历史还在，缓存 surface 不复用。
+
+    会话历史属于「这一场对话」，不属于某个索引版本——index_version 每次重建都会变
+    （包括换分块参数这类与仓库内容无关的重建），清空它等于每次重建都丢上下文。
+    证据是另一回事：每轮重新检索，历史永远不代替新的 Evidence（见 DEC-0076）。
+    """
+    service = _service(session_factory, InMemoryCache())
     first = service.get_or_create_session(**_kwargs())
     service.append_turn(
         first,
@@ -72,8 +80,10 @@ def test_repository_version_change_does_not_reuse_the_old_surface(session_factor
         **_kwargs(repo_fingerprint="fingerprint-b", index_version="index-b")
     )
 
-    assert other.memory.recent_turns == ()
-    assert other.memory.summary is None
+    # 对话不随索引重建清空。
+    assert [turn.content for turn in other.memory.recent_turns] == ["仓库 A 的问题"]
+    # 缓存按仓库版本分键：新版本必须回源，不能复用旧版本的 surface。
+    assert other.cache_hit is False
 
 
 def test_redis_failure_falls_back_to_the_fact_store(session_factory) -> None:
