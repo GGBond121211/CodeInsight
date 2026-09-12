@@ -962,6 +962,8 @@ def _apply_agent_run_to_row(row: AgentRunRow, record: AgentRunRecord) -> None:
     row.error_class = record.error_class
     row.event_sequence = record.event_sequence
     row.updated_at_epoch_ms = record.updated_at_epoch_ms
+    row.token_budget = record.token_budget
+    row.tokens_used = record.tokens_used
     row.validation_profile = record.options.validation_profile
     row.result_limit = record.options.result_limit
     row.show_debug_reasoning = record.options.show_debug_reasoning
@@ -987,6 +989,8 @@ def _agent_run_from_row(row: AgentRunRow) -> AgentRunRecord:
         lease_until_epoch_ms=row.lease_until_epoch_ms,
         error_class=row.error_class,
         event_sequence=row.event_sequence,
+        token_budget=row.token_budget,
+        tokens_used=row.tokens_used,
         options=RunRequestOptions(
             validation_profile=row.validation_profile,
             result_limit=row.result_limit,

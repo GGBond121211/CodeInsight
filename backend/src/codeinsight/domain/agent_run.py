@@ -337,6 +337,11 @@ class AgentRunRecord:
     lease_until_epoch_ms: int | None = None
     error_class: str | None = None
     event_sequence: int = 0
+    # Q-012 U6：花费闸在这一轮看到的结论。闸值与应用统计的用量同源于
+    # budget_limit / budget_used 事件，所以两者可以直接相除；没受闸的轮次是
+    # None/0——0 表示「没有记录」，不表示「没花钱」。
+    token_budget: int | None = None
+    tokens_used: int = 0
     options: RunRequestOptions = RunRequestOptions()
     # 续跑任务要用到的审批事实。令牌是一次性、短时的，本来也存在 approvals
     # 事实表里；这里保存的是同一个事实的引用，好让另一个进程的 Worker 找到它。
@@ -364,6 +369,10 @@ class AgentRunRecord:
             raise ValueError("时间戳必须为正")
         if self.event_sequence < 0:
             raise ValueError("event_sequence 不能为负")
+        if self.tokens_used < 0:
+            raise ValueError("tokens_used 不能为负")
+        if self.token_budget is not None and self.token_budget < 1:
+            raise ValueError("token_budget 必须为正")
 
     @property
     def terminal(self) -> bool:

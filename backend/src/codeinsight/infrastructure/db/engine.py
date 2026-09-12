@@ -183,6 +183,16 @@ def _apply_additive_compatibility_migrations(engine: Engine) -> None:
             "ALTER TABLE agent_runs ADD COLUMN approval_token VARCHAR(255) NULL",
         ),
         (
+            "agent_runs",
+            "token_budget",
+            "ALTER TABLE agent_runs ADD COLUMN token_budget INT NULL",
+        ),
+        (
+            "agent_runs",
+            "tokens_used",
+            "ALTER TABLE agent_runs ADD COLUMN tokens_used INT NOT NULL DEFAULT 0",
+        ),
+        (
             "agent_run_outputs",
             "worker_id",
             "ALTER TABLE agent_run_outputs ADD COLUMN worker_id VARCHAR(128) NULL",

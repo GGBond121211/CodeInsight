@@ -374,3 +374,26 @@ def test_events_replay_after_a_sequence(tmp_path: Path) -> None:
 
     tail = log.read_events("run-1", after_sequence=1)
     assert [event.sequence for event in tail] == [2, 3]
+
+
+# Q-012 U6：花费闸结论的投影
+
+
+def test_round_trip_preserves_the_budget_summary(store: AgentRunStore) -> None:
+    """闸值与受闸用量要活过写入进程：运维不该为它去翻一整条事件流。"""
+
+    store.save_run(_record(token_budget=300_000, tokens_used=12_345))
+    loaded = store.get_run("run-1")
+    assert loaded is not None
+    assert loaded.token_budget == 300_000
+    assert loaded.tokens_used == 12_345
+
+
+def test_a_run_without_a_gate_keeps_the_empty_default(store: AgentRunStore) -> None:
+    """默认值表达的是「没有记录」。它不能被读成「这一轮没花钱」。"""
+
+    store.save_run(_record())
+    loaded = store.get_run("run-1")
+    assert loaded is not None
+    assert loaded.token_budget is None
+    assert loaded.tokens_used == 0

@@ -21,6 +21,9 @@ beforeEach(() => {
     estimated_cost_stars: '0.0184',
     unknown_usage_count: 0,
     usage_coverage: 1,
+    tool_loop_budget_checked: 4,
+    tool_loop_budget_exhausted: 1,
+    tool_loop_budget_exhausted_ratio: 0.25,
   })
   vi.mocked(usageCalls).mockResolvedValue({
     object: 'list',
@@ -61,4 +64,38 @@ it('展示汇总、供应商缓存来源和调用明细', async () => {
   expect(screen.getByText('供应商原生')).toBeInTheDocument()
   expect(screen.getByText('deepseek-v4-flash')).toBeInTheDocument()
   expect(screen.getAllByText('—').length).toBeGreaterThan(0)
+})
+
+it('展示花费闸截断的轮次与占比', async () => {
+  render(<ObservabilityDashboard refreshToken={0} />)
+
+  expect(await screen.findByText('花费闸截断')).toBeInTheDocument()
+  expect(screen.getByText('25.0%')).toBeInTheDocument()
+  expect(screen.getByText('1 / 4 轮被预算截断')).toBeInTheDocument()
+})
+
+it('还没有轮次受过闸时显示破折号而不是 0.0%', async () => {
+  vi.mocked(usageSummary).mockResolvedValueOnce({
+    requests: 0,
+    provider_attempts: 0,
+    successful_attempts: 0,
+    semantic_cache_hits: 0,
+    input_tokens: 0,
+    cache_read_tokens: 0,
+    cache_miss_tokens: 0,
+    cache_write_tokens: null,
+    output_tokens: 0,
+    cache_hit_ratio: 0,
+    estimated_cost_stars: '0',
+    unknown_usage_count: 0,
+    usage_coverage: 0,
+    tool_loop_budget_checked: 0,
+    tool_loop_budget_exhausted: 0,
+    tool_loop_budget_exhausted_ratio: 0,
+  })
+
+  render(<ObservabilityDashboard refreshToken={0} />)
+
+  expect(await screen.findByText('花费闸截断')).toBeInTheDocument()
+  expect(screen.getByText('还没有轮次受过花费闸约束')).toBeInTheDocument()
 })

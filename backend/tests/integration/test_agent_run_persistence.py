@@ -156,3 +156,21 @@ def test_claim_lets_exactly_one_worker_in(session_factory: sessionmaker[Session]
 
     assert len(winners) == 1
 
+
+def test_budget_summary_round_trips_through_mysql(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """Q-012 U6：闸值与受闸用量在真实 MySQL 上同样可写可读。
+
+    这两列是加列迁移加上去的（旧库不能重建），所以要在这里证明「旧库加完列之后
+    读写都成立」，而不是只在 create_all 新建的表上成立。
+    """
+
+    store = MySqlAgentRunStore(session_factory)
+    store.save_run(_record(token_budget=300_000, tokens_used=12_345))
+
+    loaded = store.get_run("run-1")
+    assert loaded is not None
+    assert loaded.token_budget == 300_000
+    assert loaded.tokens_used == 12_345
+

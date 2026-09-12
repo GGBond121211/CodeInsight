@@ -99,6 +99,19 @@ function usageSourceLabel(source: string): string {
   return source
 }
 
+// 一个受闸检查都没有时不能显示 0.0%：那会读成「运行过、没被截断」，
+// 而事实是「还没有轮次受过花费闸约束」。
+function budgetTruncationValue(summary: UsageSummary): string {
+  return summary.tool_loop_budget_checked === 0
+    ? '—'
+    : formatPercent(summary.tool_loop_budget_exhausted_ratio)
+}
+
+function budgetTruncationCaption(summary: UsageSummary): string {
+  if (summary.tool_loop_budget_checked === 0) return '还没有轮次受过花费闸约束'
+  return `${formatInteger(summary.tool_loop_budget_exhausted)} / ${formatInteger(summary.tool_loop_budget_checked)} 轮被预算截断`
+}
+
 export function ObservabilityDashboard({ refreshToken }: ObservabilityDashboardProps) {
   const [state, setState] = useState<DashboardState>(EMPTY_STATE)
 
@@ -183,10 +196,15 @@ export function ObservabilityDashboard({ refreshToken }: ObservabilityDashboardP
               value={state.summary.cache_write_tokens === null ? '—' : formatInteger(state.summary.cache_write_tokens)}
               caption="DeepSeek API 未提供该字段，不做本地推断"
             />
+            <MetricCard
+              label="花费闸截断"
+              value={budgetTruncationValue(state.summary)}
+              caption={budgetTruncationCaption(state.summary)}
+            />
           </div>
 
           <div className="dashboard-explanation">
-            <span>缓存 read/miss 来自供应商响应；时长由 Gateway 在本地测量；request_id、attempt_id 和错误归因由本地链路记录。</span>
+            <span>缓存 read/miss 来自供应商响应；时长由 Gateway 在本地测量；request_id、attempt_id 和错误归因由本地链路记录；花费闸截断来自 Tool Loop 的预算事件计数。</span>
           </div>
 
           <div className="calls-section">

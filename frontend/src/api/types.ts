@@ -55,6 +55,11 @@ export interface UsageSummary {
   estimated_cost_stars: string
   unknown_usage_count: number
   usage_coverage: number
+  // Q-012 U6：受花费闸检查的轮次、其中被预算截断的轮次，以及截断占比。
+  // 三个字段由 Gateway 的 usage_summary 直接给出（事件计数，不是估算）。
+  tool_loop_budget_checked: number
+  tool_loop_budget_exhausted: number
+  tool_loop_budget_exhausted_ratio: number
 }
 
 export interface UsageCall {

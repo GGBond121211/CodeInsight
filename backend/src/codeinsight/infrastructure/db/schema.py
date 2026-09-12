@@ -379,6 +379,11 @@ class AgentRunRow(Base):
     error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at_epoch_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Q-012 U6：花费闸在这一轮看到的结论。原始事实是 budget_limit / budget_used
+    # 两条事件；这两列只是它们的摘要，好让运维直接问「哪一轮撞了闸」，不必为每个
+    # Run 翻整条事件流。没受闸的轮次留 NULL/0——0 是「没有记录」，不是「没花钱」。
+    token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # 本轮被要求的参数。Worker 只有 run_id，重建执行时必须能读到它们。
     validation_profile: Mapped[str] = mapped_column(
         String(64), nullable=False, default="python_compile"

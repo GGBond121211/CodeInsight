@@ -64,6 +64,9 @@ beforeEach(() => {
     estimated_cost_stars: '0',
     unknown_usage_count: 0,
     usage_coverage: 0,
+    tool_loop_budget_checked: 0,
+    tool_loop_budget_exhausted: 0,
+    tool_loop_budget_exhausted_ratio: 0,
   })
   vi.mocked(usageCalls).mockResolvedValue({ object: 'list', data: [] })
 })

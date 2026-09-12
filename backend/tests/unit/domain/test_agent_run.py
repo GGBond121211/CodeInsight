@@ -215,3 +215,16 @@ def test_record_converts_back_into_the_task_it_was_scheduled_from() -> None:
     assert task.run_id == record.run_id
     assert task.attempt == 2
     assert task.max_attempts == 3
+
+
+def test_budget_summary_rejects_impossible_values() -> None:
+    """闸值与用量是事实字段：负数不是「没有」，是写错了。"""
+
+    with pytest.raises(ValueError):
+        _record(tokens_used=-1)
+    with pytest.raises(ValueError):
+        _record(token_budget=0)
+
+    record = _record(token_budget=300_000, tokens_used=12_345)
+    assert record.token_budget == 300_000
+    assert record.tokens_used == 12_345

@@ -103,6 +103,8 @@ from codeinsight.domain.trace import (
     ANSWER_READY,
     APPROVAL_GRANTED,
     APPROVAL_REQUESTED,
+    BUDGET_LIMIT,
+    BUDGET_USED,
     CONTEXT_ASSEMBLED,
     CONTEXT_COMPACTED,
     INTENT_CLASSIFIED,
@@ -683,6 +685,7 @@ class ConversationService:
         )
         self._record_run_metrics(task, turn, outcome, started_ms=started_ms)
         self._save_run_output(task, turn, outcome)
+        self._persist_run_budget(task, turn)
         if outcome.execution is None:
             # Worker 自己终止了这一轮。事实层里的状态（UNKNOWN、MANUAL_REQUIRED、
             # FAILED）必须原样变成用户看到的说法：一律显示「失败」，「需要人工对账」
@@ -729,6 +732,7 @@ class ConversationService:
         if turn is not None:
             self._record_run_metrics(task, turn, outcome, started_ms=started_ms)
             self._save_run_output(task, turn, outcome)
+            self._persist_run_budget(task, turn)
         return outcome
 
     def _adopt_turn(self, record: AgentRunRecord, context: AgentRunContext) -> ChatTurn:
@@ -949,6 +953,29 @@ class ConversationService:
             validation_wait_ms=_elapsed_between(
                 events, VALIDATION_QUEUED, VALIDATION_FINISHED
             ),
+        )
+
+    def _persist_run_budget(self, task: AgentRunTask, turn: ChatTurn) -> None:
+        """把花费闸的结论投影到 Run 事实行上（Q-012 U6）。
+
+        原始事实仍然是 budget_limit / budget_used 两条事件；这里只是把它们汇总成
+        「这一轮的闸值是多少、受闸的那段用了多少」，好让运维直接问「哪一轮撞了闸」，
+        而不必为每个 Run 翻一遍事件流。没有受闸的轮次什么都不写——0 是「没有记录」，
+        不是「没花钱」。
+        """
+
+        limit, used = _budget_projection(
+            self.runtime.event_log.read_events(turn.run_id)
+        )
+        if limit is None:
+            return
+        record = self.agent_run_store.get_run(task.run_id)
+        if record is None:
+            return
+        if record.token_budget == limit and record.tokens_used == used:
+            return
+        self.agent_run_store.save_run(
+            replace(record, token_budget=limit, tokens_used=used)
         )
 
     def _runner_for(
@@ -2248,6 +2275,24 @@ def _auto_payload(result: AutoAnswer) -> dict[str, object]:
             for item in result.events
         ],
     }
+
+
+def _budget_projection(events) -> tuple[int | None, int]:
+    """把事件里的花费闸结论读成 ``(闸值, 受闸用量)``。
+
+    只有 Tool Loop 写过 budget_limit 才算受过闸：没有它就返回 ``(None, 0)``，
+    让调用方什么都不写。用量取**最后一条** budget_used——那是累计值，不是增量，
+    把多条相加会把同一段 token 数很多遍。
+    """
+
+    limit: int | None = None
+    used = 0
+    for event in events:
+        if event.event_type == BUDGET_LIMIT:
+            limit = _int_payload(event.payload, "budget_limit") or None
+        elif event.event_type == BUDGET_USED:
+            used = _int_payload(event.payload, "budget_used")
+    return limit, used
 
 
 def _usage_payload(events, *, fallback_input: int, fallback_output: int) -> dict[str, object]:
