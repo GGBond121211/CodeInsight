@@ -14,13 +14,17 @@ from codeinsight.agent.tool_loop import (
 )
 from codeinsight.application.change_service import ChangeService, PreviewResult
 from codeinsight.infrastructure.mcp_client import StdioMCPClient
-from codeinsight.infrastructure.model_gateway import resolve_route_budget
+from codeinsight.infrastructure.model_gateway import (
+    configured_change_token_budget,
+    resolve_route_budget,
+)
 
 
 def default_change_loop_config() -> ToolLoopConfig:
     """change-plan 路线的默认预算：与 explain 共用同一个工作窗口。"""
     budget = resolve_route_budget("change-plan")
     return ToolLoopConfig(
+        token_budget=configured_change_token_budget(),
         context_window_tokens=budget.context_window_tokens,
         reserved_output_tokens=budget.reserved_output_tokens,
     )

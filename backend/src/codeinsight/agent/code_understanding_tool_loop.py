@@ -42,6 +42,11 @@ from codeinsight.application.evidence_repair import (
     EvidenceRepairController,
     RepairBudget,
 )
+from codeinsight.application.structured_evidence import (
+    DEFAULT_MAX_ROWS,
+    StructuredEvidenceRow,
+    build_structured_evidence,
+)
 from codeinsight.domain.answer import (
     ANSWERED,
     INSUFFICIENT_EVIDENCE,
@@ -55,7 +60,10 @@ from codeinsight.domain.trace import (
     EVIDENCE_REPAIR_STARTED,
     RunEvent,
 )
-from codeinsight.infrastructure.model_gateway import resolve_route_budget
+from codeinsight.infrastructure.model_gateway import (
+    configured_explain_token_budget,
+    resolve_route_budget,
+)
 from codeinsight.infrastructure.openai_chat import parse_model_answer
 from codeinsight.prompts.code_understanding import (
     PROMPT_VERSION,
@@ -117,6 +125,7 @@ def _default_loop_config() -> ToolLoopConfig:
         max_steps=8,
         max_tool_calls=64,
         deadline_seconds=60.0,
+        token_budget=configured_explain_token_budget(),
         repeated_call_limit=2,
         repeated_error_limit=2,
         context_window_tokens=budget.context_window_tokens,
@@ -169,6 +178,13 @@ class CodeUnderstandingResult:
     output_tokens: int
     loop_status: str
     termination_reason: str
+    # Q-012 花费闸：本轮声明的上限与是否因它停下。上限为 None 表示这条
+    # 路线只受次数与窗口约束。
+    token_budget: int | None = None
+    budget_exhausted: bool = False
+    # Q-012 结构化结果区：由代码从工具结果映射，模型不参与。
+    structured_evidence: tuple[StructuredEvidenceRow, ...] = ()
+    structured_evidence_truncated: bool = False
     prompt_version: str = PROMPT_VERSION
     events: tuple[RunEvent, ...] = ()
 
@@ -204,6 +220,15 @@ class CodeUnderstandingResult:
             "output_tokens": self.output_tokens,
             "loop_status": self.loop_status,
             "termination_reason": self.termination_reason,
+            "budget": {
+                "limit": self.token_budget,
+                "used": self.input_tokens + self.output_tokens,
+                "exhausted": self.budget_exhausted,
+            },
+            "structured_evidence": {
+                "rows": [row.as_dict() for row in self.structured_evidence],
+                "truncated": self.structured_evidence_truncated,
+            },
             "prompt_version": self.prompt_version,
         }
 
@@ -522,6 +547,11 @@ class CodeUnderstandingToolLoop:
     def _assemble(self, loop_result, gate: EvidenceGate) -> CodeUnderstandingResult:
         status, reason = _map_status(loop_result.status, loop_result.reason, gate)
         answer = gate.accepted
+        rows, truncated = build_structured_evidence(
+            tool_results=loop_result.tool_results,
+            evidence=gate.ledger.records,
+            max_rows=DEFAULT_MAX_ROWS,
+        )
         return CodeUnderstandingResult(
             status=status,
             answer=answer.answer if answer is not None else "",
@@ -539,6 +569,10 @@ class CodeUnderstandingToolLoop:
             output_tokens=loop_result.output_tokens,
             loop_status=loop_result.status,
             termination_reason=reason,
+            token_budget=loop_result.token_budget,
+            budget_exhausted=loop_result.budget_exhausted,
+            structured_evidence=rows,
+            structured_evidence_truncated=truncated,
             events=loop_result.lifecycle_events,
         )
 

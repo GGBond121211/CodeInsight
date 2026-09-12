@@ -447,6 +447,27 @@ class ModelGateway:
         self.context_retention_checked = 0
         self.context_retention_pass = 0
         self.context_retention_overflow = 0
+        # Q-012 花费闸口径：有多少轮声明了花费预算、其中多少轮被它截断。
+        # 与「请求数」分开计数：一次对话可能有多轮，混在一起算不出截断率。
+        self.tool_loop_budget_checked = 0
+        self.tool_loop_budget_exhausted = 0
+
+    def record_tool_loop_budget(
+        self, *, limit: int, used: int, exhausted: bool
+    ) -> None:
+        """登记一次 Tool Loop 的花费闸结论。
+
+        只记计数，不记正文、不记 question：面板要回答的是「有没有一轮
+        因为预算停下」，不是「哪句话花的钱多」。
+        """
+        if limit < 1:
+            raise ValueError("花费预算必须为正")
+        if used < 0:
+            raise ValueError("已用 token 不能为负")
+        with self._stats_lock:
+            self.tool_loop_budget_checked += 1
+            if exhausted:
+                self.tool_loop_budget_exhausted += 1
 
     def complete(self, request: GatewayRequest) -> GatewayResponse:
         route = self.routes.get(request.scene)
@@ -815,6 +836,8 @@ class ModelGateway:
             retention_checked = self.context_retention_checked
             retention_pass = self.context_retention_pass
             retention_overflow = self.context_retention_overflow
+            budget_checked = self.tool_loop_budget_checked
+            budget_exhausted = self.tool_loop_budget_exhausted
         input_tokens = sum(record.input_tokens for record in records)
         cache_read_tokens = sum(record.cached_tokens for record in records)
         cache_miss_tokens = sum(_cost_cache_miss(record) for record in records)
@@ -841,6 +864,13 @@ class ModelGateway:
             "context_retention_checked": retention_checked,
             "context_retention_pass": retention_pass,
             "context_retention_overflow": retention_overflow,
+            # 花费闸：被预算截断的轮次数与占比。0 张轮次时占比记 0.0 而不是
+            # 100%——「还没跑过」和「全都超支」不能长成同一个数字。
+            "tool_loop_budget_checked": budget_checked,
+            "tool_loop_budget_exhausted": budget_exhausted,
+            "tool_loop_budget_exhausted_ratio": (
+                budget_exhausted / budget_checked if budget_checked else 0.0
+            ),
             "semantic_cache_hits": semantic_cache_hits,
             "input_tokens": input_tokens,
             "cache_read_tokens": cache_read_tokens,
@@ -1065,6 +1095,43 @@ def configured_context_window_tokens() -> int:
     return value
 
 
+def _configured_token_budget(env_name: str, default: int) -> int:
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ModelConfigurationError(f"{env_name} 必须是整数") from None
+    if value <= 0:
+        raise ModelConfigurationError(f"{env_name} 必须为正")
+    return value
+
+
+def configured_explain_token_budget() -> int:
+    """explain（只读代码理解）单轮的花费上限。
+
+    Q-012 之前这条路线只有次数闸（8 步 / 64 次工具调用）与窗口闸，没有
+    花费闸：同样 8 轮，输入 token 随轮次等差累积，可以差一个数量级。
+
+    默认值是工程基线而不是调优结果——它取 baseline 的 P95 量级，只保证
+    「明显失控的轮次会停下」，不声称这是最优阈值。用
+    CODEINSIGHT_TOOL_LOOP_TOKEN_BUDGET 覆盖。
+    """
+    return _configured_token_budget("CODEINSIGHT_TOOL_LOOP_TOKEN_BUDGET", 300_000)
+
+
+def configured_change_token_budget() -> int:
+    """change（修改预览与修复）单轮的花费上限。
+
+    比 explain 高：修改路线要读 diff、生成补丁并跑固定校验，证据面更大。
+    用 CODEINSIGHT_CHANGE_TOOL_LOOP_TOKEN_BUDGET 覆盖。
+    """
+    return _configured_token_budget(
+        "CODEINSIGHT_CHANGE_TOOL_LOOP_TOKEN_BUDGET", 400_000
+    )
+
+
 def configured_routes_from_environment(
     registry: ModelRegistry | None = None,
 ) -> dict[str, RouteProfile]:
@@ -1157,6 +1224,19 @@ class GatewayChatModel:
     def __init__(self, gateway: ModelGateway, *, context_assembler=None) -> None:
         self.gateway = gateway
         self._context_assembler = context_assembler
+
+    def record_tool_loop_budget(
+        self, *, limit: int, used: int, exhausted: bool
+    ) -> None:
+        """把 Tool Loop 的花费闸结论转给 Gateway 计数。
+
+        为什么不让 Tool Loop 直接拿 Gateway：循环只认识 complete_with_tools
+        这一个方法，让它依赖 Gateway 会把「可替换的模型接口」变成「必须有人
+        记账」。由调用方在循环结束后上报，循环保持无状态。
+        """
+        self.gateway.record_tool_loop_budget(
+            limit=limit, used=used, exhausted=exhausted
+        )
 
     @classmethod
     def from_environment(cls, *, context_assembler=None) -> GatewayChatModel:

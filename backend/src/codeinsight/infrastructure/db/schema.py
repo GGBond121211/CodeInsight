@@ -348,7 +348,7 @@ class AgentRunRow(Base):
 
     UNIQUE(turn_id) 是「同一条用户消息不会创建两个 Run」的最后防线：重发的
     请求只能命中已有记录，不能新开一条并再跑一次模型。
-\n+    attempt 与 task_id 合起来就是计划里的 task_attempt_id：第几次尝试由这两个
+    attempt 与 task_id 合起来就是计划里的 task_attempt_id：第几次尝试由这两个
     字段共同确定，单独再存一个 ID 只会多一处可能对不上的事实。
 
     这里没有 tenant_id / user_id：本表不含任何内容字段，租户归属由 session_id

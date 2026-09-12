@@ -74,6 +74,11 @@ ANSWER_READY = "answer_ready"
 EVIDENCE_ASSESSED = "evidence_assessed"
 EVIDENCE_REPAIR_STARTED = "evidence_repair_started"
 EVIDENCE_REPAIR_FINISHED = "evidence_repair_finished"
+# Q-012：花费闸的三个事实。次数闸（max_steps / max_tool_calls）拦不住花费——
+# 同样 8 轮，输入 token 可以差一个数量级。这里只记计数与阈值，不记正文。
+BUDGET_LIMIT = "budget_limit"
+BUDGET_USED = "budget_used"
+BUDGET_EXHAUSTED = "budget_exhausted"
 # Q-011：后台 Agent Run 的调度事实。命名与已有事件对齐——计划里的
 # model_started / model_finished / tool_finished 分别复用既有的
 # MODEL_CALLED / MODEL_RESULT / TOOL_RESULT，不为同一件事再添一套同义名：
@@ -132,6 +137,9 @@ SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
         EVIDENCE_ASSESSED,
         EVIDENCE_REPAIR_STARTED,
         EVIDENCE_REPAIR_FINISHED,
+        BUDGET_LIMIT,
+        BUDGET_USED,
+        BUDGET_EXHAUSTED,
         TASK_QUEUED,
         WORKER_CLAIMED,
         CONTEXT_LOADED,

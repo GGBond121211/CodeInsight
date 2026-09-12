@@ -22,7 +22,12 @@ from codeinsight.application.tool_result_pruner import (
     PruneOutcome,
     ToolResultPruner,
 )
-from codeinsight.domain.trace import RunEvent
+from codeinsight.domain.trace import (
+    BUDGET_EXHAUSTED,
+    BUDGET_LIMIT,
+    BUDGET_USED,
+    RunEvent,
+)
 
 TOOL_ERROR_CODES = frozenset(
     {
@@ -210,6 +215,10 @@ class ToolLoopConfig:
     # this finite so a malformed tool plan still fails closed.
     max_tool_calls: int = 64
     token_budget: int | None = None
+    # 花费闸的软阈值：用到这个比例就先做一次更狠的裁剪，把后面的轮次压下来。
+    # 为什么是「先裁剪」而不是「先停」：还有预算时就停下会白白丢掉已经花掉的
+    # 证据；裁剪只是让模型少看旧工具结果，不会让它看不到结论。
+    budget_soft_ratio: float = 0.7
     repeated_call_limit: int = 2
     repeated_error_limit: int = 2
     # 每轮模型调用前按工具类型裁剪旧工具结果。默认开启：不裁剪的话消息会
@@ -226,6 +235,10 @@ class ToolLoopConfig:
             raise ValueError("Tool Loop 的步数和工具调用预算必须为正")
         if self.deadline_seconds <= 0:
             raise ValueError("deadline_seconds 必须为正")
+        if self.token_budget is not None and self.token_budget < 1:
+            raise ValueError("token_budget 必须为正")
+        if not 0.0 < self.budget_soft_ratio < 1.0:
+            raise ValueError("budget_soft_ratio 必须落在 (0, 1) 之间")
         if self.keep_recent_tool_results < 0:
             raise ValueError("keep_recent_tool_results 不能为负")
         if self.context_window_tokens is not None and self.context_window_tokens <= 0:
@@ -255,6 +268,14 @@ class ToolLoopResult:
     prune_events: tuple[PruneOutcome, ...] = ()
     # 每轮调用前的上下文估算与预算结论。
     context_checks: tuple[ToolCallContext, ...] = ()
+    # Q-012 花费闸的事实：本轮声明的上限、是否已经耗尽。上限为 None 表示
+    # 调用方没有声明花费预算，此时不假装知道「用掉了几成」。
+    token_budget: int | None = None
+    budget_exhausted: bool = False
+
+    @property
+    def tokens_used(self) -> int:
+        return self.input_tokens + self.output_tokens
 
 
 @dataclass(frozen=True)
@@ -292,6 +313,11 @@ class ToolLoop:
         self._model = model
         self._mcp = mcp_client
         self._config = config or ToolLoopConfig()
+        self._run_id = run_id
+        self._event_log = event_log
+        # 软阈值只触发一次：每轮都降级裁剪会让「模型看到了什么」随着轮次
+        # 反复变化，回放时说不清哪一轮用的是哪种视图。
+        self._budget_soft_triggered = False
         self._lifecycle = ToolLifecycleRecorder(run_id, event_log)
         # 不传控制层时行为与之前完全一致：循环只在模型的 tool_calls 上推进。
         self._controller = outcome_controller
@@ -306,6 +332,43 @@ class ToolLoop:
         self._prune_events: list[PruneOutcome] = []
         self._context_checks: list[ToolCallContext] = []
 
+    def _emit(self, event_type: str, payload: Mapping[str, str]) -> None:
+        """写一条公开事件；没有事件日志时静默跳过（单元测试的常见情形）。"""
+        if self._event_log is None:
+            return
+        sequence = self._event_log.next_sequence(self._run_id)
+        self._event_log.append(
+            RunEvent(
+                event_id=f"{self._run_id}:{sequence}",
+                run_id=self._run_id,
+                sequence=sequence,
+                event_type=event_type,
+                occurred_at_epoch_ms=int(time.time() * 1000),
+                payload=dict(payload),
+            )
+        )
+
+    def _emit_budget_used(
+        self, *, input_tokens: int, output_tokens: int, steps: int
+    ) -> None:
+        limit = self._config.token_budget
+        if limit is None:
+            return
+        used = input_tokens + output_tokens
+        soft = used >= limit * self._config.budget_soft_ratio
+        self._emit(
+            BUDGET_USED,
+            {
+                "budget_limit": str(limit),
+                "budget_used": str(used),
+                "used_ratio": f"{used / limit:.4f}",
+                "step": str(steps),
+                "soft_threshold_reached": "true" if soft else "false",
+            },
+        )
+        if soft and not self._budget_soft_triggered:
+            self._budget_soft_triggered = True
+
     def run(
         self,
         system_prompt: str,
@@ -319,6 +382,14 @@ class ToolLoop:
         ]
         discovered = self._mcp.list_tools()
         tools = tuple(_as_openai_tool(item) for item in discovered)
+        if self._config.token_budget is not None:
+            self._emit(
+                BUDGET_LIMIT,
+                {
+                    "budget_limit": str(self._config.token_budget),
+                    "soft_ratio": f"{self._config.budget_soft_ratio:.4f}",
+                },
+            )
         calls: list[ToolCall] = []
         results: list[ToolResult] = []
         call_counts: Counter[str] = Counter()
@@ -384,12 +455,23 @@ class ToolLoop:
                 )
             input_tokens += response.input_tokens or 0
             output_tokens += response.output_tokens or 0
+            self._emit_budget_used(
+                input_tokens=input_tokens, output_tokens=output_tokens, steps=step
+            )
             if (
                 self._config.token_budget is not None
                 and input_tokens + output_tokens > self._config.token_budget
             ):
-                return self._stuck(
-                    messages, calls, results, step, input_tokens, output_tokens, "Token 预算已用尽"
+                self._emit(
+                    BUDGET_EXHAUSTED,
+                    {
+                        "budget_limit": str(self._config.token_budget),
+                        "budget_used": str(input_tokens + output_tokens),
+                        "step": str(step),
+                    },
+                )
+                return self._budget_stuck(
+                    messages, calls, results, step, input_tokens, output_tokens
                 )
             assistant_message: dict[str, object] = {
                 "role": "assistant",
@@ -574,7 +656,11 @@ class ToolLoop:
         """
         window = self._config.context_window_tokens
         reserved = self._config.reserved_output_tokens
-        visible = self._prune_visible(messages, keep_recent=None)
+        # 软阈值之后把保留窗口压到 0：此时省下的 token 比「模型再看一眼旧
+        # 工具结果」更值钱，而完整记录仍然留在 messages 里供审计与回放。
+        visible = self._prune_visible(
+            messages, keep_recent=0 if self._budget_soft_triggered else None
+        )
         estimate = estimate_messages_tokens(visible)
         overflow = window is not None and estimate + reserved > window
         if overflow and self._pruner is not None:
@@ -725,6 +811,8 @@ class ToolLoop:
         input_tokens: int,
         output_tokens: int,
         reason: str | None = None,
+        *,
+        budget_exhausted: bool = False,
     ) -> ToolLoopResult:
         return ToolLoopResult(
             status,
@@ -739,6 +827,36 @@ class ToolLoop:
             self._lifecycle.events,
             tuple(self._prune_events),
             tuple(self._context_checks),
+            self._config.token_budget,
+            budget_exhausted,
+        )
+
+    def _budget_stuck(
+        self,
+        messages: list[Mapping[str, object]],
+        calls: list[ToolCall],
+        results: list[ToolResult],
+        steps: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> ToolLoopResult:
+        """花费闸收场。
+
+        与上下文溢出一样走 STUCK 而不是抛异常：已经拿到的证据还在，
+        上层据此给出 INSUFFICIENT_EVIDENCE 是诚实结论，报错只会把
+        「花超了」伪装成「系统坏了」。
+        """
+        return self._result(
+            "STUCK",
+            None,
+            messages,
+            calls,
+            results,
+            steps,
+            input_tokens,
+            output_tokens,
+            "Token 预算已用尽",
+            budget_exhausted=True,
         )
 
     def _stuck(

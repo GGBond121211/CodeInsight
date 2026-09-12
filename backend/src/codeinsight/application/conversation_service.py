@@ -127,7 +127,11 @@ from codeinsight.infrastructure.chat_runtime import (
 )
 from codeinsight.infrastructure.gateway_errors import GatewayError
 from codeinsight.infrastructure.memory_store import InMemoryMemoryStore
-from codeinsight.infrastructure.model_gateway import CacheContext, resolve_route_budget
+from codeinsight.infrastructure.model_gateway import (
+    CacheContext,
+    configured_change_token_budget,
+    resolve_route_budget,
+)
 from codeinsight.infrastructure.otel import get_telemetry
 from codeinsight.infrastructure.redaction import redact_sensitive
 from codeinsight.infrastructure.redis_cache import RedisCache
@@ -1809,6 +1813,7 @@ class ConversationService:
                 max_steps=12,
                 deadline_seconds=120.0,
                 max_tool_calls=96,
+                token_budget=configured_change_token_budget(),
                 repeated_error_limit=5,
             )
         try:

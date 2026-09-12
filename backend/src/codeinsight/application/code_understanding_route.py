@@ -80,7 +80,18 @@ def run_code_understanding_answer(
             repo_root=root,
             emit=emit,
         )
-        return loop.run(question)
+        result = loop.run(question)
+
+    # 花费闸的结论要能被运维看见，而 Gateway 是唯一进程级账本。不是每个
+    # Model 都记账（Fake 与测试替身不记账），所以按能力调用而不是断言存在。
+    report = getattr(model, "record_tool_loop_budget", None)
+    if callable(report) and result.token_budget is not None:
+        report(
+            limit=result.token_budget,
+            used=result.input_tokens + result.output_tokens,
+            exhausted=result.budget_exhausted,
+        )
+    return result
 
 
 def to_auto_answer(
