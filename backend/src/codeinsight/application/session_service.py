@@ -88,7 +88,15 @@ class SessionService:
         repo_id: str,
         repo_fingerprint: str,
         index_version: str,
+        fresh: bool = False,
     ) -> SessionContext:
+        """读（或建）一个会话上下文。
+
+        fresh=True 表示这一次读完之后会改写会话记忆，所以先丢缓存、按事实回源。
+        缓存按仓库版本分键，而受理与执行可能落在两个版本键上：直接命中会拿到
+        这一轮落库之前的快照，写回去就把刚受理的用户消息从记忆里抹掉（真 Redis
+        上实测发生过）。普通热路径保持默认 False，不必为一次读多付一次回源。
+        """
         key = self._session_cache_key(
             session_id=session_id,
             scope=scope,
@@ -96,6 +104,12 @@ class SessionService:
             repo_fingerprint=repo_fingerprint,
             index_version=index_version,
         )
+        if fresh and self._cache is not None:
+            # 丢掉当前这一条，让下面的 cache_aside 回源事实并把新结果写回。
+            try:
+                self._cache.delete(key.value)
+            except CacheUnavailableError:
+                pass
 
         def load_from_stores() -> str:
             session = self._session_store.get_session(session_id)

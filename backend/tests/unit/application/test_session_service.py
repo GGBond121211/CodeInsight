@@ -441,3 +441,41 @@ def test_compact_session_reports_the_failure_class(monkeypatch: pytest.MonkeyPat
     assert result.summary_updated is False
     assert result.boundary_id is None
     assert [turn.sequence for turn in compacted.memory.recent_turns] == [1, 2, 3, 4]
+
+
+def test_fresh_read_ignores_the_other_version_snapshot() -> None:
+    """执行体读会话时必须看到事实，而不是另一个版本键上的旧快照。
+
+    受理走「未扫描」指纹、执行走扫描指纹，两条键各有一份上下文。执行体如果直接
+    命中扫描键上的旧快照，它写回的记忆里就没有刚受理的用户消息——真 Redis 上实测
+    发生过这件事。fresh=True 就是「这次读完之后要改写记忆，先回源事实」的说法。
+    """
+
+    cache = InMemoryCache()
+    service = _service(cache)
+    base = {"session_id": "session-surface", "scope": SCOPE, "repo_id": "repo-1"}
+    created = service.get_or_create_session(
+        **base, repo_fingerprint="scanned-version", index_version="index-1"
+    )
+    service.append_turn(
+        created,
+        role="user",
+        content="checkout 如何校验输入？",
+        repo_fingerprint="unscanned-version",
+        index_version="index-1",
+    )
+
+    on_the_other_key = service.get_or_create_session(
+        **base, repo_fingerprint="scanned-version", index_version="index-1"
+    )
+    read_from_facts = service.get_or_create_session(
+        **base,
+        repo_fingerprint="scanned-version",
+        index_version="index-1",
+        fresh=True,
+    )
+
+    assert on_the_other_key.memory.recent_turns == ()
+    assert [turn.content for turn in read_from_facts.memory.recent_turns] == [
+        "checkout 如何校验输入？"
+    ]
