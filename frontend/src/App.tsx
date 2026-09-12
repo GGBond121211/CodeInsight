@@ -7,7 +7,12 @@ import {
   streamChatEvents,
   submitChatTurn,
 } from './api/chat'
-import type { ChatEvent, ChatTurnResponse, DebugReasoningEvent } from './api/types'
+import type {
+  ChatEvent,
+  ChatTurnResponse,
+  ChatTurnStatus,
+  DebugReasoningEvent,
+} from './api/types'
 import { ObservabilityDashboard } from './components/ObservabilityDashboard'
 import './App.css'
 
@@ -56,6 +61,25 @@ const MODEL_ERROR_DETAILS: Record<string, string> = {
   tool_call_missing_function: 'tool_call 缺少 function',
   tool_call_arguments_invalid_json: 'tool_call 参数不是有效 JSON',
   tool_call_arguments_not_object: 'tool_call 参数不是 JSON object',
+}
+
+// 还在跑的状态：排队、执行、等隔离校验都算。界面靠它决定「还要不要继续接收事件」，
+// 少写一个就会出现「校验中却显示已结束」。
+const IN_FLIGHT_STATUSES: ReadonlySet<ChatTurnStatus> = new Set([
+  'QUEUED',
+  'RUNNING',
+  'WAITING_VALIDATION',
+])
+
+// 必须有人过问的两种说法：明确要求人工对账，以及 Worker 中途退出后没人能说清结果的。
+const ATTENTION_STATUSES: ReadonlySet<ChatTurnStatus> = new Set(['MANUAL_REQUIRED', 'UNKNOWN'])
+
+function isInFlight(turn: ChatTurnResponse | null): boolean {
+  return turn ? IN_FLIGHT_STATUSES.has(turn.status) : false
+}
+
+function needsAttention(status: ChatTurnStatus | undefined): boolean {
+  return status ? ATTENTION_STATUSES.has(status) : false
 }
 
 const FALLBACK_REASON_LABELS: Record<string, string> = {
@@ -286,9 +310,11 @@ function App() {
   const [usageRefreshToken, setUsageRefreshToken] = useState(0)
   const eventCursor = useRef(0)
 
-  const running = activeTurn?.status === 'QUEUED' || activeTurn?.status === 'RUNNING'
+  const running = isInFlight(activeTurn)
+  const waitingValidation = activeTurn?.status === 'WAITING_VALIDATION'
   const pendingApproval = activeTurn?.status === 'WAITING_APPROVAL'
   const failed = activeTurn?.status === 'FAILED'
+  const manualAttention = needsAttention(activeTurn?.status)
 
   function addAssistantMessage(turn: ChatTurnResponse) {
     const assistantMessage = turn.assistant_message
@@ -364,7 +390,7 @@ function App() {
       setQuestion('')
     } catch (caught) {
       setActiveTurn((current) => (
-        current?.status === 'QUEUED' || current?.status === 'RUNNING' ? null : current
+        isInFlight(current) ? null : current
       ))
       setError(caught instanceof Error ? caught.message : '请求失败。')
     } finally {
@@ -380,11 +406,13 @@ function App() {
     try {
       const resumed = await approveChatTurn(activeTurn.turn_id)
       const completed = await watchTurn(resumed, eventCursor.current)
-      if (completed.status === 'FAILED') setError(completed.error || '修改应用失败。')
+      if (completed.status === 'FAILED' || needsAttention(completed.status)) {
+        setError(completed.error || '修改应用失败。')
+      }
       setUsageRefreshToken((current) => current + 1)
     } catch (caught) {
       setActiveTurn((current) => (
-        current?.status === 'QUEUED' || current?.status === 'RUNNING' ? null : current
+        isInFlight(current) ? null : current
       ))
       setError(caught instanceof Error ? caught.message : '审批或应用失败。')
     } finally {
@@ -448,7 +476,11 @@ function App() {
               <span className="section-label">Live Agent Run</span>
               <h2>代码对话</h2>
             </div>
-            {activeTurn && <span className={`status-pill ${pendingApproval ? 'warning' : ''}`}>{activeTurn.status}</span>}
+            {activeTurn && (
+              <span className={`status-pill ${pendingApproval || manualAttention ? 'warning' : ''}`}>
+                {activeTurn.status}
+              </span>
+            )}
           </div>
 
           <div className="message-list" aria-live="polite">
@@ -476,7 +508,7 @@ function App() {
           </div>
 
           {activeTurn && (
-            running || pendingApproval || failed || reasoning.length > 0 || (showDebugReasoning && events.length > 0)
+            running || pendingApproval || failed || manualAttention || reasoning.length > 0 || (showDebugReasoning && events.length > 0)
           ) && (
             <section className="run-progress" aria-label="实时运行状态">
               <div className="run-progress-heading">
@@ -485,11 +517,15 @@ function App() {
                   <strong>
                     {pendingApproval
                       ? '等待你的审批'
-                      : running
-                        ? 'Agent 正在运行'
-                        : failed
-                          ? '本轮失败，请查看运行详情'
-                          : '本轮已结束'}
+                      : waitingValidation
+                        ? '等待隔离校验返回'
+                        : running
+                          ? 'Agent 正在运行'
+                          : manualAttention
+                            ? '这一轮需要人工确认'
+                            : failed
+                              ? '本轮失败，请查看运行详情'
+                              : '本轮已结束'}
                   </strong>
                   <span>{activeTurn.run_id}</span>
                 </div>
@@ -539,7 +575,15 @@ function App() {
               required
             />
             <div className="composer-footer">
-              <span>{running ? '正在接收实时事件，请稍候…' : pendingApproval ? '请先处理上面的修改审批。' : 'Enter 发送一轮新的对话'}</span>
+              <span>
+                {running || pendingApproval
+                  ? pendingApproval
+                    ? '请先处理上面的修改审批。'
+                    : '正在接收实时事件，请稍候…'
+                  : manualAttention
+                    ? '这一轮需要人工确认，请查看运行详情。'
+                    : 'Enter 发送一轮新的对话'}
+              </span>
               <button className="primary-action" disabled={loading || pendingApproval || !question.trim()} type="submit">
                 {loading ? '处理中…' : '发送消息'}
               </button>

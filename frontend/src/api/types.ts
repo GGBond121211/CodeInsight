@@ -177,12 +177,25 @@ export interface ChatSessionResponse {
   cache_fallback: boolean
 }
 
+// 一轮对话可能出现的全部状态。它必须与后端 domain/chat.py 的 SUPPORTED_CHAT_STATUSES
+// 一致：后端新增状态而这里没跟上时，界面会把「等隔离校验」「需要人工对账」显示成已结束。
+export type ChatTurnStatus =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'WAITING_APPROVAL'
+  | 'WAITING_VALIDATION'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'UNKNOWN'
+  | 'MANUAL_REQUIRED'
+
 export interface ChatTurnResponse {
   turn_id: string
   session_id: string
   run_id: string
   task_type: 'general_chat' | 'scope_redirect' | 'clarify' | 'explain' | 'change'
-  status: 'QUEUED' | 'RUNNING' | 'WAITING_APPROVAL' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  status: ChatTurnStatus
   user_message: string
   assistant_message: string | null
   result: Record<string, unknown> | null
