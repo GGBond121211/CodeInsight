@@ -38,8 +38,8 @@
   `QUEUE_FULL` 事实；broker 不可达时只读任务 `FAILED/DISPATCH_FAILED`、续跑
   `MANUAL_REQUIRED/DISPATCH_UNKNOWN`，两者都不会停在 `QUEUED`。
 
-仍然不属于已证明能力：多进程 Worker 的生产容量与跨进程租约竞争、Worker 内存与逐 Worker
-资源归因、Redis 抖动（断开再恢复）与真实杀进程、队列等待超时（本版本未实现）、真实模型在
-高并发下的吞吐。单次完整回归为 `813 passed, 55 skipped`（跳过项需要真实 MySQL / Redis /
-Docker）；队列实验的多次 Trial、P50/P95/P99、成本与 Hard Case 见
-`docs/AGENT_RUN_WORKER_EVALUATION.md`，参数状态停在 `implemented_unoptimized`。
+仍然不属于已证明能力：3 个以上 Worker 进程的规模与长跑稳定性、Redis 抖动（断开再恢复）、
+broker 自动重投（多进程实验里的接管靠显式重投，未 ack 的消息要等 Celery 的 visibility
+timeout）、队列等待超时（本版本未实现）、真实模型在高并发下的吞吐。跨进程执行与读取、
+两个真实 Worker 进程的租约竞争与逐进程资源归因、真实杀进程后的接管都有证据，见
+`docs/AGENT_RUN_WORKER_EVALUATION.md`；参数状态停在 `implemented_unoptimized`。
