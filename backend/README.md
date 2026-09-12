@@ -57,7 +57,7 @@ Chat 响应中 `assistant_message` 是唯一的自然语言正文；`result` 只
 ```powershell
 $env:UV_CACHE_DIR='.uv-cache'
 uv run ruff check src tests
-uv run pytest --basetemp=.pytest-release-basetemp
+uv run python -m pytest --basetemp=.pytest-release-basetemp
 ```
 
 历史检索和回答实验结果保留在 `docs/` 与 `outputs/`，它们是演进证据，不代表当前公开入口或当前运行时检索器。
