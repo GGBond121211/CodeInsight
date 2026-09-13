@@ -37,6 +37,13 @@
 - 队列背压有明确错误类别：`CODEINSIGHT_AGENT_RUN_QUEUE_LIMIT` 到上限拒绝并留
   `QUEUE_FULL` 事实；broker 不可达时只读任务 `FAILED/DISPATCH_FAILED`、续跑
   `MANUAL_REQUIRED/DISPATCH_UNKNOWN`，两者都不会停在 `QUEUED`。
+- 解释类回答带**结构化事实区**：`result.structured_evidence`（每行含 `evidence_id / path / start_line /
+  end_line / kind / source_tool / symbol`）由应用层从工具结果**直接映射**，模型不参与；前端把它渲染在
+  正文与证据列表之间，空表不渲染、截断给提示。契约测试断言每行 `evidence_id` 集合与 `citations` 相等、
+  路径不逃出仓库根；前端空态与文案由 vitest 锁定（DEC-0085）。
+- 工具生命周期事件带**参数键名**摘要（`argument_keys`，只有键名、不含取值），前端把
+  `tool_call_requested / tool_dispatched / tool_result_committed` 翻译成「正在读取 RepositoryMap」
+  「已定位定义：lsp_definition」这类进度文案，未注册工具退回工具名原文。
 
 仍然不属于已证明能力：3 个以上 Worker 进程的规模与长跑稳定性、Redis 抖动（断开再恢复）、
 broker 自动重投（多进程实验里的接管靠显式重投，未 ack 的消息要等 Celery 的 visibility
