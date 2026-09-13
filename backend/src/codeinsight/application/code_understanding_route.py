@@ -26,6 +26,11 @@ from codeinsight.agent.code_understanding_tool_loop import (
     CodeUnderstandingResult,
     CodeUnderstandingToolLoop,
 )
+from codeinsight.application.archetype_fast_path import (
+    fast_path_enabled,
+    run_archetype_fast_path,
+)
+from codeinsight.application.archetype_router import ArchetypeRouter
 from codeinsight.application.query_router import QueryRouterResult
 from codeinsight.domain.answer import (
     ANSWERED,
@@ -36,6 +41,27 @@ from codeinsight.domain.answer import (
 )
 
 MCPClientFactory = Callable[[str], object]
+
+# 进程内复用路由：示例问题向量只该算一次，每个请求重算等于把快路径的
+# 成本又加回去。
+_ROUTER: ArchetypeRouter | None = None
+
+
+def _router_from_environment() -> ArchetypeRouter | None:
+    """构造（或复用）原型路由器；Embedding 没配置时返回 None。"""
+
+    global _ROUTER
+    if _ROUTER is not None:
+        return _ROUTER
+    from codeinsight.domain.errors import ModelConfigurationError
+    from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
+
+    try:
+        embeddings = OpenAIEmbeddingModel.from_environment()
+    except ModelConfigurationError:
+        return None
+    _ROUTER = ArchetypeRouter(embed=embeddings.embed)
+    return _ROUTER
 
 # explain 的唯一路线集合：linear 与 agent 都走只读 Tool Loop，只有
 # insufficient 不检索。判断集中在这里，三条入口共用同一份事实。
@@ -72,6 +98,18 @@ def run_code_understanding_answer(
     factory = mcp_client_factory or default_mcp_client_factory()
     root = str(Path(repository_root).resolve())
     with factory(root) as client:
+        if fast_path_enabled():
+            fast = _try_fast_path(
+                question,
+                client=client,
+                model=model,
+                run_id=run_id,
+                event_log=event_log,
+                emit=emit,
+            )
+            if fast is not None:
+                _report_budget(model, fast)
+                return fast
         loop = CodeUnderstandingToolLoop(
             model,
             client,
@@ -82,8 +120,43 @@ def run_code_understanding_answer(
         )
         result = loop.run(question)
 
-    # 花费闸的结论要能被运维看见，而 Gateway 是唯一进程级账本。不是每个
-    # Model 都记账（Fake 与测试替身不记账），所以按能力调用而不是断言存在。
+    _report_budget(model, result)
+    return result
+
+
+def _try_fast_path(
+    question: str, *, client, model, run_id: str, event_log, emit
+) -> CodeUnderstandingResult | None:
+    """尝试问题原型快路径；未命中或证据不足时返回 None。"""
+
+    router = _router_from_environment()
+    if router is None:
+        return None
+    try:
+        match = router.route(question)
+    except Exception:  # noqa: BLE001 - 路由失败只意味着「没命中」
+        return None
+    if match is None:
+        return None
+    return run_archetype_fast_path(
+        archetype=match.archetype,
+        question=question,
+        mcp_client=client,
+        model=model,
+        run_id=run_id,
+        event_log=event_log,
+        emit=emit,
+    )
+
+
+def _report_budget(model, result: CodeUnderstandingResult) -> None:
+    """把花费闸结论登记到 Gateway。
+
+    Gateway 是唯一进程级账本；不是每个 Model 都记账（Fake 与测试替身不记账），
+    所以按能力调用而不是断言存在。快路径没有声明花费闸，因此它的 budget 为
+    None 时直接跳过——不登记就等于「这一轮不受花费闸约束」。
+    """
+
     report = getattr(model, "record_tool_loop_budget", None)
     if callable(report) and result.token_budget is not None:
         report(
@@ -91,7 +164,6 @@ def run_code_understanding_answer(
             used=result.input_tokens + result.output_tokens,
             exhausted=result.budget_exhausted,
         )
-    return result
 
 
 def to_auto_answer(

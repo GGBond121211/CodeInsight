@@ -185,6 +185,9 @@ class CodeUnderstandingResult:
     # Q-012 结构化结果区：由代码从工具结果映射，模型不参与。
     structured_evidence: tuple[StructuredEvidenceRow, ...] = ()
     structured_evidence_truncated: bool = False
+    # Q-012 U2：命中的问题原型与是否走了快路径；None 表示没命中或没开启。
+    archetype: str | None = None
+    fast_path: bool = False
     prompt_version: str = PROMPT_VERSION
     events: tuple[RunEvent, ...] = ()
 
@@ -229,6 +232,7 @@ class CodeUnderstandingResult:
                 "rows": [row.as_dict() for row in self.structured_evidence],
                 "truncated": self.structured_evidence_truncated,
             },
+            "archetype": {"name": self.archetype, "fast_path": self.fast_path},
             "prompt_version": self.prompt_version,
         }
 

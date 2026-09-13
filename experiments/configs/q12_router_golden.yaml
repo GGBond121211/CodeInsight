@@ -1,0 +1,179 @@
+# Q-012 C2.1：对话入口分类器（task_type）的标注集。
+#
+# 50 条，五类各 10 条，中英混合。标签按「人应该把它送进哪个入口」写，不按
+# 分类器的正则写法写——否则这份标注只能证明实现与自身一致。
+#
+# kind: core     = 该类的典型说法，产品上不应该判错。
+# kind: boundary = 交界处的说法（模糊指代、纯英文无锚点、口语化寒暄）。
+#                  它们本来就难，单独统计，不混进核心准确率。
+#
+# active_goal: 该条是否发生在「同一 Session 内已有代码目标」的语境下。默认 false。
+# 评测对象：application.conversation_router.classify_chat_task（纯规则，零模型调用）。
+
+version: q012-router-golden-v1
+cases:
+  # ---- general_chat：寒暄、致谢、能力询问 ----
+  - question: "你好"
+    expected: general_chat
+    kind: core
+  - question: "谢谢"
+    expected: general_chat
+    kind: core
+  - question: "早上好"
+    expected: general_chat
+    kind: core
+  - question: "hello"
+    expected: general_chat
+    kind: core
+  - question: "好的，明白了"
+    expected: general_chat
+    kind: core
+  - question: "辛苦了"
+    expected: general_chat
+    kind: core
+  - question: "在吗"
+    expected: general_chat
+    kind: core
+  - question: "谢谢，回到代码"
+    expected: general_chat
+    kind: core
+  - question: "你好，能帮我做什么？"
+    expected: general_chat
+    kind: boundary
+    note: "寒暄 + 能力询问的合写；规则表有「你能做什么」但容不下「能帮我做什么」"
+  - question: "Hi, what can you do?"
+    expected: general_chat
+    kind: boundary
+    note: "英文能力询问；规则表只有中文短语"
+
+  # ---- scope_redirect：与代码业务无关的自然语言 ----
+  - question: "今天天气怎么样？"
+    expected: scope_redirect
+    kind: core
+  - question: "帮我写一首诗"
+    expected: scope_redirect
+    kind: core
+  - question: "你觉得人生的意义是什么？"
+    expected: scope_redirect
+    kind: core
+  - question: "What is the weather in Beijing today?"
+    expected: scope_redirect
+    kind: core
+  - question: "推荐几部好看的电影"
+    expected: scope_redirect
+    kind: core
+  - question: "讲个笑话吧"
+    expected: scope_redirect
+    kind: core
+  - question: "明天股市会涨吗"
+    expected: scope_redirect
+    kind: core
+  - question: "你更喜欢猫还是狗？"
+    expected: scope_redirect
+    kind: core
+  - question: "帮我订一张去上海的机票"
+    expected: scope_redirect
+    kind: core
+  - question: "我们来聊聊足球吧"
+    expected: scope_redirect
+    kind: core
+
+  # ---- explain：只读代码理解 ----
+  - question: "checkout 流程是怎样的？"
+    expected: explain
+    kind: core
+  - question: "workflow.py 里做了什么？"
+    expected: explain
+    kind: core
+  - question: "解释一下 Client 类"
+    expected: explain
+    kind: core
+  - question: "函数 send 的参数有哪些？"
+    expected: explain
+    kind: core
+  - question: "为什么 api 层要单独拆出来？"
+    expected: explain
+    kind: core
+  - question: "测试覆盖了哪些部分？"
+    expected: explain
+    kind: core
+  - question: "这个模块的入口在哪里？"
+    expected: explain
+    kind: core
+  - question: "tool_loop.py 的职责是什么？"
+    expected: explain
+    kind: core
+  - question: "数据库表结构是怎样的？"
+    expected: explain
+    kind: boundary
+    note: "代码话题，但没有任何锚点词；规则表里没有「数据库」「表」"
+  - question: "Where is parse_model_answer defined?"
+    expected: explain
+    kind: boundary
+    note: "英文代码问题、无路径锚点；规则表只认中文语义词与路径/扩展名"
+
+  # ---- change：明确的写意图 ----
+  - question: "把 value 改成 2"
+    expected: change
+    kind: core
+  - question: "修复 checkout.py 里的空指针"
+    expected: change
+    kind: core
+  - question: "给 Client 类增加超时参数"
+    expected: change
+    kind: core
+  - question: "删除无用的 legacy 分支"
+    expected: change
+    kind: core
+  - question: "refactor the ToolLoop class"
+    expected: change
+    kind: core
+  - question: "重构 api/routes.py"
+    expected: change
+    kind: core
+  - question: "移除 tool_loop.py 里的重复判断"
+    expected: change
+    kind: core
+  - question: "apply patch to fix the failing test"
+    expected: change
+    kind: core
+  - question: "新增一个 send_async 方法"
+    expected: change
+    kind: core
+  - question: "把 read_timeout 默认值改为 30"
+    expected: change
+    kind: core
+
+  # ---- clarify：指代不清、写意图没有落点 ----
+  - question: "修改一下"
+    expected: clarify
+    kind: core
+  - question: "实现一下"
+    expected: clarify
+    kind: core
+  - question: "帮我修复一下"
+    expected: clarify
+    kind: core
+  - question: "继续"
+    expected: clarify
+    kind: core
+  - question: "再看看"
+    expected: clarify
+    kind: core
+  - question: "这个怎么样？"
+    expected: clarify
+    kind: core
+  - question: "还有吗"
+    expected: clarify
+    kind: core
+  - question: "这个有问题吗？"
+    expected: clarify
+    kind: core
+  - question: "那个呢"
+    expected: clarify
+    kind: boundary
+    note: "纯指代；规则表里「那个」必须跟「怎么样/可以吗」，单独的「那个呢」不匹配"
+  - question: "可以吗？"
+    expected: clarify
+    kind: boundary
+    note: "同上：规则表要求它前面带「这个/这样」"

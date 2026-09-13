@@ -1,0 +1,44 @@
+# Q-012 C2.3 / C2.4 / C2.5：explain 对照用的固定题面。
+#
+# 六道题就是阶段 A（U0）真实取样用过的那六道，题面一字不改——这样 A 阶段的
+# 基线数字与 C 阶段的对照可以直接比，不需要另立一套解释。
+#
+# expected_paths 是**答案应该在哪些文件里**的判据，全部由 rg 在这个 checkout 上
+# 直接查出（备注里记了命中行），不是凭印象写的：
+#   rg "def send"  httpx/_client.py:879
+#   rg "class Client" httpx/_client.py:594
+#   rg "class Request" httpx/_models.py:382
+#   rg "class Timeout" httpx/_config.py:72
+# 匹配规则是子串：cited.relative_path 里出现任意一条即算命中该条。
+# 注意 read_timeout：这个符号在 httpx 里**不存在**（最接近的是 _config.py 的
+# Timeout.read），它是一道「符号名对不上」的题，本来就该答不出来或者答成超时配置。
+
+version: q012-explain-cases-v1
+repository: work/benchmarks/httpx
+cases:
+  - id: send-definition
+    question: "send 方法在哪里定义？"
+    expected_archetype: definition_lookup
+    expected_paths: ["_client.py"]
+  - id: client-definition
+    question: "Client 类定义在哪个文件？"
+    expected_archetype: definition_lookup
+    expected_paths: ["_client.py"]
+  - id: top-level-modules
+    question: "这个仓库的顶层模块有哪些？"
+    expected_archetype: module_inventory
+    expected_paths: ["httpx/", "tests/", "scripts/"]
+  - id: redirect-implementation
+    question: "哪里实现了重定向跟随？"
+    expected_archetype: definition_lookup
+    expected_paths: ["_client.py"]
+  - id: read-timeout-source
+    question: "read_timeout 配置从哪里读取？"
+    expected_archetype: config_source
+    expected_paths: ["_config.py"]
+    note: "符号在仓库里不存在；命中 _config.py 只说明方向对（超时确实在那里配置）"
+  - id: request-references
+    question: "哪些模块引用了 Request 类？"
+    expected_archetype: call_sites
+    expected_paths: ["_models.py", "_client.py"]
+    note: "定义在 _models.py，使用最集中的是 _client.py；不是引用全集"

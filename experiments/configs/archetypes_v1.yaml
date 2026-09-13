@@ -1,0 +1,133 @@
+# CodeInsight 问题原型库（导出物，不是配置源）。
+# 
+# 这个文件由 codeinsight.application.archetype_library 生成，运行时不会读它。
+# 原型要改就改代码，然后重新生成：
+#     python experiments/export_tool_catalog.py
+# 
+# 配方只允许只读工具；写工具永远不进入快路径。
+
+library_version: "q012-archetypes-v1"
+read_only_tools:
+  - "get_evidence_context"
+  - "get_repository_map"
+  - "lsp_definition"
+  - "read_file"
+  - "scip_references"
+  - "search_repository"
+archetypes:
+  - name: "definition_lookup"
+    version: "1"
+    summary: "某个符号或函数定义在哪里"
+    answer_outline: "先给定义所在文件与行号，再简述它做什么；行号必须来自证据。"
+    example_questions:
+      - "send 方法在哪里定义？"
+      - "Client 类定义在哪个文件？"
+      - "where is parse_model_answer defined?"
+      - "这个函数定义在哪个模块？"
+      - "resolve_route_budget 是怎么实现的？"
+      - "哪个文件声明了这个常量？"
+    recipe:
+      - tool: "search_repository"
+        arguments:
+          question: "{question}"
+      - tool: "read_file"
+        arguments:
+          path: "{path}"
+          start_line: "{line}"
+  - name: "call_sites"
+    version: "1"
+    summary: "谁调用了某个符号、它在哪些地方被引用"
+    answer_outline: "逐条列出引用位置（路径:行号）；索引不可用时必须说明「只覆盖已读到的证据」。"
+    example_questions:
+      - "谁调用了 ConversationService？"
+      - "这个函数在哪些地方被引用？"
+      - "find all call sites of parse_model_answer"
+      - "哪些模块用到了 EvidenceLedger？"
+      - "这个类还有别的地方在用吗？"
+    recipe:
+      - tool: "search_repository"
+        arguments:
+          question: "{question}"
+      - tool: "read_file"
+        arguments:
+          path: "{path}"
+          start_line: "{line}"
+  - name: "module_inventory"
+    version: "1"
+    summary: "仓库或某个目录下有哪些模块、符号"
+    answer_outline: "按目录分组列出文件与关键符号；地图只是导航，具体行号必须回到 read_file。"
+    example_questions:
+      - "这个仓库的顶层模块有哪些？"
+      - "src 目录下都有哪些符号？"
+      - "what modules live under backend/src?"
+      - "整个项目的目录结构是什么？"
+      - "这个仓库有哪些入口文件？"
+    recipe:
+      - tool: "get_repository_map"
+        arguments:
+          include:
+            - "files"
+            - "symbols"
+          max_files: 40
+          max_symbols: 80
+      - tool: "read_file"
+        arguments:
+          path: "{path}"
+  - name: "config_source"
+    version: "1"
+    summary: "某个配置项从哪里读取、默认值是什么"
+    answer_outline: "给出读取位置与默认值，并区分「代码默认」与「部署时覆盖」。"
+    example_questions:
+      - "read_timeout 配置从哪里读取？"
+      - "这个超时默认值是多少？"
+      - "where is CODEINSIGHT_MODEL read?"
+      - "环境变量是在哪个文件解析的？"
+      - "这个开关默认打开还是关闭？"
+    recipe:
+      - tool: "search_repository"
+        arguments:
+          question: "{question}"
+      - tool: "read_file"
+        arguments:
+          path: "{path}"
+          start_line: "{line}"
+  - name: "flow_trace"
+    version: "1"
+    summary: "一个请求从哪进入系统、按什么顺序流动"
+    answer_outline: "按调用顺序编号列出经过的模块与函数；顺序必须有证据支持，不靠常识补全。"
+    example_questions:
+      - "这次请求从哪里进入系统？"
+      - "一次对话的完整链路是什么？"
+      - "how does a turn flow through the service?"
+      - "改了代码之后哪个进程会执行？"
+      - "从 HTTP 到数据库中间经过了哪些层？"
+    recipe:
+      - tool: "search_repository"
+        arguments:
+          question: "{question}"
+      - tool: "get_repository_map"
+        arguments:
+          symbol_query: "router"
+          max_symbols: 40
+      - tool: "read_file"
+        arguments:
+          path: "{path}"
+          start_line: "{line}"
+  - name: "test_coverage_lookup"
+    version: "1"
+    summary: "某个行为有没有测试覆盖、测试在哪里"
+    answer_outline: "列出测试文件与用例名；没有找到就说没有找到，不用推理代替证据。"
+    example_questions:
+      - "这个函数的测试在哪里？"
+      - "哪些测试覆盖了审批流程？"
+      - "where are the tool loop tests?"
+      - "这个模块有没有集成测试？"
+      - "改这个文件要跑哪些测试？"
+    recipe:
+      - tool: "search_repository"
+        arguments:
+          question: "{question}"
+      - tool: "read_file"
+        arguments:
+          path: "{path}"
+          start_line: "{line}"

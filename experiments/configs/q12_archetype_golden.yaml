@@ -1,0 +1,159 @@
+# Q-012 C2.2：问题原型路由的标注集。
+#
+# holdout = 每个原型 10 条**没有出现在示例问题里**的问题，用来量命中率；
+# negative = 12 条不该命中原型的问题，用来量错命中率。错命中比未命中危险，
+# 所以 negative 的分量不比 holdout 轻。
+#
+# 标签是「人认为它属于哪一类问法」。有些问题（性能、设计、评价）本来就不属于
+# 任何原型——它们该回退到 Tool Loop，而不是被硬塞进最近的一类。
+#
+# 评测对象：application.archetype_router.ArchetypeRouter（真实 Embedding，无对话模型调用）。
+
+version: q012-archetype-golden-v1
+library_version: q012-archetypes-v1
+holdout:
+  # ---- definition_lookup ----
+  - expected: definition_lookup
+    question: "定义 send 的代码在哪个文件？"
+  - expected: definition_lookup
+    question: "class Client 是在哪里声明的？"
+  - expected: definition_lookup
+    question: "resolve_route_budget 写在哪一个文件里？"
+  - expected: definition_lookup
+    question: "Timeout 这个类定义在什么位置？"
+  - expected: definition_lookup
+    question: "Which module defines Timeout?"
+  - expected: definition_lookup
+    question: "where can I find the definition of codes?"
+  - expected: definition_lookup
+    question: "常量 DEFAULT_TIMEOUT 在哪个文件定义？"
+  - expected: definition_lookup
+    question: "HTTPTransport 类的定义位置在哪里？"
+  - expected: definition_lookup
+    question: "在哪里实现了 connect_tcp 这个方法？"
+  - expected: definition_lookup
+    question: "这个符号在哪个模块里声明的？"
+
+  # ---- call_sites ----
+  - expected: call_sites
+    question: "谁在用 Timeout 这个类？"
+  - expected: call_sites
+    question: "列出调用 codes 的所有位置"
+  - expected: call_sites
+    question: "哪些文件引用了 Client？"
+  - expected: call_sites
+    question: "find usages of parse_model_answer"
+  - expected: call_sites
+    question: "这个函数被谁引用了？"
+  - expected: call_sites
+    question: "有哪些地方调用了 get_environment_proxies？"
+  - expected: call_sites
+    question: "call sites of URLPattern"
+  - expected: call_sites
+    question: "谁依赖了 QueryParams？"
+  - expected: call_sites
+    question: "这个类在哪些模块被 import？"
+  - expected: call_sites
+    question: "检索一下 __aenter__ 的引用位置"
+
+  # ---- module_inventory ----
+  - expected: module_inventory
+    question: "仓库里有哪些顶层目录？"
+  - expected: module_inventory
+    question: "列出 httpx 包下面的模块"
+  - expected: module_inventory
+    question: "what files are in the tests directory?"
+  - expected: module_inventory
+    question: "这个项目主要由哪几部分组成？"
+  - expected: module_inventory
+    question: "有哪些子包？"
+  - expected: module_inventory
+    question: "list the modules under scripts/"
+  - expected: module_inventory
+    question: "目录结构大概是什么样？"
+  - expected: module_inventory
+    question: "这个仓库包含哪些包？"
+  - expected: module_inventory
+    question: "有哪些顶层文件？"
+  - expected: module_inventory
+    question: "项目里有哪些主要的模块？"
+
+  # ---- config_source ----
+  - expected: config_source
+    question: "超时的默认值是在哪里设置的？"
+  - expected: config_source
+    question: "where does the retries default come from?"
+  - expected: config_source
+    question: "这个环境变量在哪个文件里读取？"
+  - expected: config_source
+    question: "默认端口配置在哪定义？"
+  - expected: config_source
+    question: "verify 参数的默认值是多少？"
+  - expected: config_source
+    question: "base_url 是从哪里取的？"
+  - expected: config_source
+    question: "这个配置项在配置文件里的哪一段？"
+  - expected: config_source
+    question: "proxy 的默认值在哪里设置的？"
+  - expected: config_source
+    question: "配置是什么时候加载的？"
+  - expected: config_source
+    question: "这个开关的默认值在哪一行？"
+
+  # ---- flow_trace ----
+  - expected: flow_trace
+    question: "一次请求到响应的完整流程是怎样的？"
+  - expected: flow_trace
+    question: "how does the redirect handling flow work?"
+  - expected: flow_trace
+    question: "这个请求从接收到返回经过了哪些步骤？"
+  - expected: flow_trace
+    question: "这个 API 的调用链是什么样的？"
+  - expected: flow_trace
+    question: "用户消息是怎么一步步变成回答的？"
+  - expected: flow_trace
+    question: "trace the path from HTTP handler to the service"
+  - expected: flow_trace
+    question: "哪个进程负责执行这个任务？"
+  - expected: flow_trace
+    question: "请求进来之后先走哪一步？"
+  - expected: flow_trace
+    question: "这个工作流的执行顺序是什么？"
+  - expected: flow_trace
+    question: "how does a change request get approved and applied?"
+
+  # ---- test_coverage_lookup ----
+  - expected: test_coverage_lookup
+    question: "send 方法有单元测试吗？"
+  - expected: test_coverage_lookup
+    question: "哪些测试覆盖了重定向逻辑？"
+  - expected: test_coverage_lookup
+    question: "where are the client tests located?"
+  - expected: test_coverage_lookup
+    question: "修改路由层之后要跑哪些用例？"
+  - expected: test_coverage_lookup
+    question: "审批相关的测试在哪个文件里？"
+  - expected: test_coverage_lookup
+    question: "预算闸有对应的测试用例吗？"
+  - expected: test_coverage_lookup
+    question: "find tests for the tool loop"
+  - expected: test_coverage_lookup
+    question: "测试目录里都有哪些用例文件？"
+  - expected: test_coverage_lookup
+    question: "这个行为有回归测试吗？"
+  - expected: test_coverage_lookup
+    question: "哪些用例验证了花费闸？"
+
+negative:
+  - "这个项目为什么这样设计？"
+  - "你觉得这段代码写得好吗？"
+  - "这个项目的历史背景是什么？"
+  - "有没有安全问题？"
+  - "这段代码的性能怎么样？"
+  - "how would you improve the architecture?"
+  - "请给这个仓库写一份 README"
+  - "这个功能应该怎么设计比较好？"
+  - "帮我评价一下代码质量"
+  - "这个项目用了什么设计模式？"
+  - "有没有更好的重构方案？"
+  - "这段逻辑是不是写错了？"

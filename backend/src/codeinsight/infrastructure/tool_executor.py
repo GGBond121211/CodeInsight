@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from codeinsight.agent.tool_loop import ToolCall, ToolResult
-from codeinsight.application.search_repository import DEFAULT_FINAL_TOP_K, search_repository
+from codeinsight.application.search_repository import (
+    DEFAULT_CHUNK_MAX_LINES,
+    DEFAULT_CHUNK_OVERLAP_RATIO,
+    DEFAULT_FINAL_TOP_K,
+    prepare_search_state,
+    search_repository,
+)
 from codeinsight.domain.code_intelligence import AVAILABLE, CodeIntelligenceResult
 from codeinsight.domain.errors import (
     ModelCallError,
@@ -24,6 +30,7 @@ from codeinsight.domain.errors import (
     QdrantNotConfiguredError,
     QdrantUnavailableError,
 )
+from codeinsight.domain.semantic import SemanticIndex
 from codeinsight.infrastructure.event_log import InMemoryEventLog
 from codeinsight.infrastructure.lsp_client import LspDefinitionService
 from codeinsight.infrastructure.scip_reader import ScipReferenceReader
@@ -34,6 +41,7 @@ from codeinsight.retrieval.repository_map import (
     query_repository_map,
     repository_fingerprint,
 )
+from codeinsight.retrieval.vector_store import VectorStore
 
 
 class ToolExecutor:
@@ -60,6 +68,10 @@ class ToolExecutor:
         self._embedding_factory = embedding_factory
         self._reranker_factory = reranker_factory
         self._map_cache = None
+        # 检索状态（语义索引 + 向量库）按进程缓存：没有它，每次
+        # search_repository 都要把整个仓库重新 Embedding 一遍（98 文件的仓库
+        # 实测 118 秒／次，复用后同一进程内每次检索约 2 秒）。
+        self._retrieval_cache: dict[tuple[int, float], tuple[SemanticIndex, VectorStore]] = {}
         self._lsp = LspDefinitionService(self.root)
         self._scip = ScipReferenceReader(self.root)
 
@@ -133,12 +145,15 @@ class ToolExecutor:
                     "NOT_CONFIGURED",
                     "MCP Dense/Sparse 检索依赖不满足适配器契约",
                 )
+            index, store = self._retrieval_state(embed)
             hits = search_repository(
                 self.root,
                 question,
                 limit=limit,
                 retrieval_mode="hybrid",
                 semantic_embed=embed,
+                semantic_index=index,
+                semantic_store=store,
                 reranker=reranker,
             )
         except QdrantNotConfiguredError as error:
@@ -153,6 +168,16 @@ class ToolExecutor:
             return ToolResult.failure(call.id, call.name, "UPSTREAM_5XX", "检索模型请求失败")
         data = {"results": [_serialize_hit(item) for item in hits], "untrusted": True}
         return ToolResult.success(call.id, call.name, data, state_fingerprint=_fingerprint(data))
+
+    def _retrieval_state(self, embed) -> tuple[SemanticIndex, VectorStore]:
+        """按进程复用语义索引与向量库；首次调用负责构建。"""
+
+        key = (DEFAULT_CHUNK_MAX_LINES, DEFAULT_CHUNK_OVERLAP_RATIO)
+        state = self._retrieval_cache.get(key)
+        if state is None:
+            state = prepare_search_state(self.root, semantic_embed=embed)
+            self._retrieval_cache[key] = state
+        return state
 
     def _read_file(self, call: ToolCall) -> ToolResult:
         relative = self._safe_relative_path(str(call.arguments["path"]))
@@ -322,12 +347,30 @@ class ToolExecutor:
             except ValueError as error:
                 raise PermissionError("路径必须位于仓库根目录内") from error
         else:
-            marker = f"/{self.root.name}/"
-            if marker in normalized:
-                normalized = normalized.split(marker, 1)[1]
-            elif normalized.startswith(f"{self.root.name}/"):
-                normalized = normalized[len(self.root.name) + 1 :]
+            if not Path(normalized).is_absolute():
+                stripped = self._redundant_root_prefix(normalized)
+                if stripped is not None:
+                    normalized = stripped
         return safe_relative_path(normalized)
+
+    def _redundant_root_prefix(self, normalized: str) -> str | None:
+        """剥掉「模型把仓库目录名重复写了一遍」的前缀。
+
+        只在剥完的路径确实指向仓库内已存在的文件时才剥：像 httpx 这种顶层包与
+        仓库目录同名的仓库，无条件剥离会把检索回来的 ``httpx/_client.py`` 变成
+        ``_client.py``，于是每一次「检索 → 读文件」都读不到刚检索到的证据。
+        """
+
+        candidates: list[str] = []
+        marker = f"/{self.root.name}/"
+        if marker in normalized:
+            candidates.append(normalized.split(marker, 1)[1])
+        if normalized.startswith(f"{self.root.name}/"):
+            candidates.append(normalized[len(self.root.name) + 1 :])
+        for candidate in candidates:
+            if candidate and (self.root / candidate).exists():
+                return candidate
+        return None
 
     def _safe_path(self, relative: str) -> Path:
         return safe_path(self.root, relative)

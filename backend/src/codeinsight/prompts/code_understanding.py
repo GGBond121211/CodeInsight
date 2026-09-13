@@ -56,3 +56,26 @@ def evidence_index_message(
         lines.append(f"{evidence_id} = {path}:{start_line}-{end_line}")
     lines.append("citations 只能使用这些编号。")
     return "\n".join(lines)
+
+
+def evidence_context_message(
+    entries: tuple[tuple[str, str, int, int, str], ...],
+) -> str:
+    """把证据编号、位置与开头片段一起回填给快路径模型。
+
+    为什么快路径需要它：只给编号索引时，模型看不到任何正文，遇到「默认值是
+    多少」这类内容问题就只能靠自己的记忆作答——那正是「看起来正确、却没有证据
+    支撑」的形态。片段是有界的（每条只给开头一段），权威引用仍然是 path:行号。
+    """
+    lines = ["[evidence] 本次配方取到的可引用证据（编号 + 位置 + 开头片段）："]
+    for evidence_id, path, start_line, end_line, excerpt in entries:
+        lines.append(f"{evidence_id} = {path}:{start_line}-{end_line}")
+        body = excerpt.strip()
+        if body:
+            lines.append("    " + body.replace("\n", "\n    "))
+    lines.append("citations 只能使用这些编号；行号是权威位置。")
+    lines.append(
+        "片段是每条证据的开头部分，可能被截断；片段里没有的内容不要凭记忆补全，"
+        "证据不足时用 outcome=insufficient_evidence。"
+    )
+    return "\n".join(lines)

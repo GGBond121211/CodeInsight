@@ -102,6 +102,57 @@ def _int_or_none(value: object) -> int | None:
     return None
 
 
+@dataclass(frozen=True)
+class Location:
+    """一个可继续导航的位置；原型配方用它把上一步的结果接给下一步。"""
+
+    path: str
+    line: int | None = None
+    column: int | None = None
+
+
+def first_location(result: ToolResult) -> Location | None:
+    """取工具结果里的首个可用位置；解析规则与表格行完全一致。"""
+
+    locations = result.data.get("locations")
+    if isinstance(locations, Sequence) and not isinstance(locations, (str, bytes)):
+        for item in locations:
+            if not isinstance(item, Mapping):
+                continue
+            path = str(item.get("path", ""))
+            if not is_safe_relative_path(path):
+                continue
+            column = item.get("start_column")
+            return Location(
+                path=path.replace("\\", "/"),
+                line=_int_or_none(item.get("start_line")),
+                column=int(column) if isinstance(column, int) and column >= 0 else None,
+            )
+        return None
+    items = result.data.get("items")
+    if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+        for item in items:
+            if not isinstance(item, Mapping) or item.get("kind") != "file":
+                continue
+            path = str(item.get("path", ""))
+            if is_safe_relative_path(path):
+                return Location(path=path.replace("\\", "/"))
+        return None
+    results = result.data.get("results")
+    if isinstance(results, Sequence) and not isinstance(results, (str, bytes)):
+        for item in results:
+            if not isinstance(item, Mapping):
+                continue
+            path = str(item.get("relative_path") or item.get("path") or "")
+            if not is_safe_relative_path(path):
+                continue
+            return Location(
+                path=path.replace("\\", "/"),
+                line=_int_or_none(item.get("start_line")),
+            )
+    return None
+
+
 def _location_rows(
     result: ToolResult, kind: str, tool_name: str
 ) -> list[StructuredEvidenceRow]:

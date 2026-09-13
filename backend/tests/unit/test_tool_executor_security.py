@@ -1,7 +1,57 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from codeinsight.agent.tool_loop import ToolCall
+from codeinsight.infrastructure import tool_executor as executor_module
 from codeinsight.infrastructure.tool_executor import ToolExecutor
+
+
+def test_executor_reads_paths_that_start_with_the_repository_name(tmp_path: Path):
+    """仓库目录名与顶层包同名时（如 httpx），检索回来的路径必须原样可读。"""
+
+    root = tmp_path / "httpx"
+    package = root / "httpx"
+    package.mkdir(parents=True)
+    (package / "_client.py").write_text("def send():\n    return 1\n", encoding="utf-8")
+    executor = ToolExecutor(root)
+
+    result = executor.execute(
+        ToolCall("same-name", "read_file", {"path": "httpx/_client.py", "start_line": 1})
+    )
+
+    assert result.ok, result.error_message
+    assert result.data["path"] == "httpx/_client.py"
+
+
+def test_executor_reuses_retrieval_state_across_searches(tmp_path: Path, monkeypatch):
+    """同一进程内第二次检索复用同一份索引，不再重建整个仓库。"""
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "src.py").write_text("value = 1\n", encoding="utf-8")
+    tools = SimpleNamespace(embed=lambda texts: None, rerank=lambda *a, **k: None)
+    executor = ToolExecutor(root, embedding_factory=lambda: tools, reranker_factory=lambda: tools)
+    prepared: list[str] = []
+    calls: list[dict[str, object]] = []
+
+    def fake_prepare(root_arg, *, semantic_embed, **kwargs):
+        prepared.append("build")
+        return ("index", "store")
+
+    def fake_search(root_arg, question, **kwargs):
+        calls.append(kwargs)
+        return ()
+
+    monkeypatch.setattr(executor_module, "prepare_search_state", fake_prepare)
+    monkeypatch.setattr(executor_module, "search_repository", fake_search)
+
+    first = executor.execute(ToolCall("c1", "search_repository", {"question": "a"}))
+    second = executor.execute(ToolCall("c2", "search_repository", {"question": "b"}))
+
+    assert first.ok and second.ok
+    assert prepared == ["build"]
+    assert [call["semantic_index"] for call in calls] == ["index", "index"]
+    assert [call["semantic_store"] for call in calls] == ["store", "store"]
 
 
 def test_executor_keeps_read_and_write_inside_repository(tmp_path: Path):

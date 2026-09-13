@@ -38,6 +38,8 @@ HYBRID_CANDIDATE_LIMIT = 100
 DEFAULT_FINAL_TOP_K = 10
 DEFAULT_RRF_K = 60
 DEFAULT_QDRANT_COLLECTION = "codeinsight_2_1_dense_sparse"
+DEFAULT_CHUNK_MAX_LINES = 80
+DEFAULT_CHUNK_OVERLAP_RATIO = 0.0
 _COLLECTION_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
@@ -226,13 +228,36 @@ def retrieve_subquestion_evidence(
     )
 
 
+def prepare_search_state(
+    root: str | Path,
+    *,
+    semantic_embed: SemanticEmbed,
+    chunk_max_lines: int = DEFAULT_CHUNK_MAX_LINES,
+    chunk_overlap_ratio: float = DEFAULT_CHUNK_OVERLAP_RATIO,
+) -> tuple[SemanticIndex, VectorStore]:
+    """构建一次检索所需的索引与向量库，供调用方跨多次检索复用。
+
+    为什么把它单独暴露出来：``search_repository`` 每次调用都要扫描、切块并
+    Embedding 整个仓库；同一进程里连续检索同一仓库时，把这份状态缓存起来，
+    单次检索的成本就从「整仓库 Embedding」降到「查询 Embedding + 向量检索」。
+    """
+
+    index = build_repository_semantic_index(
+        root,
+        chunk_max_lines=chunk_max_lines,
+        chunk_overlap_ratio=chunk_overlap_ratio,
+        semantic_embed=semantic_embed,
+    )
+    return index, prepare_runtime_vector_store(root, index)
+
+
 def search_repository(
     root: str | Path,
     question: str,
     *,
     limit: int = DEFAULT_FINAL_TOP_K,
-    chunk_max_lines: int = 80,
-    chunk_overlap_ratio: float = 0.0,
+    chunk_max_lines: int = DEFAULT_CHUNK_MAX_LINES,
+    chunk_overlap_ratio: float = DEFAULT_CHUNK_OVERLAP_RATIO,
     retrieval_mode: str = "hybrid",
     semantic_embed: SemanticEmbed | None = None,
     semantic_index: SemanticIndex | None = None,
@@ -242,25 +267,23 @@ def search_repository(
     """扫描仓库并返回可回到源码的 Dense/Sparse 证据。
 
     2.1 正常 ``hybrid`` 路径只使用 Provider Dense + Provider Sparse + RRF +
-    Rerank；向量数据和索引生命周期由 Qdrant 管理。
+    Rerank；向量数据和索引生命周期由 Qdrant 管理。调用方已经持有
+    ``prepare_search_state`` 的返回值时把它传进来，本条路径就不再重建索引。
     """
     if limit <= 0:
         raise ValueError("limit 必须是正整数")
     mode = _normalize_mode(retrieval_mode)
     candidate_retrieval_modes(mode)
-    scan_result = scan_repository(root)
-    chunks = chunk_scan_result(
-        scan_result,
-        max_lines=chunk_max_lines,
-        overlap_ratio=chunk_overlap_ratio,
-    )
     if semantic_embed is None:
         raise ValueError("Dense/Sparse 检索需要 Embedding 模型")
-    index = semantic_index or build_semantic_index(
-        chunks,
-        semantic_embed,
-        require_sparse=True,
-    )
+    index = semantic_index
+    if index is None:
+        index = build_repository_semantic_index(
+            root,
+            chunk_max_lines=chunk_max_lines,
+            chunk_overlap_ratio=chunk_overlap_ratio,
+            semantic_embed=semantic_embed,
+        )
     store = semantic_store
     if store is None:
         store = prepare_runtime_vector_store(root, index)

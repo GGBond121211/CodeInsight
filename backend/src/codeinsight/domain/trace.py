@@ -79,6 +79,8 @@ EVIDENCE_REPAIR_FINISHED = "evidence_repair_finished"
 BUDGET_LIMIT = "budget_limit"
 BUDGET_USED = "budget_used"
 BUDGET_EXHAUSTED = "budget_exhausted"
+# Q-012 U2：原型路由的公开结论。只记原型名与原因，不记问题原文。
+ARCHETYPE_MATCHED = "archetype_matched"
 # Q-011：后台 Agent Run 的调度事实。命名与已有事件对齐——计划里的
 # model_started / model_finished / tool_finished 分别复用既有的
 # MODEL_CALLED / MODEL_RESULT / TOOL_RESULT，不为同一件事再添一套同义名：
@@ -140,6 +142,7 @@ SUPPORTED_EVENT_TYPES: frozenset[str] = frozenset(
         BUDGET_LIMIT,
         BUDGET_USED,
         BUDGET_EXHAUSTED,
+        ARCHETYPE_MATCHED,
         TASK_QUEUED,
         WORKER_CLAIMED,
         CONTEXT_LOADED,

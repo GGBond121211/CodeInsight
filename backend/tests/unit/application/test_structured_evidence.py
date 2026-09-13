@@ -110,7 +110,9 @@ def test_evidence_records_carry_their_ledger_id():
     rows, _ = build_structured_evidence(
         tool_results=[],
         evidence=[
-            FakeEvidenceRecord("E1", "search_repository", "checkout 校验", "src/checkout.py", 5, 20),
+            FakeEvidenceRecord(
+                "E1", "search_repository", "checkout 校验", "src/checkout.py", 5, 20
+            ),
             FakeEvidenceRecord("E2", "read_file", "src/app.py", "src/app.py", 1, 9),
         ],
     )
