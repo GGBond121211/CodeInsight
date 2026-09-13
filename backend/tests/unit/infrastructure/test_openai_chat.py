@@ -10,7 +10,12 @@ from codeinsight.domain.errors import (
     ModelResponseError,
 )
 from codeinsight.infrastructure.chat_endpoint import EXPECTED_CHAT_BASE_URL
-from codeinsight.infrastructure.openai_chat import OpenAIChatModel, parse_model_answer
+from codeinsight.infrastructure.openai_chat import (
+    CHAT_TIMEOUT_SECONDS,
+    OpenAIChatModel,
+    configured_chat_timeout_seconds,
+    parse_model_answer,
+)
 
 
 class FakeCompletions:
@@ -130,6 +135,40 @@ def test_environment_rejects_non_project_chat_endpoint() -> None:
                 "CODEINSIGHT_BASE_URL": "https://api.deepseek.com/v1",
             }
         )
+
+
+def test_environment_passes_the_configured_timeout(monkeypatch) -> None:
+    """超时口径只能有一处：默认 180 秒，可用环境变量覆盖。
+
+    2026-09-13：一次 explain 的单次生成在慢时段实测 124 秒，60 秒会把「生成得慢」
+    记成「调用失败」，所以默认值上调；这里同时锁住「显式配置仍然生效」。
+    """
+
+    captured: dict[str, object] = {}
+
+    def fake_openai(**kwargs):
+        captured.update(kwargs)
+        return _fake_client(FakeCompletions())
+
+    monkeypatch.setattr("codeinsight.infrastructure.openai_chat.OpenAI", fake_openai)
+    OpenAIChatModel.from_environment(
+        {
+            "CODEINSIGHT_API_KEY": "test-key",
+            "CODEINSIGHT_MODEL": "test-model",
+            "CODEINSIGHT_CHAT_TIMEOUT_SECONDS": "240",
+        }
+    )
+
+    assert captured["timeout"] == 240.0
+
+
+def test_chat_timeout_default_is_bounded_and_overridable() -> None:
+    assert configured_chat_timeout_seconds({}) == CHAT_TIMEOUT_SECONDS
+    assert configured_chat_timeout_seconds({"CODEINSIGHT_CHAT_TIMEOUT_SECONDS": " 90 "}) == 90.0
+    with pytest.raises(ModelConfigurationError, match="必须是数字"):
+        configured_chat_timeout_seconds({"CODEINSIGHT_CHAT_TIMEOUT_SECONDS": "soon"})
+    with pytest.raises(ModelConfigurationError, match="必须为正"):
+        configured_chat_timeout_seconds({"CODEINSIGHT_CHAT_TIMEOUT_SECONDS": "0"})
 
 
 def test_generate_maps_messages_and_usage() -> None:

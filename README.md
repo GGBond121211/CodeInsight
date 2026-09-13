@@ -9,14 +9,17 @@ CodeInsight 用来回答陌生代码仓库里的具体问题。你可以用中�
 ```text
 用户问题 → QueryPlan → 代码检索 → 独立证据 → 回答生成 → 文件与行号引用
 ```
-当前工作树正在进行 `2.1.0` Q1–Q5 升级；`2.0.3` 仍是上一版正式 Release。
-本次升级把默认检索切换为 Provider Dense/Sparse + Qdrant Named Vectors，增加可控的
-RepositoryMap 分页导航和 LSP/SCIP 只读工具。升级边界与未验证项见
-[`docs/RELEASE_2_1_0_Q1_Q5.md`](docs/RELEASE_2_1_0_Q1_Q5.md)。
+当前正式 Release 是 `v2.1.1`（2026-09-13；`v2.1.0` 于 2026-09-12 发布，`v2.0.3` 是上一版基线）。
+2.1.x 把默认检索切换为 Provider Dense/Sparse + Qdrant Named Vectors，把 explain 收口到只读
+Tool Loop + Evidence Ledger，并把统一 Chat 改成「受理即事实、执行交给 Worker」的异步 Run。
+2.1.1 在这之上修掉开发模式「第一次检索必失败」、正文与引用不一致、快路径白烧一次模型调用、
+`module_inventory` 配方必然回退四类问题，并闭合超时口径与事件序号竞态。
+版本边界与未验证项见 [`docs/RELEASE_2_1_1.md`](docs/RELEASE_2_1_1.md)、
+[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)。
 
-## 2.0 当前发布边界
+## 2.0.x 发布边界（历史基线）
 
-`2.0.3` 是正式 Release，不是 pre-release。它在 v2.0.2 基础上补齐了普通聊天与业务范围边界、自然引导、开发调试策略和统一对话回归验证。真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验仍不在本版本承诺内。
+`2.0.3` 曾是正式 Release，不是 pre-release。它在 v2.0.2 基础上补齐了普通聊天与业务范围边界、自然引导、开发调试策略和统一对话回归验证；2.1.x 之后这些行为仍然成立，下面的能力描述保留为基线口径。真实大并发、SWE-bench resolve、Kubernetes rollout/undo 和更大规模实验仍不在本版本承诺内。
 
 当前公开能力见 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)，最小演示见 [`docs/DEMO.md`](docs/DEMO.md)，验收摘要见 [`docs/EVALUATION_SUMMARY.md`](docs/EVALUATION_SUMMARY.md)。
 
@@ -36,9 +39,9 @@ RepositoryMap 分页导航和 LSP/SCIP 只读工具。升级边界与未验证�
 
 我目前专注于项目的后端开发，重点是 Python、FastAPI、RAG、检索评测和 LangGraph 工作流。React 前端只用于把后端能力做成一个可以操作的本地演示页面，主要由 Codex 辅助完成；我负责前后端 HTTP API 的边界、接口联调和整体运行流程，不把这个项目当作前端能力展示。
 
-## 2.1.0 开发分支：异步 Agent Run（未发布）
+## 2.1.x：异步 Agent Run（v2.1.0 起已发布）
 
-`codex/2.1.0-development` 分支把统一 Chat 的执行改成「受理即事实、执行交给 Worker」：
+统一 Chat 的执行改成「受理即事实、执行交给 Worker」：
 
 - `POST /api/v2/chat/turns` 不再等模型：先把这一轮写成 Run 事实再投递，接口立刻返回 202，
   由 `AgentRunWorker` 按租约领取并执行整段 Tool Loop。
@@ -54,8 +57,8 @@ RepositoryMap 分页导航和 LSP/SCIP 只读工具。升级边界与未验证�
 
 边界与上面同一套标准：跨进程执行要显式配 Redis broker 与 MySQL 事实层，默认的单进程部署仍是
 进程内回调投递；队列容量、并发与恢复的实测范围（含没有测的部分）见
-[docs/AGENT_RUN_WORKER_EVALUATION.md](docs/AGENT_RUN_WORKER_EVALUATION.md)。本分支未发布，
-也没有推到 GitHub。
+[docs/AGENT_RUN_WORKER_EVALUATION.md](docs/AGENT_RUN_WORKER_EVALUATION.md)。这些结构自 v2.1.0
+起已随正式 Release 发布。
 
 ![CodeInsight Smart Answer](docs/assets/codeinsight-smart-answer.png)
 
@@ -167,7 +170,7 @@ $env:CODEINSIGHT_EMBEDDING_BASE_URL="<openai-compatible-embedding-url>"
 
 ### 本地开发调试模式
 
-当前 2.1.0 开发栈可以显式打开两个只面向本地调试的便利开关：自动确认修改预览，
+当前 2.1.x 栈可以显式打开两个只面向本地调试的便利开关：自动确认修改预览，
 以及在 Docker 校验环境不可用时跳过固定校验；修改探索会放宽为 12 步、96 次工具调用、
 同类工具错误 5 次，但仍有 120 秒总 deadline。它们不会关闭隔离 workspace、路径与基线
 校验、补丁范围限制、检查产物指纹、危险工具拦截或敏感文件过滤；跳过校验也会在结果中
@@ -357,7 +360,7 @@ npm.cmd run build
 
 自动化测试使用确定性的 fake model 和 fake embedding adapter，不会消耗付费模型额度。
 
-2.1.0 开发分支最近一次完整回归（`tests/unit` + `tests/integration`）：`813 passed, 55 skipped`，Ruff 通过；跳过的是需要真实 MySQL、Redis 或 Docker 的用例。依赖 MySQL 的集成用例必须单独运行——它们会清空测试库，与其余用例混跑会互相干扰。
+2.1.1 最近一次完整回归（`tests/unit` + `tests/integration`）：`901 passed, 56 skipped`，Ruff 通过；前端 `tsc -b` + `eslint` + `vitest` 18 passed；跳过的是需要真实 MySQL、Redis 或 Docker 的用例。依赖 MySQL 的集成用例必须单独运行——它们会清空测试库，与其余用例混跑会互相干扰。
 
 真实模型验收按 `AGENTS.md` 的授权与预算执行：单次连续周期上限 1000 万 token，请求级 `max_retries=0`，只做最小必要场景。
 
@@ -365,7 +368,7 @@ npm.cmd run build
 
 ## 后续想做
 
-- 在证据不足时改写查询并重新检索，也就是 Evidence Retrieval Repair Loop。
+- Evidence Retrieval Repair Loop 已实现（Q-009），当前 `max_repair_rounds=1` 是工程基线，repair=0/1/2 的对照仍未运行。
 - 对 `qwen3.7-text-rerank` 的质量收益和代价仍保留为未测试边界；用户已取消原 Rerank A/B 对照。
 - Qdrant/HNSW 已由本地 Compose 管理；后续只需做规模交叉点和参数矩阵，不再重复评估“是否引入向量数据库”。历史后端对照结果仍作为演进证据保留。
 - 增加更多编程语言和 monorepo 场景。

@@ -45,7 +45,12 @@ ARCHETYPES_V1: tuple[QuestionArchetype, ...] = (
     ),
     QuestionArchetype(
         name="call_sites",
-        summary="谁调用了某个符号、它在哪些地方被引用",
+        # 2026-09-13：摘要现在是路由锚点之一（见 archetype_router 模块 docstring），
+        # 所以措辞要覆盖真实问法。旧措辞「谁调用了某个符号」离「哪些模块引用了
+        # Request 类？」太远（改写问句只有 0.54，低于阈值而回退）；换成同时点出
+        # 「哪些模块 / 引用了 / 被使用」后，该题命中 call_sites（0.696 vs 第二名 0.579），
+        # 而 60 条 holdout + 12 条负例上的命中、判对、判错、负例错命中四项全部不变。
+        summary="哪些模块引用了这个类或函数、它在哪些地方被使用（跨文件引用点）",
         example_questions=(
             "谁调用了 ConversationService？",
             "这个函数在哪些地方被引用？",

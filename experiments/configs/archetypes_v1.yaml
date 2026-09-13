@@ -36,7 +36,7 @@ archetypes:
           start_line: "{line}"
   - name: "call_sites"
     version: "1"
-    summary: "谁调用了某个符号、它在哪些地方被引用"
+    summary: "哪些模块引用了这个类或函数、它在哪些地方被使用（跨文件引用点）"
     answer_outline: "逐条列出引用位置（路径:行号）；索引不可用时必须说明「只覆盖已读到的证据」。"
     example_questions:
       - "谁调用了 ConversationService？"

@@ -31,7 +31,16 @@ from codeinsight.domain.trace import (
     TURN_ACCEPTED,
     RunEvent,
 )
-from codeinsight.infrastructure.event_log import LiveEventLog, default_event_log
+from codeinsight.infrastructure.event_log import (
+    EventSequenceError,
+    LiveEventLog,
+    default_event_log,
+)
+
+# 事件序号是「读下一个序号 + 追加」两步，不是原子操作。父进程（受理 HTTP 请求的那条线程）
+# 与 Worker 线程会同时写同一个 run：实测两次撞出 EventSequenceError，HTTP 500、
+# Run 落成 MANUAL_REQUIRED。重试次数给得比正常竞争窗口宽一档，仍是有界等待。
+EMIT_SEQUENCE_ATTEMPTS = 8
 
 
 class ChatRuntimeError(ValueError):
@@ -229,17 +238,34 @@ class ChatRuntime:
         self.event_log.publish_debug_reasoning(turn.run_id, content, model=model)
 
     def emit(self, run_id: str, event_type: str, payload: dict[str, str]) -> RunEvent:
-        sequence = self.event_log.next_sequence(run_id)
-        event = RunEvent(
-            event_id=f"{run_id}:{sequence}",
-            run_id=run_id,
-            sequence=sequence,
-            event_type=event_type,
-            occurred_at_epoch_ms=int(time.time() * 1000),
-            payload=payload,
-        )
-        self.event_log.append(event)
-        return event
+        """追加一条事件；序号冲突时重读再写，不把竞争暴露成请求失败。
+
+        「读下一个序号」与「追加」是两次调用，两条线程同时写同一个 run 时会拿到同一个
+        序号，后到的那个被 EventSequenceError 打回。这里不改日志的连续性契约（有洞就
+        该失败），只把冲突当作「有人抢先写了一条」：重读当前序号、换成新序号重试。
+        重试仍有上限——真的连续冲突说明有别的问题，那时必须显式失败。
+        """
+
+        last_error: EventSequenceError | None = None
+        for attempt in range(EMIT_SEQUENCE_ATTEMPTS):
+            sequence = self.event_log.next_sequence(run_id)
+            event = RunEvent(
+                event_id=f"{run_id}:{sequence}",
+                run_id=run_id,
+                sequence=sequence,
+                event_type=event_type,
+                occurred_at_epoch_ms=int(time.time() * 1000),
+                payload=payload,
+            )
+            try:
+                self.event_log.append(event)
+            except EventSequenceError as error:
+                last_error = error
+                # 让出一次调度，避免两条线程以相同节奏反复撞同一个序号。
+                time.sleep(0.001 * (attempt + 1))
+                continue
+            return event
+        raise last_error if last_error is not None else ChatRuntimeError("事件序号分配失败")
 
     def subscribe(self, run_id: str, *, after_sequence: int = 0):
         return self.event_log.subscribe(run_id, after_sequence=after_sequence)

@@ -28,7 +28,28 @@ if TYPE_CHECKING:
     from codeinsight.application.context_assembler import ContextAssembler
 
 EXPECTED_RESPONSE_KEYS = frozenset({"outcome", "answer", "citations"})
-CHAT_TIMEOUT_SECONDS = 60.0
+
+# 2026-09-13：从 60 秒提到 180 秒。原因不是「想要更长的等待」，而是一次 explain 的
+# 单次生成在慢时段实测要 124 秒（约 16 token/s），60 秒会把「生成得慢」记成「调用失败」，
+# 再叠上熔断把同一 Trial 的对照臂一起打掉。180 秒是 124 秒的约 1.5 倍余量，
+# 仍是有界等待，不是无限。用 CODEINSIGHT_CHAT_TIMEOUT_SECONDS 覆盖。
+CHAT_TIMEOUT_SECONDS = 180.0
+
+
+def configured_chat_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:
+    """聊天模型单次请求的墙钟上限（秒）。非法值直接拒绝，不静默夹紧。"""
+
+    source = environ if environ is not None else os.environ
+    raw = (source.get("CODEINSIGHT_CHAT_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return CHAT_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ModelConfigurationError("CODEINSIGHT_CHAT_TIMEOUT_SECONDS 必须是数字") from None
+    if value <= 0:
+        raise ModelConfigurationError("CODEINSIGHT_CHAT_TIMEOUT_SECONDS 必须为正")
+    return value
 
 
 def _decode_json_object(content: str) -> dict:
@@ -140,7 +161,7 @@ class OpenAIChatModel:
         client = OpenAI(
             api_key=api_key,
             base_url=base_url or None,
-            timeout=CHAT_TIMEOUT_SECONDS,
+            timeout=configured_chat_timeout_seconds(source),
             max_retries=0,
         )
         return cls(client=client, model=model, context_assembler=context_assembler)

@@ -8,6 +8,13 @@
 为什么用 Embedding 而不是让模型分类：每一次路由都调模型，就又把快路径的成本
 拉回原来的量级。示例问题向量按原型库版本缓存在进程内，稳定状态下每个问题只
 多一次 Embedding 调用。
+
+2026-09-13：每个原型除示例问题外再锚一条 **summary**。原因是实测发现只拿示例
+问题当锚点时，改写过的问句（例如「哪里实现了……」）很难过阈值；补通用例句又会
+把「这个功能应该怎么设计比较好？」这类开放问题误判进来（负例错命中 0.083→0.167）。
+把原型自己的摘要（作者为这个原型写的定义句）也当锚点，在 60 条 holdout + 12 条
+负例上同时改善：命中 0.433→0.517、判对 0.383→0.467，判错原型 0.050 与负例错命中
+0.083 都不变。摘要不是新造的例句，它本来就是这个原型的定义，所以不算往评测集上贴答案。
 """
 
 from __future__ import annotations
@@ -85,8 +92,11 @@ class ArchetypeRouter:
         self._config = config or ArchetypeRouterConfig()
         self._library_version = library_version
         self._example_vectors: tuple[tuple[float, ...], ...] | None = None
-        self._example_owners: tuple[int, ...] = tuple(
-            index for index, archetype in enumerate(library) for _ in archetype.example_questions
+        # 每个原型两条锚：示例问题（逐条）+ 摘要（一条）。
+        self._anchor_owners: tuple[int, ...] = tuple(
+            index
+            for index, archetype in enumerate(library)
+            for _ in (*archetype.example_questions, "")
         )
 
     @property
@@ -97,11 +107,11 @@ class ArchetypeRouter:
     def library_version(self) -> str:
         return self._library_version
 
-    def _example_texts(self) -> tuple[str, ...]:
+    def _anchor_texts(self) -> tuple[str, ...]:
         return tuple(
             question
             for archetype in self._library
-            for question in archetype.example_questions
+            for question in (*archetype.example_questions, archetype.summary)
         )
 
     def _vectors(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
@@ -111,9 +121,9 @@ class ArchetypeRouter:
             raise ValueError("Embedding 返回数量与输入数量不一致")
         return vectors
 
-    def _ensure_example_vectors(self) -> tuple[tuple[float, ...], ...]:
+    def _ensure_anchor_vectors(self) -> tuple[tuple[float, ...], ...]:
         if self._example_vectors is None:
-            self._example_vectors = self._vectors(self._example_texts())
+            self._example_vectors = self._vectors(self._anchor_texts())
         return self._example_vectors
 
     def route(self, question: str) -> ArchetypeMatch | None:
@@ -121,10 +131,10 @@ class ArchetypeRouter:
 
         if not question.strip():
             raise ValueError("question 不能为空")
-        example_vectors = self._ensure_example_vectors()
+        anchor_vectors = self._ensure_anchor_vectors()
         question_vector = self._vectors([question])[0]
         best_per_owner: dict[int, float] = {}
-        for owner, vector in zip(self._example_owners, example_vectors):
+        for owner, vector in zip(self._anchor_owners, anchor_vectors):
             score = _cosine(question_vector, vector)
             if owner not in best_per_owner or score > best_per_owner[owner]:
                 best_per_owner[owner] = score

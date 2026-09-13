@@ -1,9 +1,14 @@
 # 评测摘要
 
-截至 2026-09-07，以下证据可以公开说明；当前 GitHub 正式 Release 为 v2.0.3：
+截至 2026-09-13，以下证据可以公开说明；当前 GitHub 正式 Release 为 v2.1.1：
 
 | 范围 | 证据 | 结论 |
 | --- | --- | --- |
+| 2.1.1 离线回归 | 后端 tests/unit 790 passed / 1 skipped、Ruff 通过；前端 tsc + eslint + vitest 18 passed | 代码与关键失败路径可回归 |
+| 2.1.1 真实模型小批量 | read-timeout-source、request-references 同数据两臂对照都 ANSWERED 且引用命中；会话 regression split 6 case / 30 轮 0 失败 | 证明链路与兜底路径可用，不代表模型质量基准 |
+| Q-012 A/B（explain 6 题 × 3 Trial × 2 臂） | 复测命中 7/18（38.9%），命中轮 token 中位数 2,365 vs 对照 29,838（7.9%） | 快路径省 token 是真的；覆盖率与引用质量不足以改默认行为 |
+以下为 2.0.3 及更早的历史证据（保留原文口径）：
+
 | 离线工程回归 | 2.0.3 发布工作树运行 Ruff；后端 `644 passed, 46 skipped` | 代码与关键失败路径可回归 |
 | 前端契约 | lint、4 个 Vitest 测试文件共 10 个测试、production build | 本地演示页面可构建 |
 | 真实 Provider smoke | DeepSeek `general_chat` FastAPI 单轮调用成功；返回非空文本且没有 retrieval 事件 | 证明真实文本请求链可用，不代表模型质量基准 |

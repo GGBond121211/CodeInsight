@@ -1,7 +1,7 @@
 from threading import Event
 
-from codeinsight.agent.tool_loop import ToolCall, ToolLoop, ToolModelResponse, ToolResult
 from codeinsight.agent.tool_lifecycle import argument_key_summary
+from codeinsight.agent.tool_loop import ToolCall, ToolLoop, ToolModelResponse, ToolResult
 from codeinsight.domain.trace import (
     TOOL_ABORTED,
     TOOL_CALL_REQUESTED,

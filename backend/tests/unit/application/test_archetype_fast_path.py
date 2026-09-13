@@ -66,6 +66,10 @@ def _router_table(**extra: tuple[float, ...]) -> dict[str, tuple[float, ...]]:
         table[question] = (1.0, 0.0, index * 0.01)
     for index, question in enumerate(("b1", "b2", "b3", "b4", "b5")):
         table[question] = (0.0, 1.0, index * 0.01)
+    # 摘要也是一条锚点（见 archetype_router 模块 docstring）：把它摆得离各自的示例很近，
+    # 这样这两个用例仍然只在考「路由判定」，不额外考摘要向量的取值。
+    table["alpha 的说明"] = (1.0, 0.0, 0.0)
+    table["beta 的说明"] = (0.0, 1.0, 0.0)
     table.update(extra)
     return table
 
@@ -104,9 +108,25 @@ def test_example_vectors_are_cached_across_questions():
     assert router.route("q") is not None
     assert router.route("q2") is not None
 
-    # 两次路由只算一遍示例问题向量：3 次调用 = 1 次示例 + 2 次问题。
+    # 两次路由只算一遍锚点向量：3 次调用 = 1 次锚点（5 示例 + 1 摘要，两个原型）+ 2 次问题。
     assert embedder.calls == 3
-    assert embedder.texts == 10 + 2
+    assert embedder.texts == 12 + 2
+
+
+def test_summary_alone_can_route_when_examples_miss():
+    """摘要锚点单独也能命中：这是 2026-09-13 加它的理由。"""
+
+    table = _router_table()
+    # 把 alpha 的示例全部挪远，只留摘要贴近问题。
+    for question in ("a1", "a2", "a3", "a4", "a5"):
+        table[question] = (0.1, 0.0, 0.0)
+    table["q"] = (1.0, 0.0, 0.0)
+    router = ArchetypeRouter(embed=FakeEmbedder(table), library=LIBRARY)
+
+    match = router.route("q")
+
+    assert match is not None
+    assert match.archetype.name == "alpha"
 
 
 def test_router_config_is_validated():

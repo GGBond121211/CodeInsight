@@ -1187,7 +1187,16 @@ def default_gateway_from_environment() -> ModelGateway:
     if not api_key:
         raise ModelConfigurationError("必须配置 CODEINSIGHT_API_KEY")
     base_url = configured_chat_base_url()
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0, max_retries=0)
+    # 同一个超时口径：网关客户端与 OpenAIChatModel 都读 CODEINSIGHT_CHAT_TIMEOUT_SECONDS，
+    # 否则「快路径给 180 秒、网关还在 60 秒」这种不一致会让同一轮的两个入口行为不同。
+    from codeinsight.infrastructure.openai_chat import configured_chat_timeout_seconds
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=configured_chat_timeout_seconds(),
+        max_retries=0,
+    )
     event_log = None
     cost_store = None
     from codeinsight.infrastructure.db.engine import (
