@@ -1,6 +1,7 @@
 from threading import Event
 
 from codeinsight.agent.tool_loop import ToolCall, ToolLoop, ToolModelResponse, ToolResult
+from codeinsight.agent.tool_lifecycle import argument_key_summary
 from codeinsight.domain.trace import (
     TOOL_ABORTED,
     TOOL_CALL_REQUESTED,
@@ -79,6 +80,43 @@ def test_cancelled_tool_gets_an_explicit_aborted_result() -> None:
     assert result.tool_results[0].error_code == "ABORTED"
     assert host.calls == []
     assert any(event.event_type == TOOL_ABORTED for event in result.lifecycle_events)
+
+
+def test_tool_events_carry_call_name_and_argument_keys_without_values() -> None:
+    """事件流要能被前端翻译成人话，但不能把参数取值带出去。"""
+
+    class Model:
+        count = 0
+
+        def complete_with_tools(self, messages, tools):
+            self.count += 1
+            if self.count == 1:
+                return ToolModelResponse(
+                    None,
+                    (ToolCall("a", "read_a", {"path": "src/private.py", "start_line": 3}),),
+                    "fake",
+                )
+            return ToolModelResponse("done", (), "fake")
+
+    host = Host()
+    result = ToolLoop(Model(), host, run_id="run-argument-keys").run("system", "task")
+
+    requested = [e for e in result.lifecycle_events if e.event_type == TOOL_CALL_REQUESTED]
+    dispatched = [e for e in result.lifecycle_events if e.event_type == TOOL_DISPATCHED]
+    assert requested[0].payload["tool_name"] == "read_a"
+    assert requested[0].payload["argument_keys"] == "path, start_line"
+    assert dispatched[0].payload["argument_keys"] == "path, start_line"
+    exported = " ".join(
+        str(value) for event in result.lifecycle_events for value in event.payload.values()
+    )
+    assert "src/private.py" not in exported
+
+
+def test_argument_key_summary_lists_sorted_names_and_ignores_blanks() -> None:
+    assert argument_key_summary({"start_line": 3, "path": "src/a.py"}) == "path, start_line"
+    assert argument_key_summary({"  ": 1}) == ""
+    assert argument_key_summary({}) == ""
+    assert argument_key_summary(None) == ""
 
 
 def test_unregistered_tool_is_rejected_before_dispatch() -> None:

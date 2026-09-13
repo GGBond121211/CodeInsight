@@ -1,5 +1,6 @@
 """不可变的回答和引用值对象。"""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from codeinsight.domain.query_plan import QueryPlan
@@ -93,3 +94,7 @@ class AutoAnswer:
     router_elapsed_milliseconds: float
     fallback_reason: str | None
     events: tuple[AutoAnswerEvent, ...]
+    # Q-012 U4：结构化结果区。行由应用从工具结果映射（模型不参与），
+    # 因此这里只承载形状，不在 domain 里重建映射逻辑。
+    structured_evidence: tuple[Mapping[str, object], ...] = ()
+    structured_evidence_truncated: bool = False

@@ -213,6 +213,10 @@ def to_auto_answer(
         router_elapsed_milliseconds=router_result.elapsed_milliseconds,
         fallback_reason=router_result.fallback_reason,
         events=_public_events(result),
+        # Q-012 U4：结构化结果区随答案一起公开；行来自工具结果映射，
+        # 不是模型输出，所以它和 citations 一样属于「可核验事实」。
+        structured_evidence=tuple(row.as_dict() for row in result.structured_evidence),
+        structured_evidence_truncated=result.structured_evidence_truncated,
     )
 
 

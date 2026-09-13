@@ -381,3 +381,180 @@ it('需要人工确认的轮次给出明确提示，而不是当成普通失败'
   expect(screen.getByText('这一轮需要人工确认')).toBeInTheDocument()
   expect(screen.getByText('这一轮需要人工确认，请查看运行详情。')).toBeInTheDocument()
 })
+
+it('结构化事实表由后端映射的行渲染，截断时给出提示', async () => {
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...completedTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(streamChatEvents).mockResolvedValue(undefined)
+  vi.mocked(getChatTurn).mockResolvedValue({
+    ...completedTurn,
+    result: {
+      ...completedTurn.result,
+      structured_evidence: {
+        rows: [
+          {
+            evidence_id: 'E1',
+            kind: 'definition',
+            kind_label: '定义',
+            path: 'src/checkout.py',
+            start_line: 12,
+            end_line: 18,
+            symbol: 'validate_input',
+            source_tool: 'read_file',
+          },
+          {
+            evidence_id: 'E2',
+            kind: 'call_site',
+            kind_label: '调用点',
+            path: 'src/order.py',
+            start_line: 40,
+            end_line: null,
+            symbol: null,
+            source_tool: 'search_repository',
+          },
+        ],
+        truncated: true,
+      },
+    },
+  })
+
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(await screen.findByText('结构化事实')).toBeInTheDocument()
+  expect(screen.getByText('src/checkout.py:L12-L18')).toBeInTheDocument()
+  expect(screen.getByText('src/order.py:L40')).toBeInTheDocument()
+  expect(screen.getByText('validate_input')).toBeInTheDocument()
+  expect(screen.getByText('只显示前若干行；完整列表已截断。')).toBeInTheDocument()
+})
+
+it('结构化表没有行时不渲染该区域', async () => {
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...completedTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(streamChatEvents).mockResolvedValue(undefined)
+  vi.mocked(getChatTurn).mockResolvedValue({
+    ...completedTurn,
+    result: {
+      ...completedTurn.result,
+      structured_evidence: { rows: [], truncated: false },
+    },
+  })
+
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(await screen.findByText('校验逻辑有证据支持。')).toBeInTheDocument()
+  expect(screen.queryByText('结构化事实')).not.toBeInTheDocument()
+})
+
+it('工具生命周期事件翻译成工具动作与参数键名', async () => {
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...completedTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(streamChatEvents).mockImplementation(async (_turnId, onEvent) => {
+    onEvent({
+      event_id: 'run-1:1',
+      run_id: 'run-1',
+      sequence: 1,
+      event_type: 'tool_call_requested',
+      occurred_at_epoch_ms: 1,
+      payload: {
+        call_id: 'c1',
+        tool_name: 'read_file',
+        submission_order: '0',
+        argument_keys: 'path, start_line',
+      },
+    })
+    onEvent({
+      event_id: 'run-1:2',
+      run_id: 'run-1',
+      sequence: 2,
+      event_type: 'tool_dispatched',
+      occurred_at_epoch_ms: 1,
+      payload: {
+        call_id: 'c1',
+        tool_name: 'read_file',
+        submission_order: '0',
+        argument_keys: 'path, start_line',
+      },
+    })
+    onEvent({
+      event_id: 'run-1:3',
+      run_id: 'run-1',
+      sequence: 3,
+      event_type: 'tool_dispatched',
+      occurred_at_epoch_ms: 1,
+      payload: {
+        call_id: 'c2',
+        tool_name: 'get_repository_map',
+        submission_order: '1',
+        argument_keys: 'question',
+      },
+    })
+    onEvent({
+      event_id: 'run-1:4',
+      run_id: 'run-1',
+      sequence: 4,
+      event_type: 'tool_result_committed',
+      occurred_at_epoch_ms: 1,
+      payload: {
+        call_id: 'c2',
+        tool_name: 'lsp_definition',
+        submission_order: '1',
+        outcome: 'success',
+      },
+    })
+  })
+  // 工具文案是给运行中的实时面板看的；轮次结束后（未开调试）那段面板会收起。
+  vi.mocked(getChatTurn).mockResolvedValue({
+    ...completedTurn,
+    status: 'RUNNING',
+    assistant_message: null,
+    result: null,
+  })
+
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(
+    await screen.findByText('模型请求调用：read_file（参数：path, start_line）'),
+  ).toBeInTheDocument()
+  expect(screen.getByText('正在读取文件（参数：path, start_line）')).toBeInTheDocument()
+  expect(screen.getByText('正在读取 RepositoryMap（参数：question）')).toBeInTheDocument()
+  expect(screen.getByText('已定位定义：lsp_definition')).toBeInTheDocument()
+})

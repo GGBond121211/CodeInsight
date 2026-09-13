@@ -519,6 +519,7 @@ class ToolLoop:
                     call_id=call.id,
                     tool_name=call.name,
                     submission_order=submission_orders[index],
+                    arguments=call.arguments,
                 )
                 self._lifecycle.validated(
                     call_id=call.id,
@@ -733,6 +734,7 @@ class ToolLoop:
                 submission_order=submission_orders[index],
                 execution_order=execution_orders[index],
                 parallel=parallel,
+                arguments=call.arguments,
             )
             if parallel:
                 readonly.append((index, call))

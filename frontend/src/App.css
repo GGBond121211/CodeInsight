@@ -834,6 +834,56 @@
   gap: 6px;
 }
 
+/* Q-012 U4：结构化结果区。表格由代码渲染，模型只写正文，所以视觉上要与正文分开。 */
+.structured-evidence {
+  display: grid;
+  gap: 8px;
+}
+
+.structured-evidence-heading {
+  margin: 0;
+  color: var(--text-on-ink);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.structured-evidence-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+}
+
+.structured-evidence-table th,
+.structured-evidence-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.structured-evidence-table th {
+  color: var(--text-muted-strong);
+  font-family: var(--font-mono);
+  font-size: 0.63rem;
+  font-weight: 700;
+}
+
+.structured-evidence-table td {
+  color: var(--text-on-ink-muted);
+}
+
+.structured-evidence-table code {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  word-break: break-all;
+}
+
+.structured-evidence-note {
+  margin: 0;
+  color: var(--text-muted-strong);
+  font-size: 0.66rem;
+}
+
 .citation-chip {
   padding: 4px 7px;
   border-radius: 6px;

@@ -108,6 +108,24 @@ export interface AgentEvent {
   summary: string
 }
 
+// Q-012 U4：结构化结果区的一行。字段全部由后端从工具结果映射，模型不参与；
+// start_line / end_line 为 null 表示「没有行号」，与「第 1 行」是两件事。
+export interface StructuredEvidenceRow {
+  kind: string
+  kind_label: string
+  source_tool: string
+  path: string
+  symbol: string
+  start_line: number | null
+  end_line: number | null
+  evidence_id: string | null
+}
+
+export interface StructuredEvidence {
+  rows: StructuredEvidenceRow[]
+  truncated: boolean
+}
+
 export interface AgentAnswerResponse extends AnswerResponse {
   revisions: number
   events: AgentEvent[]
@@ -162,6 +180,8 @@ export interface AutoAnswerResponse {
   embedding_input_tokens: number
   fallback_reason: string | null
   events: AgentEvent[]
+  // Q-012 U4：结构化结果区；空表也会返回，前端据此区分空态与「后端没实现」。
+  structured_evidence?: StructuredEvidence | null
 }
 
 export interface ChatSessionResponse {

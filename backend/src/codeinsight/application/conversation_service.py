@@ -2274,6 +2274,12 @@ def _auto_payload(result: AutoAnswer) -> dict[str, object]:
             {"sequence": item.sequence, "step": item.step, "summary": item.summary}
             for item in result.events
         ],
+        # Q-012 U4：结构化结果区。空表也照常返回，让「没有结构化事实」
+        # 和「没实现这个字段」在响应里能区分开。
+        "structured_evidence": {
+            "rows": [dict(row) for row in result.structured_evidence],
+            "truncated": result.structured_evidence_truncated,
+        },
     }
 
 

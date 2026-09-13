@@ -12,8 +12,10 @@ import type {
   ChatTurnResponse,
   ChatTurnStatus,
   DebugReasoningEvent,
+  StructuredEvidenceRow,
 } from './api/types'
 import { ObservabilityDashboard } from './components/ObservabilityDashboard'
+import { StructuredEvidenceTable } from './components/StructuredEvidenceTable'
 import './App.css'
 
 interface ChatMessage {
@@ -61,6 +63,44 @@ const MODEL_ERROR_DETAILS: Record<string, string> = {
   tool_call_missing_function: 'tool_call 缺少 function',
   tool_call_arguments_invalid_json: 'tool_call 参数不是有效 JSON',
   tool_call_arguments_not_object: 'tool_call 参数不是 JSON object',
+}
+
+// D2.2：把工具生命周期事件翻译成人话。工具名来自后端注册表，未知工具退回工具名原文；
+// 参数摘要只显示键名——后端只发键名，取值不出后端，界面也就无从泄露。
+const TOOL_ACTIONS: Record<string, { running: string; done: string }> = {
+  get_repository_map: { running: '正在读取 RepositoryMap', done: '已读取 RepositoryMap' },
+  search_repository: { running: '正在检索仓库证据', done: '仓库证据检索完成' },
+  read_file: { running: '正在读取文件', done: '文件已读取' },
+  get_evidence_context: { running: '正在展开证据上下文', done: '证据上下文已展开' },
+  lsp_definition: { running: '正在定位定义', done: '已定位定义' },
+  scip_references: { running: '正在查找引用', done: '已查找引用' },
+}
+
+const TOOL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'tool_call_requested',
+  'tool_dispatched',
+  'tool_result_committed',
+])
+
+function toolAction(tool: string, phase: 'running' | 'done'): string {
+  const action = TOOL_ACTIONS[tool]
+  if (action) return action[phase]
+  if (!tool) return phase === 'running' ? '正在执行工具' : '工具已返回结果'
+  return phase === 'running' ? `正在执行 ${tool}` : `工具已返回结果：${tool}`
+}
+
+function toolEventLabel(event: ChatEvent): string | null {
+  if (!TOOL_EVENT_TYPES.has(event.event_type)) return null
+  const tool = textValue(event.payload.tool_name)
+  const keys = textValue(event.payload.argument_keys)
+  const suffix = keys ? `（参数：${keys}）` : ''
+  if (event.event_type === 'tool_call_requested') {
+    return tool ? `模型请求调用：${tool}${suffix}` : '模型请求调用工具'
+  }
+  if (event.event_type === 'tool_dispatched') {
+    return `${toolAction(tool, 'running')}${suffix}`
+  }
+  return `${toolAction(tool, 'done')}：${tool || '未知工具'}`
 }
 
 // 还在跑的状态：排队、执行、等隔离校验都算。界面靠它决定「还要不要继续接收事件」，
@@ -127,6 +167,8 @@ function eventLabel(event: ChatEvent): string {
   if (event.event_type === 'validation_finished' && event.payload.skipped === 'true') {
     return '开发模式：固定校验未执行'
   }
+  const toolLabel = toolEventLabel(event)
+  if (toolLabel) return toolLabel
   return EVENT_LABELS[event.event_type] || event.event_type
 }
 
@@ -287,12 +329,23 @@ function ChatResult({
   }
   const citations = Array.isArray(result.citations) ? result.citations : []
   const observability = (result.observability || {}) as Record<string, unknown>
+  // Q-012 U4：结构化事实表由后端映射好，前端只负责展示；空表不渲染。
+  const structured = (result.structured_evidence || {}) as Record<string, unknown>
+  const structuredRows = Array.isArray(structured.rows)
+    ? (structured.rows as StructuredEvidenceRow[])
+    : []
   return (
     <div className="chat-result answer-result-card">
       <div className="chat-result-heading">
         <span className="result-tag">CODE ANSWER</span>
         <strong>{textValue(result.outcome, 'answered')}</strong>
       </div>
+      {structuredRows.length > 0 && (
+        <StructuredEvidenceTable
+          rows={structuredRows}
+          truncated={structured.truncated === true}
+        />
+      )}
       <details className="chat-details">
         <summary>查看本轮证据与运行详情</summary>
         {citations.length > 0 && (

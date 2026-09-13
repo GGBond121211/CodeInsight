@@ -191,6 +191,8 @@ def test_non_answered_status_never_surfaces_as_answered() -> None:
             tool_calls=0,
             steps=0,
             termination_reason="stub",
+            structured_evidence=(),
+            structured_evidence_truncated=False,
         )
         answer = to_auto_answer(stub, _router_result(), model_name="m")
         assert answer.outcome == INSUFFICIENT_EVIDENCE, status
@@ -217,6 +219,73 @@ def test_public_events_carry_counts_not_reasoning() -> None:
         assert event.summary
         # 事件只描述计数与状态，不携带仓库正文。
         assert "def total" not in event.summary
+
+
+def test_structured_evidence_contract_matches_citations() -> None:
+    """D1.1 契约：行字段齐全、路径在仓库根内、evidence_id 与 citations 对应。"""
+
+    model = _ScriptedModel(
+        [
+            _search(),
+            _final(
+                '{"outcome":"answered","answer":"由 total 汇总",'
+                '"citations":["E1","E2"]}'
+            ),
+        ]
+    )
+    loop_result = run_code_understanding_answer(
+        "C:/fixture",
+        "购物车怎么计算总价",
+        model=model,
+        mcp_client_factory=lambda root: _FakeClient(root, HITS),
+    )
+    answer = to_auto_answer(loop_result, _router_result(), model_name="m")
+
+    assert answer.structured_evidence, "有证据的轮次必须给出结构化行"
+    required = {
+        "kind",
+        "kind_label",
+        "source_tool",
+        "path",
+        "symbol",
+        "start_line",
+        "end_line",
+        "evidence_id",
+    }
+    cited = {item.evidence_id for item in answer.citations}
+    evidence_ids: set[str] = set()
+    for row in answer.structured_evidence:
+        assert required <= set(row), row
+        path = str(row["path"])
+        assert not path.startswith("/"), path
+        assert ".." not in path.split("/"), path
+        if row["kind"] == "evidence":
+            evidence_ids.add(str(row["evidence_id"]))
+    # 表格里的 E 编号与回答引用的编号必须是同一批：只出现一边就说明两者已经对不上。
+    assert evidence_ids == cited
+
+
+def test_insufficient_run_returns_an_empty_structured_table() -> None:
+    """没有可引用证据时给空表，而不是缺字段——前端要靠它区分空态与未实现。"""
+
+    model = _ScriptedModel(
+        [
+            _search(),
+            _final(
+                '{"outcome":"insufficient_evidence","answer":"证据不足","citations":[]}'
+            ),
+        ]
+    )
+    loop_result = run_code_understanding_answer(
+        "C:/fixture",
+        "购物车怎么计算总价",
+        model=model,
+        mcp_client_factory=lambda root: _FakeClient(root, []),
+    )
+    answer = to_auto_answer(loop_result, _router_result(), model_name="m")
+
+    assert answer.structured_evidence == ()
+    assert answer.structured_evidence_truncated is False
 
 
 # --- 封闭守卫：旧 LangGraph 路线不得被接回 ------------------------------------

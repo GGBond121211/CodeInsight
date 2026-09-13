@@ -144,6 +144,24 @@ class AutoEventResponse(BaseModel):
     summary: str
 
 
+class StructuredEvidenceRowResponse(BaseModel):
+    """一行结构化事实；字段全部由应用从工具结果映射，模型不参与。"""
+
+    kind: str
+    kind_label: str
+    source_tool: str
+    path: str
+    symbol: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
+    evidence_id: str | None = None
+
+
+class StructuredEvidenceResponse(BaseModel):
+    rows: list[StructuredEvidenceRowResponse] = Field(default_factory=list)
+    truncated: bool = False
+
+
 class AutoAnswerResponse(BaseModel):
     outcome: str
     answer: str
@@ -160,6 +178,10 @@ class AutoAnswerResponse(BaseModel):
     embedding_input_tokens: int
     fallback_reason: str | None
     events: list[AutoEventResponse]
+    # Q-012 U4：结构化结果区。老客户端忽略这个字段即可，既有字段不变。
+    structured_evidence: StructuredEvidenceResponse = Field(
+        default_factory=StructuredEvidenceResponse
+    )
 
 
 class HealthResponse(BaseModel):

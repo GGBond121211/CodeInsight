@@ -1,7 +1,7 @@
 """Tool Loop 的可回放生命周期记录器。
 
-生命周期事件只保存调用标识、策略结果、顺序和安全指纹，不保存原始参数、
-工具输出或模型隐藏推理。它同时支持本地事件日志和无持久化的单元测试，
+生命周期事件只保存调用标识、工具名与参数键名、策略结果、顺序和安全指纹，
+不保存参数取值、工具输出或模型隐藏推理。它同时支持本地事件日志和无持久化的单元测试，
 因此并行工具的提交顺序也能被验证。
 """
 
@@ -39,6 +39,20 @@ _LIFECYCLE_EVENT_TYPES = frozenset(
 )
 
 
+def argument_key_summary(arguments: Mapping[str, object] | None) -> str:
+    """把工具参数压成「只有键名」的摘要。
+
+    为什么只要键名：生命周期事件会随 Run 一起回放、也会被前端直接展示，而参数取值里
+    可能有用户问题原文、仓库路径或文件内容片段。工具名 + 参数名已经足够让界面说清
+    「正在读取 RepositoryMap（参数：path）」，又不把任何内容带进事件流。
+    """
+
+    if not arguments:
+        return ""
+    keys = sorted({str(key).strip() for key in arguments if str(key).strip()})
+    return ", ".join(keys)
+
+
 class ToolLifecycleRecorder:
     """把 Tool Loop 生命周期写入一个 Run 事件流，并保证终态幂等。"""
 
@@ -69,6 +83,7 @@ class ToolLifecycleRecorder:
         error_code: str | None = None,
         state_fingerprint: str | None = None,
         terminal: bool = False,
+        argument_keys: str | None = None,
         extra: Mapping[str, str] | None = None,
     ) -> RunEvent | None:
         """记录一条生命周期事件。
@@ -92,6 +107,8 @@ class ToolLifecycleRecorder:
         }
         if execution_order is not None:
             payload["execution_order"] = str(execution_order)
+        if argument_keys:
+            payload["argument_keys"] = argument_keys
         if outcome is not None:
             payload["outcome"] = outcome
         if error_code is not None:
@@ -125,7 +142,12 @@ class ToolLifecycleRecorder:
             return event
 
     def requested(
-        self, *, call_id: str, tool_name: str, submission_order: int
+        self,
+        *,
+        call_id: str,
+        tool_name: str,
+        submission_order: int,
+        arguments: Mapping[str, object] | None = None,
     ) -> RunEvent | None:
         return self.record(
             TOOL_CALL_REQUESTED,
@@ -133,6 +155,7 @@ class ToolLifecycleRecorder:
             tool_name=tool_name,
             submission_order=submission_order,
             outcome="requested",
+            argument_keys=argument_key_summary(arguments),
         )
 
     def validated(
@@ -160,6 +183,7 @@ class ToolLifecycleRecorder:
         submission_order: int,
         execution_order: int,
         parallel: bool,
+        arguments: Mapping[str, object] | None = None,
     ) -> RunEvent | None:
         return self.record(
             TOOL_DISPATCHED,
@@ -168,6 +192,7 @@ class ToolLifecycleRecorder:
             submission_order=submission_order,
             execution_order=execution_order,
             outcome="dispatched",
+            argument_keys=argument_key_summary(arguments),
             extra={"execution_mode": "parallel" if parallel else "serial"},
         )
 

@@ -24,6 +24,8 @@ from codeinsight.api.schemas import (
     HealthResponse,
     QueryPlanResponse,
     QueryPlanSubQuestionResponse,
+    StructuredEvidenceResponse,
+    StructuredEvidenceRowResponse,
     TokenUsageResponse,
 )
 from codeinsight.application.auto_answer_repository import auto_answer_repository
@@ -177,6 +179,13 @@ def _auto_response(result: AutoAnswer) -> AutoAnswerResponse:
         embedding_input_tokens=result.embedding_input_tokens,
         fallback_reason=result.fallback_reason,
         events=event_responses,
+        structured_evidence=StructuredEvidenceResponse(
+            rows=[
+                StructuredEvidenceRowResponse(**dict(row))
+                for row in result.structured_evidence
+            ],
+            truncated=result.structured_evidence_truncated,
+        ),
     )
 
 

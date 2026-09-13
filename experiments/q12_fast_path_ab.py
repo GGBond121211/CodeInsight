@@ -13,6 +13,11 @@
   - 快路径没命中原型、或配方取证不足而回退，都记成 not_hit / fallback，不算答对；
   - 整个对照共用一条 MCP 会话，开跑前先预热一次索引；Evidence Ledger 与 Tool Loop
     状态仍然每轮新建，预热耗时单独登记、不计入任何一臂。
+  - 快 arm 的 Router 分类要调 Embedding；供应商对同一模型会间歇返回
+    AccessDenied（密集索引之后更明显）。
+    这是基础设施抖动，不是被测行为：开跑前先做 3 次预检（不健康就整体退出、不烧后续用量），
+    Router 的 Embedding 调用允许最多 3 次有界重试并把次数登记进 summary.embed_retries，
+    arm=loop 不加任何包装，工具失败照原样记进轮次记录。
 
 用法：
     backend/.venv/Scripts/python.exe experiments/q12_fast_path_ab.py --trials 3
@@ -50,6 +55,49 @@ EVIDENCE_TOOLS = frozenset({"search_repository", "get_evidence_context", "read_f
 MCP_TIMEOUT_SECONDS = 300.0
 _CLIENT: StdioMCPClient | None = None
 _RESTARTS = 0
+_EMBED_RETRIES = 0
+
+
+def _resilient_embed(embed, *, attempts: int = 3, delays: tuple[float, ...] = (1.0, 4.0)):
+    """给 Router 的 Embedding 加有界重试。
+
+    为什么只包 Router：供应商对同一个 Embedding 模型会间歇返回 AccessDenied（实测集中在
+    整仓库索引刚建完之后）。那是基础设施抖动，不是被测行为，记成「快路径答错」会把对照带偏。
+    重试次数单独登记进 summary.embed_retries；arm=loop 不加任何包装，工具失败照原样记录。
+    """
+
+    global _EMBED_RETRIES
+
+    def call(texts):
+        for index in range(attempts):
+            try:
+                return embed(texts)
+            except Exception:  # noqa: BLE001 - 重试次数有限，最后一次仍失败就抛出
+                if index >= attempts - 1:
+                    raise
+                _count_embed_retry()
+                time.sleep(delays[min(index, len(delays) - 1)])
+        raise AssertionError("unreachable")
+
+    return call
+
+
+def _count_embed_retry() -> None:
+    global _EMBED_RETRIES
+    _EMBED_RETRIES += 1
+
+
+def _preflight_embedding(embed) -> bool:
+    """开跑前先确认 Embedding 通道健康：不健康就整体终止，不烧后面的用量。"""
+
+    for attempt in (1, 2, 3):
+        try:
+            embed(["def preflight(): pass"])
+            return True
+        except Exception as error:  # noqa: BLE001 - 预检失败只意味着「先别开跑」
+            print(f"Embedding 预检第 {attempt} 次失败：{type(error).__name__}: {error}", flush=True)
+            time.sleep(20.0)
+    return False
 
 
 def _shared_client(repository: Path) -> StdioMCPClient:
@@ -304,6 +352,12 @@ def main() -> int:
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--cases", type=int, default=0, help="0 表示全部题面")
     parser.add_argument("--output", type=Path, default=ROOT / "work" / "q12_fast_path_ab.json")
+    parser.add_argument(
+        "--cooldown",
+        type=float,
+        default=45.0,
+        help="索引建完后的冷却秒数；避免突发流量与第一轮评测重叠",
+    )
     args = parser.parse_args()
 
     _load_env()
@@ -313,8 +367,12 @@ def main() -> int:
     from codeinsight.infrastructure.embeddings import OpenAIEmbeddingModel
     from codeinsight.infrastructure.model_gateway import GatewayChatModel
 
+    embedding = OpenAIEmbeddingModel.from_environment()
+    if not _preflight_embedding(embedding.embed):
+        print("Embedding 通道不可用，按阻塞退出（后面的轮次一轮都没跑）")
+        return 3
     model = GatewayChatModel.from_environment()
-    router = ArchetypeRouter(embed=OpenAIEmbeddingModel.from_environment().embed)
+    router = ArchetypeRouter(embed=_resilient_embed(embedding.embed))
     repository, cases = _load_cases(args.cases)
     if not repository.is_dir():
         print(f"仓库不存在：{repository}")
@@ -327,6 +385,9 @@ def main() -> int:
     )
     warmup_ms = int((time.monotonic() - warmup_started) * 1000)
     print(f"索引预热 ok={warmup.ok} err={warmup.error_code} {warmup_ms}ms")
+    if args.cooldown > 0:
+        print(f"冷却 {args.cooldown:.0f} 秒后开跑（索引刚建完，Provider 会短暂限流）", flush=True)
+        time.sleep(args.cooldown)
     rows: list[dict[str, object]] = []
     aborted = False
     for trial in range(1, args.trials + 1):
@@ -390,6 +451,7 @@ def main() -> int:
             "fallback": len([row for row in fast_rows if row["route"] == "fallback"]),
         },
         "mcp_restarts": _RESTARTS,
+        "embed_retries": _EMBED_RETRIES,
         "aborted_after_failures": aborted,
     }
     if fast_hits and loop_rows:
