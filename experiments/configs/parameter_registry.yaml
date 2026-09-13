@@ -415,6 +415,95 @@ tunable:
     priority: high
     note: "计划明确要求在没有评测前不得把 repair 默认设为 2；当前按 1 起步。"
 
+  # --- Q-012：花费闸、问题原型快路径与索引复用 ---
+  # 取值口径见 docs/Q12_C2_EVALUATION.md；这一批里只有阈值/命中率做过真实对照，
+  # 其余都是「已实现、有契约、没调过」的工程基线。
+  - name: explain_token_budget
+    current: 300000
+    unit: tokens
+    candidates: [150000, 300000, 600000]
+    safety_ceiling: 1000000
+    ceiling_reason: "单轮花费闸；超过上下文窗口的取值等于没有闸"
+    scope: "infrastructure/model_gateway.py:configured_explain_token_budget（CODEINSIGHT_TOOL_LOOP_TOKEN_BUDGET）"
+    evidence: >-
+      Q-012 B1 2026-09-12：按阶段 A 基线的 P95 量级留一个数量级余量，专门拦失控循环；
+      C2.5 同批 18 轮 0 次触顶（单轮最大 49.6k）。
+    evidence_status: implemented_unoptimized
+    priority: high
+    note: "70% 先裁剪、100% 停；数值是工程基线，不是调优结果。"
+
+  - name: change_token_budget
+    current: 400000
+    unit: tokens
+    candidates: [200000, 400000, 800000]
+    safety_ceiling: 1000000
+    ceiling_reason: "单轮花费闸；超过上下文窗口的取值等于没有闸"
+    scope: "infrastructure/model_gateway.py:configured_change_token_budget（CODEINSIGHT_CHANGE_TOOL_LOOP_TOKEN_BUDGET）"
+    evidence: "Q-012 B1 2026-09-12：修改路线证据面更大，取值高于 explain；无 A/B"
+    evidence_status: implemented_unoptimized
+    priority: high
+
+  - name: archetype_router_threshold
+    current: 0.65
+    unit: cosine_similarity
+    candidates: [0.50, 0.55, 0.60, 0.62, 0.65, 0.70, 0.75]
+    scope: "application/archetype_router.py:ArchetypeRouterConfig.threshold"
+    evidence: >-
+      Q-012 C2.2 2026-09-13 复扫：60 条 holdout + 12 条负例；t0.65-m0.02 命中 0.433、
+      命中里判对 0.885、判错原型 0.050、负例错命中 0.083（从 0.62 改到 0.65 换来判错率减半）。
+    evidence_status: measured_unoptimized
+    priority: high
+    note: "阈值是在同一批题上选出来的，没有独立 holdout 验证；换仓库要重扫。"
+
+  - name: archetype_router_margin
+    current: 0.02
+    unit: cosine_similarity
+    candidates: [0.00, 0.02, 0.05]
+    scope: "application/archetype_router.py:ArchetypeRouterConfig.margin"
+    evidence: "Q-012 C2.2 2026-09-13 复扫：margin 0.02 在 0.65 阈值上兼顾命中与判错"
+    evidence_status: measured_unoptimized
+    priority: medium
+
+  - name: archetype_fast_path_enabled
+    current: false
+    unit: bool
+    candidates: [false, true]
+    scope: "application/archetype_fast_path.py:CODEINSIGHT_ARCHETYPE_FAST_PATH"
+    evidence: >-
+      Q-012 C2.4 复测 2026-09-13：命中 7/18（38.9%），命中轮 token 中位数 2365 vs 对照 29838（7.9%）、
+      ANSWERED 7/7，但引用命中 5/7（2 轮正文写对、引用挑错编号）。覆盖率与引用质量都不足以换默认行为。
+    evidence_status: measured_unoptimized
+    priority: high
+    note: "改默认是产品决定（DEC-0082），不是实验结果。"
+
+  - name: archetype_fast_path_answer_attempts
+    current: 2
+    unit: count
+    candidates: [1, 2, 4]
+    safety_ceiling: 4
+    ceiling_reason: "每次尝试都是一次完整模型调用，预算必须封顶"
+    scope: "application/archetype_fast_path.py:fast_path_answer_attempts（CODEINSIGHT_ARCHETYPE_FAST_PATH_ATTEMPTS）"
+    evidence: >-
+      Q-012 2026-09-13：对非法 JSON、未知证据编号、正文点名但未引用三类失败各给一次纠正重试；
+      有契约测试（ScriptedModel 锁行为），没有 A/B。
+    evidence_status: implemented_unoptimized
+    priority: medium
+
+  - name: repository_index_reuse
+    current: "qdrant-active"
+    unit: mode
+    candidates: [in_process_rebuild, qdrant_active]
+    scope: "application/search_repository.py:reuse_active_index"
+    evidence: >-
+      Q-012 2026-09-13 实测：配 CODEINSIGHT_QDRANT_URL 且 repo/chunk_version/vector_schema/index_id
+      全部一致时复用 active 索引，进程内重建 129453ms → 第二个进程首检 7014ms；不配 URL 时返回 None、
+      走原「重建并发布」路径。
+    evidence_status: measured_unoptimized
+    priority: high
+    note: >-
+      复用只比对索引身份（模型 + 块 ID 集合 + 两个版本号），源码变化会因 index_id 不同被拒绝；
+      未做「复用 vs 重建」的检索质量对照。
+
   # --- Q-010：长会话上下文生命周期 ---
   # 完整取值、派生关系和不变量写在 experiments/configs/context_lifecycle_128k.yaml，
   # 这里只登记「运行时真正被读到的那个数字」，避免两处各写一套参数表。

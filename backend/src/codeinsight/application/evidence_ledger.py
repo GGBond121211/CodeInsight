@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from codeinsight.agent.tool_loop import ToolCall, ToolResult
@@ -35,6 +36,61 @@ NAVIGATION_TOOLS: frozenset[str] = frozenset(
 DEFAULT_MAX_EVIDENCE = 40
 EXCERPT_CHARS = 400
 
+# 片段锚定用的问题词表：只用于把窗口对准相关行，不参与任何判定。
+_FOCUS_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "from", "with", "what", "where", "which", "when",
+        "how", "why", "does", "did", "are", "was", "were", "this", "that",
+        "there", "here", "into", "over", "under", "about", "code", "file",
+        "files", "class", "method", "function", "defined", "definition", "whereis",
+    }
+)
+_FOCUS_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_DEFINITION_LINE = re.compile(r"^\s*(?:async\s+def|def|class)\s+")
+
+
+def _focus_tokens(text: str) -> tuple[str, ...]:
+    """从问题里取标识符候选；顺序即优先级，最多 8 个。"""
+
+    tokens: list[str] = []
+    for token in _FOCUS_TOKEN.findall(text):
+        lowered = token.lower()
+        if lowered in _FOCUS_STOPWORDS or token in tokens:
+            continue
+        tokens.append(token)
+        if len(tokens) >= 8:
+            break
+    return tuple(tokens)
+
+
+def _line_contains_identifier(line: str, token: str) -> bool:
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", line) is not None
+
+
+def _anchor_offset(text: str, tokens: Sequence[str]) -> int:
+    """返回片段窗口的起始字符偏移。
+
+    为什么需要锚定：证据块常常有几十行，而问题要的那一行不一定在开头。之前一律取
+    ``text[:excerpt_chars]``，于是「class Client 定义在哪」这类问题拿到的片段里根本
+    没有 ``class Client``——模型只能凭编号列表猜该引用哪一条，实测就猜错过。
+    规则按优先级取第一个命中的：定义行（``class``/``def``）→ 含标识符的行 → 块开头。
+    """
+
+    if not tokens:
+        return 0
+    offset = 0
+    first_identifier_line: int | None = None
+    for line in text.splitlines(keepends=True):
+        matched = [token for token in tokens if _line_contains_identifier(line, token)]
+        if matched:
+            if _DEFINITION_LINE.match(line):
+                return offset
+            if first_identifier_line is None:
+                first_identifier_line = offset
+        offset += len(line)
+    return first_identifier_line if first_identifier_line is not None else 0
+
+
 
 @dataclass(frozen=True)
 class EvidenceRecord:
@@ -50,6 +106,8 @@ class EvidenceRecord:
     retrieval_round: int
     candidate_rank: int
     excerpt: str
+    # 片段在块内的起始行；等于 start_line 时表示窗口仍在块开头。
+    excerpt_start_line: int | None = None
     routes: tuple[str, ...] = ()
     untrusted: bool = True
 
@@ -136,6 +194,7 @@ class EvidenceLedger:
         call: ToolCall,
         result: ToolResult,
         retrieval_round: int = 0,
+        focus_text: str = "",
     ) -> LedgerIngestReport:
         """把一次成功的工具结果并入台账。失败结果和导航工具一律不入库。
 
@@ -147,7 +206,10 @@ class EvidenceLedger:
         if call.name not in EVIDENCE_TOOLS:
             return LedgerIngestReport()
         candidates, skip_reasons = _extract_candidates(
-            call, result, excerpt_chars=self.excerpt_chars
+            call,
+            result,
+            excerpt_chars=self.excerpt_chars,
+            focus_text=focus_text,
         )
         if not candidates:
             return LedgerIngestReport(skipped_reasons=tuple(skip_reasons))
@@ -183,6 +245,7 @@ class EvidenceLedger:
                 retrieval_round=retrieval_round,
                 candidate_rank=candidate.candidate_rank,
                 excerpt=candidate.excerpt,
+                excerpt_start_line=candidate.excerpt_start_line,
                 routes=(call.name,),
             )
             self._records[evidence_id] = record
@@ -214,10 +277,15 @@ class _Candidate:
     source_fingerprint: str
     candidate_rank: int
     excerpt: str
+    excerpt_start_line: int | None = None
 
 
 def _extract_candidates(
-    call: ToolCall, result: ToolResult, *, excerpt_chars: int
+    call: ToolCall,
+    result: ToolResult,
+    *,
+    excerpt_chars: int,
+    focus_text: str = "",
 ) -> tuple[list[_Candidate], list[str]]:
     """按工具类型拆出候选；形状不对的条目只记录原因，不抛异常。"""
     candidates: list[_Candidate] = []
@@ -227,7 +295,9 @@ def _extract_candidates(
     else:
         raw_items = list(_sequence_field(result.data, ("results", "evidence")))
     for rank, raw in enumerate(raw_items, start=1):
-        candidate, reason = _normalize(raw, rank, excerpt_chars=excerpt_chars)
+        candidate, reason = _normalize(
+            raw, rank, excerpt_chars=excerpt_chars, focus_text=focus_text
+        )
         if candidate is None:
             reasons.append(reason)
             continue
@@ -244,7 +314,7 @@ def _sequence_field(data: Mapping[str, object], names: tuple[str, ...]) -> tuple
 
 
 def _normalize(
-    raw: object, rank: int, *, excerpt_chars: int
+    raw: object, rank: int, *, excerpt_chars: int, focus_text: str = ""
 ) -> tuple[_Candidate | None, str]:
     if not isinstance(raw, Mapping):
         return None, "不是对象"
@@ -260,6 +330,8 @@ def _normalize(
         return None, "行号非法"
     if not isinstance(text, str):
         return None, "text 缺失"
+    tokens = _focus_tokens(focus_text)
+    offset = _anchor_offset(text, tokens)
     return (
         _Candidate(
             path=path.strip().replace("\\", "/"),
@@ -267,7 +339,8 @@ def _normalize(
             end_line=end_line,
             source_fingerprint=_fingerprint(path, start_line, end_line, text),
             candidate_rank=rank,
-            excerpt=text[:excerpt_chars],
+            excerpt=text[offset : offset + excerpt_chars],
+            excerpt_start_line=(start_line + text[:offset].count("\n")) if offset else None,
         ),
         "",
     )

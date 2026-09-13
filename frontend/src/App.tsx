@@ -103,6 +103,14 @@ function toolEventLabel(event: ChatEvent): string | null {
   return `${toolAction(tool, 'done')}：${tool || '未知工具'}`
 }
 
+// D2.2：`step_started` 的 stage 是后端真实发出的阶段名（只在 change 流程里发），
+// 逐个给固定文案；不在表里的 stage 落回通用文案，不猜语义。
+const STAGE_LABELS: Record<string, string> = {
+  tool_exploration: '正在只读探索仓库证据',
+  validation_retry: '正在重跑固定校验',
+  apply: '正在把已批准的修改写入隔离工作区',
+}
+
 // 还在跑的状态：排队、执行、等隔离校验都算。界面靠它决定「还要不要继续接收事件」，
 // 少写一个就会出现「校验中却显示已结束」。
 const IN_FLIGHT_STATUSES: ReadonlySet<ChatTurnStatus> = new Set([
@@ -166,6 +174,10 @@ function eventLabel(event: ChatEvent): string {
   }
   if (event.event_type === 'validation_finished' && event.payload.skipped === 'true') {
     return '开发模式：固定校验未执行'
+  }
+  if (event.event_type === 'step_started') {
+    const stageLabel = STAGE_LABELS[textValue(event.payload.stage)]
+    if (stageLabel) return stageLabel
   }
   const toolLabel = toolEventLabel(event)
   if (toolLabel) return toolLabel

@@ -73,13 +73,17 @@ ARCHETYPES_V1: tuple[QuestionArchetype, ...] = (
             "这个仓库有哪些入口文件？",
         ),
         recipe=(
-            RecipeStep(
-                "get_repository_map",
-                {"include": ["files", "symbols"], "max_files": 40, "max_symbols": 80},
-            ),
+            # 地图只做导航、不进证据台账，所以单靠它 + 一次 read_file 永远凑不满 2 条证据
+            # （= 必然回退，实测 3/3）。改成先检索再读命中位置：检索本身会带回多条可引用
+            # 证据，读一次给出确定行号。代价是答案只能覆盖「检索到的模块」，所以
+            # answer_outline 明确要求不许声称列全。
+            RecipeStep("search_repository", {"question": QUESTION_PLACEHOLDER}),
             RecipeStep("read_file", {"path": PATH_PLACEHOLDER}),
         ),
-        answer_outline="按目录分组列出文件与关键符号；地图只是导航，具体行号必须回到 read_file。",
+        answer_outline=(
+            "只列出证据里真实出现的文件与符号，并说明这是检索命中的结果、不是完整清单；"
+            "没有证据的目录不要提。"
+        ),
     ),
     QuestionArchetype(
         name="config_source",

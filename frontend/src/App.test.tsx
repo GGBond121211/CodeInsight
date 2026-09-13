@@ -558,3 +558,60 @@ it('工具生命周期事件翻译成工具动作与参数键名', async () => {
   expect(screen.getByText('正在读取 RepositoryMap（参数：question）')).toBeInTheDocument()
   expect(screen.getByText('已定位定义：lsp_definition')).toBeInTheDocument()
 })
+
+it('阶段事件按真实 stage 翻译，未知阶段保留通用文案', async () => {
+  vi.mocked(createChatSession).mockResolvedValue({
+    session_id: 'session-1',
+    repo_id: 'repo-1',
+    index_version: 'conversation-scan-v1',
+    status: 'READY',
+    summary: null,
+    compacted_through_sequence: 0,
+    active_goal: null,
+    recent_turns: [],
+    cache_hit: false,
+    cache_fallback: false,
+  })
+  vi.mocked(submitChatTurn).mockResolvedValue({ ...completedTurn, status: 'QUEUED', assistant_message: null, result: null })
+  vi.mocked(streamChatEvents).mockImplementation(async (_turnId, onEvent) => {
+    onEvent({
+      event_id: 'run-1:1',
+      run_id: 'run-1',
+      sequence: 1,
+      event_type: 'step_started',
+      occurred_at_epoch_ms: 1,
+      payload: { stage: 'tool_exploration', status: 'running' },
+    })
+    onEvent({
+      event_id: 'run-1:2',
+      run_id: 'run-1',
+      sequence: 2,
+      event_type: 'step_started',
+      occurred_at_epoch_ms: 1,
+      payload: { stage: 'apply', status: 'running' },
+    })
+    // 后端将来新增 stage 时，界面宁可显示通用文案，也不猜语义。
+    onEvent({
+      event_id: 'run-1:3',
+      run_id: 'run-1',
+      sequence: 3,
+      event_type: 'step_started',
+      occurred_at_epoch_ms: 1,
+      payload: { stage: 'unknown_stage', status: 'running' },
+    })
+  })
+  vi.mocked(getChatTurn).mockResolvedValue({
+    ...completedTurn,
+    status: 'RUNNING',
+    assistant_message: null,
+    result: null,
+  })
+
+  const user = userEvent.setup()
+  render(<App />)
+  await user.click(screen.getByRole('button', { name: '发送消息' }))
+
+  expect(await screen.findByText('正在只读探索仓库证据')).toBeInTheDocument()
+  expect(screen.getByText('正在把已批准的修改写入隔离工作区')).toBeInTheDocument()
+  expect(screen.getByText('Agent 正在执行下一阶段')).toBeInTheDocument()
+})

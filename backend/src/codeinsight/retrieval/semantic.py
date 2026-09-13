@@ -25,9 +25,19 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _chunk_id(chunk: SourceChunk) -> str:
+def chunk_id(chunk: SourceChunk) -> str:
     identity = f"{chunk.relative_path}:{chunk.start_line}:{chunk.end_line}:{chunk.text}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
+def semantic_index_id(model: str, entry_ids: Sequence[str]) -> str:
+    """索引身份＝模型名 + 源码块 ID 集合。
+
+    它不含向量，因此可以在**不调用 Embedding** 的前提下算出来：这正是复用
+    Qdrant 上已有索引的依据（见 ``search_repository.reuse_active_index``）。
+    """
+
+    return hashlib.sha256("|".join((model, *entry_ids)).encode("utf-8")).hexdigest()[:20]
 
 
 def filter_indexable_chunks(chunks: Sequence[SourceChunk]) -> tuple[SourceChunk, ...]:
@@ -82,10 +92,9 @@ def build_semantic_index(
         sparse_vectors = batch.sparse_vectors or (None,) * len(indexable_chunks)
     entry_id_list: list[str] = []
     for chunk in indexable_chunks:
-        entry_id_list.append(_chunk_id(chunk))
+        entry_id_list.append(chunk_id(chunk))
     entry_ids = tuple(entry_id_list)
-    index_material = "|".join((batch.model, *entry_ids))
-    index_id = hashlib.sha256(index_material.encode("utf-8")).hexdigest()[:20]
+    index_id = semantic_index_id(batch.model, entry_ids)
     metadata = SemanticModelMetadata(
         model=batch.model,
         dimensions=dimensions,
@@ -94,7 +103,7 @@ def build_semantic_index(
         index_id=index_id,
     )
     entry_list: list[SemanticIndexEntry] = []
-    for chunk_id, chunk, vector, sparse_vector in zip(
+    for entry_id, chunk, vector, sparse_vector in zip(
         entry_ids,
         indexable_chunks,
         batch.vectors,
@@ -103,7 +112,7 @@ def build_semantic_index(
     ):
         entry_list.append(
             SemanticIndexEntry(
-                chunk_id=chunk_id,
+                chunk_id=entry_id,
                 chunk=chunk,
                 embedding=vector,
                 source_fingerprint=_fingerprint(chunk.text),
@@ -153,6 +162,8 @@ def search_chunks_dense(
         raise ValueError("limit 必须是正整数")
     if not query.strip():
         return ()
+    if vector_store is None and index.vectors_persisted:
+        raise ValueError("该索引的向量持久化在 Qdrant，缺少向量库时不能做本地精确检索")
     query_batch = embed((query,))
     _validate_batch(query_batch, 1)
     if query_batch.dimensions != index.metadata.dimensions:

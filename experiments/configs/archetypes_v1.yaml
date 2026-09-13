@@ -55,7 +55,7 @@ archetypes:
   - name: "module_inventory"
     version: "1"
     summary: "仓库或某个目录下有哪些模块、符号"
-    answer_outline: "按目录分组列出文件与关键符号；地图只是导航，具体行号必须回到 read_file。"
+    answer_outline: "只列出证据里真实出现的文件与符号，并说明这是检索命中的结果、不是完整清单；没有证据的目录不要提。"
     example_questions:
       - "这个仓库的顶层模块有哪些？"
       - "src 目录下都有哪些符号？"
@@ -63,13 +63,9 @@ archetypes:
       - "整个项目的目录结构是什么？"
       - "这个仓库有哪些入口文件？"
     recipe:
-      - tool: "get_repository_map"
+      - tool: "search_repository"
         arguments:
-          include:
-            - "files"
-            - "symbols"
-          max_files: 40
-          max_symbols: 80
+          question: "{question}"
       - tool: "read_file"
         arguments:
           path: "{path}"

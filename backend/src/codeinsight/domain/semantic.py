@@ -87,7 +87,13 @@ class SemanticIndexEntry:
 
 @dataclass(frozen=True)
 class SemanticIndex:
-    """进程内语义索引；不代表存在持久化或数据库。"""
+    """进程内语义索引；不代表存在持久化或数据库。
+
+    ``vectors_persisted`` 为真表示向量已经落在 Qdrant（``entries`` 只保留源码块
+    映射，不再持有向量）。这种情况下只有配上向量库才能检索——否则本地精确
+    cosine 会拿空向量算出错误结果，属于必须显式拒绝的用法。
+    """
 
     metadata: SemanticModelMetadata
     entries: tuple[SemanticIndexEntry, ...]
+    vectors_persisted: bool = False

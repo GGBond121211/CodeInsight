@@ -268,7 +268,9 @@ def test_fast_path_falls_back_when_the_answer_is_not_json():
 
     assert result is None
     assert events[-1]["reason"] == "invalid_answer"
-    assert model.calls == [()]  # 只调了一次，不重试
+    # 默认允许一次纠正：两次都不合法才回退，事件里保留重试理由便于统计。
+    assert model.calls == [(), ()]
+    assert [event["reason"] for event in events] == ["retry:invalid_answer", "invalid_answer"]
 def test_fast_path_gives_up_when_the_model_wants_more_tools():
     host = FakeHost(_search_and_read_results())
     model = ContractModel(None, with_tool_call=True)
@@ -348,3 +350,150 @@ def test_fast_path_shows_the_model_the_evidence_text_not_only_ids():
     assert "def send(): pass" in joined  # 检索命中的正文片段
     assert "def send(self):" in joined  # read_file 的正文片段
     assert "citations 只能使用这些编号" in joined
+
+
+class ScriptedModel:
+    """按脚本依次返回多份正文；用来测「纠正一次之后成功」。"""
+
+    def __init__(self, payloads: tuple[str, ...]) -> None:
+        self.payloads = payloads
+        self.calls: list[tuple[object, ...]] = []
+        self.messages: list[tuple[dict[str, object], ...]] = []
+
+    def complete_with_tools(self, messages, tools):
+        self.calls.append(tuple(tools))
+        self.messages.append(tuple(messages))
+        index = min(len(self.calls) - 1, len(self.payloads) - 1)
+        return ToolModelResponse(self.payloads[index], (), "fake", 120, 30)
+
+
+def _two_path_results() -> dict[str, ToolResult]:
+    """两条不同路径的检索结果：用来构造「正文说 A、引用给 B」的不一致。"""
+
+    return {
+        "search_repository": ToolResult.success(
+            "c1",
+            "search_repository",
+            {
+                "results": [
+                    {
+                        "relative_path": "src/app.py",
+                        "start_line": 10,
+                        "end_line": 20,
+                        "text": "def send(): pass",
+                    },
+                    {
+                        "relative_path": "src/other.py",
+                        "start_line": 30,
+                        "end_line": 40,
+                        "text": "class Client: pass",
+                    },
+                ]
+            },
+        ),
+    }
+
+
+def _search_only_archetype() -> QuestionArchetype:
+    """只有一步检索的配方：两条路径的用例不需要 read_file 参与。"""
+
+    return _archetype("alpha", ("a1", "a2", "a3", "a4", "a5"))
+
+
+def test_fast_path_retries_once_when_the_answer_is_not_json() -> None:
+    host = FakeHost(_search_and_read_results())
+    model = ScriptedModel((
+        "这不是 JSON",
+        '{"outcome": "answered", "answer": "send 定义在 src/app.py:10。", "citations": ["E1"]}',
+    ))
+    events: list[dict[str, str]] = []
+
+    result = run_archetype_fast_path(
+        archetype=ARCHETYPES_V1[0],
+        question="send 方法在哪里定义？",
+        mcp_client=host,
+        model=model,
+        emit=lambda kind, payload: events.append(dict(payload)),
+    )
+
+    assert result is not None
+    assert len(model.calls) == 2
+    assert [event["reason"] for event in events] == ["retry:invalid_answer", "hit"]
+    # 纠正指令是追加的一条 user 消息，不是改写原始问题。
+    assert len(model.messages[1]) == len(model.messages[0]) + 1
+
+
+def test_fast_path_retries_when_the_answer_names_a_file_it_did_not_cite() -> None:
+    """复测发现的真实缺陷：正文写对了文件，引用却挂在另一条证据上。"""
+
+    host = FakeHost(_two_path_results())
+    model = ScriptedModel((
+        '{"outcome": "answered", "answer": "Client 定义在 src/other.py。", "citations": ["E1"]}',
+        '{"outcome": "answered", "answer": "Client 定义在 src/other.py。", "citations": ["E2"]}',
+    ))
+    events: list[dict[str, str]] = []
+
+    result = run_archetype_fast_path(
+        archetype=_search_only_archetype(),
+        question="Client 类定义在哪个文件？",
+        mcp_client=host,
+        model=model,
+        emit=lambda kind, payload: events.append(dict(payload)),
+    )
+
+    assert result is not None
+    assert [item.evidence_id for item in result.citations] == ["E2"]
+    assert [event["reason"] for event in events] == ["retry:citation_path_mismatch", "hit"]
+    assert "src/other.py" in str(model.messages[1][-1]["content"])
+
+
+def test_fast_path_falls_back_when_the_citation_never_matches() -> None:
+    host = FakeHost(_two_path_results())
+    model = ScriptedModel(
+        ('{"outcome": "answered", "answer": "Client 定义在 src/other.py。", "citations": ["E1"]}',)
+    )
+    events: list[dict[str, str]] = []
+
+    result = run_archetype_fast_path(
+        archetype=_search_only_archetype(),
+        question="Client 类定义在哪个文件？",
+        mcp_client=host,
+        model=model,
+        emit=lambda kind, payload: events.append(dict(payload)),
+    )
+
+    # 改不对就回退 Tool Loop：宁可多花一次检索，也不能给「看起来有引用」的答案。
+    assert result is None
+    assert [event["reason"] for event in events] == [
+        "retry:citation_path_mismatch",
+        "citation_path_mismatch",
+    ]
+
+
+def test_fast_path_attempt_budget_can_be_turned_off(monkeypatch) -> None:
+    from codeinsight.application.archetype_fast_path import (
+        FAST_PATH_ATTEMPTS_ENV,
+        fast_path_answer_attempts,
+    )
+
+    monkeypatch.setenv(FAST_PATH_ATTEMPTS_ENV, "1")
+    assert fast_path_answer_attempts() == 1
+    monkeypatch.setenv(FAST_PATH_ATTEMPTS_ENV, "99")
+    assert fast_path_answer_attempts() == 4
+    monkeypatch.setenv(FAST_PATH_ATTEMPTS_ENV, "abc")
+    assert fast_path_answer_attempts() == 2
+    monkeypatch.setenv(FAST_PATH_ATTEMPTS_ENV, "1")
+
+    host = FakeHost(_search_and_read_results())
+    model = ScriptedModel(("这不是 JSON",))
+
+    assert (
+        run_archetype_fast_path(
+            archetype=ARCHETYPES_V1[0],
+            question="send 方法在哪里定义？",
+            mcp_client=host,
+            model=model,
+        )
+        is None
+    )
+    assert len(model.calls) == 1

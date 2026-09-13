@@ -30,6 +30,7 @@ from codeinsight.agent.tool_loop import (
     ToolModel,
     ToolResult,
 )
+from codeinsight.application.answer_citations import uncited_mentioned_paths
 from codeinsight.application.evidence_assessor import EvidenceAssessor
 from codeinsight.application.evidence_ledger import EvidenceLedger, EvidenceRecord
 from codeinsight.application.structured_evidence import (
@@ -40,6 +41,7 @@ from codeinsight.domain.answer import (
     ANSWERED,
     INSUFFICIENT_EVIDENCE,
     AnswerCitation,
+    ModelAnswer,
 )
 from codeinsight.domain.archetype import (
     LINE_PLACEHOLDER,
@@ -52,11 +54,18 @@ from codeinsight.domain.trace import ARCHETYPE_MATCHED, RunEvent
 from codeinsight.infrastructure.openai_chat import parse_model_answer
 from codeinsight.prompts.code_understanding import (
     build_code_understanding_prompt,
+    citation_mismatch_retry_message,
     evidence_context_message,
+    invalid_answer_retry_message,
+    unknown_evidence_retry_message,
 )
 
 FAST_PATH_ENV = "CODEINSIGHT_ARCHETYPE_FAST_PATH"
 FAST_PATH_MODEL_LABEL = "archetype-fast-path"
+# 一次回答最多几次模型调用：首次 + 纠正。0 或不合法时按默认值走。
+FAST_PATH_ATTEMPTS_ENV = "CODEINSIGHT_ARCHETYPE_FAST_PATH_ATTEMPTS"
+DEFAULT_ANSWER_ATTEMPTS = 2
+MAX_ANSWER_ATTEMPTS = 4
 
 
 def fast_path_enabled(environ: Mapping[str, str] | None = None) -> bool:
@@ -67,7 +76,26 @@ def fast_path_enabled(environ: Mapping[str, str] | None = None) -> bool:
     return raw in {"1", "true", "on", "yes"}
 
 
+def fast_path_answer_attempts(environ: Mapping[str, str] | None = None) -> int:
+    """允许的模型调用次数（含首次）；默认 2，即最多一次纠正。
+
+    为什么要重试：Q-012 阶段 C 的复测里，`invalid_answer`（输出不是合法 JSON）与
+    「正文与引用不一致」各白花掉一次完整调用后直接回退。这类失败改一次提示就能救回来，
+    比整轮回退到 Tool Loop 便宜得多。上限卡在 4 次，避免病态输入把花费放大。
+    """
+
+    source = os.environ if environ is None else environ
+    raw = (source.get(FAST_PATH_ATTEMPTS_ENV) or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_ANSWER_ATTEMPTS
+    return max(1, min(value, MAX_ANSWER_ATTEMPTS))
+
+
 def _resolve_arguments(
+
+
     step_arguments: Mapping[str, object],
     *,
     question: str,
@@ -135,7 +163,9 @@ def run_archetype_fast_path(
             reason = f"tool_error:{result.error_code}"
             _report(emit, event_log, run_id, archetype, reason, False)
             return None
-        report = ledger.ingest(call=call, result=result, retrieval_round=0)
+        report = ledger.ingest(
+            call=call, result=result, retrieval_round=0, focus_text=question
+        )
         tool_results.append(result)
         for record in report.added:
             new_records.append(record)
@@ -160,6 +190,7 @@ def run_archetype_fast_path(
             record.start_line,
             record.end_line,
             record.excerpt,
+            record.excerpt_start_line,
         )
         for record in new_records
     )
@@ -170,45 +201,91 @@ def run_archetype_fast_path(
     ]
     if entries:
         messages.append({"role": "user", "content": evidence_context_message(entries)})
-    try:
-        response = model.complete_with_tools(tuple(messages), ())
-    except Exception as error:  # noqa: BLE001 - 快路径不承担「模型挂了」的兜底
-        # 带上异常类型：只写 model_failed 分不清是网络、限流还是响应格式，运维时要重跑一次才知道。
-        _report(
-            emit, event_log, run_id, archetype, f"model_failed:{type(error).__name__}", False
-        )
-        return None
-    if not response.content or response.tool_calls:
-        # 快路径只做一次措辞调用；它还想调工具就说明配方没喂饱它。
-        _report(emit, event_log, run_id, archetype, "wanted_tools", False)
-        return None
-    try:
-        answer = parse_model_answer(
-            response.content,
-            model=FAST_PATH_MODEL_LABEL,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-        )
-    except ModelResponseError:
-        # 答案不是合法的 {outcome, answer, citations} JSON：与「证据不够」同一种处理，
-        # 不硬答、不把解析异常抛给调用方——回退 Tool Loop 是这条路线唯一的兜底。
-        _report(emit, event_log, run_id, archetype, "invalid_answer", False)
-        return None
     records = {record.evidence_id: record for record in ledger.records}
-    unknown = [item for item in answer.evidence_ids if item not in records]
-    if unknown:
-        # 引用了解算不出的编号：与 Tool Loop 的同一条硬门槛。
-        _report(emit, event_log, run_id, archetype, "unknown_evidence_id", False)
-        return None
-    citations = tuple(
-        AnswerCitation(
-            evidence_id=item,
-            relative_path=records[item].path,
-            start_line=records[item].start_line,
-            end_line=records[item].end_line,
+    max_attempts = fast_path_answer_attempts()
+    answer: ModelAnswer | None = None
+    citations: tuple[AnswerCitation, ...] = ()
+    input_tokens = 0
+    output_tokens = 0
+    for attempt in range(1, max_attempts + 1):
+        # 每次尝试都是一次完整模型调用；上限由开关控制，默认只允许一次纠正。
+        try:
+            response = model.complete_with_tools(tuple(messages), ())
+        except Exception as error:  # noqa: BLE001 - 快路径不承担「模型挂了」的兜底
+            # 带上异常类型：只写 model_failed 分不清是网络、限流还是响应格式，
+            # 运维时要重跑一次才知道。
+            _report(
+                emit, event_log, run_id, archetype, f"model_failed:{type(error).__name__}", False
+            )
+            return None
+        input_tokens += response.input_tokens or 0
+        output_tokens += response.output_tokens or 0
+        if not response.content or response.tool_calls:
+            # 快路径只做措辞调用；它还想调工具就说明配方没喂饱它。
+            _report(emit, event_log, run_id, archetype, "wanted_tools", False)
+            return None
+        try:
+            candidate = parse_model_answer(
+                response.content,
+                model=FAST_PATH_MODEL_LABEL,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+            )
+        except ModelResponseError:
+            # 答案不是合法的 {outcome, answer, citations} JSON：与「证据不够」同一种处理，
+            # 不硬答、不把解析异常抛给调用方——回退 Tool Loop 是这条路线唯一的兜底。
+            if attempt < max_attempts:
+                _report(emit, event_log, run_id, archetype, "retry:invalid_answer", False)
+                messages.append({"role": "user", "content": invalid_answer_retry_message()})
+                continue
+            _report(emit, event_log, run_id, archetype, "invalid_answer", False)
+            return None
+        unknown = [item for item in candidate.evidence_ids if item not in records]
+        if unknown:
+            # 引用了解算不出的编号：与 Tool Loop 的同一条硬门槛。
+            if attempt < max_attempts:
+                _report(emit, event_log, run_id, archetype, "retry:unknown_evidence_id", False)
+                messages.append(
+                    {"role": "user", "content": unknown_evidence_retry_message(unknown)}
+                )
+                continue
+            _report(emit, event_log, run_id, archetype, "unknown_evidence_id", False)
+            return None
+        candidate_citations = tuple(
+            AnswerCitation(
+                evidence_id=item,
+                relative_path=records[item].path,
+                start_line=records[item].start_line,
+                end_line=records[item].end_line,
+            )
+            for item in candidate.evidence_ids
         )
-        for item in answer.evidence_ids
-    )
+        mismatched = uncited_mentioned_paths(
+            candidate.answer, candidate_citations, ledger.paths
+        )
+        if mismatched:
+            # 正文点名的文件没被引用：先给模型一次改正机会，改不对就回退 Tool Loop。
+            if attempt < max_attempts:
+                _report(
+                    emit, event_log, run_id, archetype, "retry:citation_path_mismatch", False
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": citation_mismatch_retry_message(
+                            mismatched,
+                            [item.evidence_id for item in candidate_citations],
+                        ),
+                    }
+                )
+                continue
+            _report(emit, event_log, run_id, archetype, "citation_path_mismatch", False)
+            return None
+        answer = candidate
+        citations = candidate_citations
+        break
+    if answer is None:
+        return None
     _report(emit, event_log, run_id, archetype, "hit", True)
     rows, truncated = build_structured_evidence(
         tool_results=tool_results,
@@ -228,8 +305,8 @@ def run_archetype_fast_path(
         navigation_seen=navigation_seen,
         tool_calls=len(archetype.recipe),
         steps=len(archetype.recipe),
-        input_tokens=response.input_tokens or 0,
-        output_tokens=response.output_tokens or 0,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         loop_status="ARCHETYPE_FAST_PATH",
         termination_reason="" if sufficient else "快路径证据未获确定性评估通过",
         structured_evidence=rows,

@@ -17,15 +17,26 @@ from qdrant_client.http.exceptions import (
 
 from codeinsight.domain.errors import QdrantNotConfiguredError, QdrantUnavailableError
 from codeinsight.domain.retrieval import RankedChunk
-from codeinsight.domain.semantic import EmbeddingBatch, SemanticIndex
+from codeinsight.domain.semantic import (
+    EmbeddingBatch,
+    SemanticIndex,
+    SemanticIndexEntry,
+    SemanticModelMetadata,
+)
 from codeinsight.infrastructure.reranker import Reranker
 from codeinsight.ingestion.chunker import chunk_scan_result
 from codeinsight.ingestion.scanner import scan_repository
 from codeinsight.retrieval.hybrid import rerank_ranked_chunks
-from codeinsight.retrieval.index_pipeline import publish_semantic_index
+from codeinsight.retrieval.index_pipeline import publish_semantic_index, source_fingerprint
 from codeinsight.retrieval.qdrant_index_publisher import QdrantIndexPublisher
 from codeinsight.retrieval.qdrant_store import QdrantVectorStore
-from codeinsight.retrieval.semantic import build_semantic_index, search_chunks_dense
+from codeinsight.retrieval.semantic import (
+    build_semantic_index,
+    chunk_id,
+    filter_indexable_chunks,
+    search_chunks_dense,
+    semantic_index_id,
+)
 from codeinsight.retrieval.sparse import search_chunks_sparse
 from codeinsight.retrieval.vector_store import VectorStore
 
@@ -40,6 +51,10 @@ DEFAULT_RRF_K = 60
 DEFAULT_QDRANT_COLLECTION = "codeinsight_2_1_dense_sparse"
 DEFAULT_CHUNK_MAX_LINES = 80
 DEFAULT_CHUNK_OVERLAP_RATIO = 0.0
+# 索引身份里的两个版本号：换切块政策或换向量 schema 时必须一起改，否则会复用到一个
+# 已经不匹配的 Qdrant collection。
+CHUNK_VERSION = "fixed-lines-v1"
+VECTOR_SCHEMA_VERSION = "dense-sparse-v1"
 _COLLECTION_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
@@ -111,7 +126,7 @@ def prepare_runtime_vector_store(
     root: str | Path,
     index: SemanticIndex,
     *,
-    chunk_version: str = "fixed-lines-v1",
+    chunk_version: str = CHUNK_VERSION,
 ) -> QdrantVectorStore:
     """复用 active Qdrant，否则创建 staging 并原子切换 active manifest。"""
     root_path = Path(root).resolve()
@@ -228,6 +243,86 @@ def retrieve_subquestion_evidence(
     )
 
 
+def reuse_active_index(
+    root: str | Path,
+    *,
+    chunk_max_lines: int = DEFAULT_CHUNK_MAX_LINES,
+    chunk_overlap_ratio: float = DEFAULT_CHUNK_OVERLAP_RATIO,
+    client: QdrantClient | None = None,
+) -> tuple[SemanticIndex, QdrantVectorStore] | None:
+    """复用 Qdrant 上已发布的 active 索引，不重新 Embedding 整仓库。
+
+    为什么需要它：索引身份（``index_id``）只由模型名与源码块 ID 决定，两者都能在
+    不调用 Embedding 的前提下算出来；而重建索引的代价是整个仓库的 Embedding
+    （本仓库实测 118–135 秒），必然超过客户端超时。所以先按源码块集合拼出期望的
+    索引身份，与 active manifest 比对：全部一致才复用，任何一处对不上就返回
+    ``None``，由调用方走原来的重建路径。
+
+    为什么要求显式 URL：Qdrant 的进程内模式随进程消亡，没有可跨进程复用的索引。
+    """
+
+    active_client = client
+    if active_client is None:
+        if not (os.environ.get("CODEINSIGHT_QDRANT_URL") or "").strip():
+            return None
+        active_client = _runtime_qdrant_client()
+    root_path = Path(root).resolve()
+    repo_id = repository_id(root_path)
+    publisher = QdrantIndexPublisher(
+        client=active_client,
+        repository_root=root_path,
+        repo_id=repo_id,
+        collection_prefix=_runtime_collection_prefix(),
+    )
+    try:
+        active = publisher.active()
+    except (ApiException, ResponseHandlingException, UnexpectedResponse, OSError) as error:
+        raise QdrantUnavailableError("Qdrant active 索引不可读") from error
+    if active is None or active.repo_id != repo_id:
+        return None
+    if active.chunk_version != CHUNK_VERSION:
+        return None
+    if active.vector_schema_version != VECTOR_SCHEMA_VERSION:
+        return None
+    chunks = chunk_scan_result(
+        scan_repository(root_path),
+        max_lines=chunk_max_lines,
+        overlap_ratio=chunk_overlap_ratio,
+    )
+    indexable = filter_indexable_chunks(chunks)
+    if not indexable:
+        return None
+    entry_ids = tuple(chunk_id(chunk) for chunk in indexable)
+    if semantic_index_id(active.embedding_model, entry_ids) != active.index_version:
+        return None
+    try:
+        store = publisher.active_store()
+    except (ApiException, ResponseHandlingException, UnexpectedResponse, OSError) as error:
+        raise QdrantUnavailableError("Qdrant active 索引不可用") from error
+    if store is None:
+        return None
+    metadata = SemanticModelMetadata(
+        model=active.embedding_model,
+        dimensions=active.dimension,
+        language_coverage="multilingual",
+        service="openai-compatible",
+        index_id=active.index_version,
+        sparse_model=active.sparse_model or "codeinsight-sparse-v1",
+        vector_schema_version=active.vector_schema_version,
+    )
+    entries = tuple(
+        SemanticIndexEntry(
+            chunk_id=entry_id,
+            chunk=chunk,
+            embedding=(),
+            source_fingerprint=source_fingerprint(chunk.text),
+            metadata=metadata,
+        )
+        for entry_id, chunk in zip(entry_ids, indexable, strict=True)
+    )
+    return SemanticIndex(metadata=metadata, entries=entries, vectors_persisted=True), store
+
+
 def prepare_search_state(
     root: str | Path,
     *,
@@ -240,8 +335,18 @@ def prepare_search_state(
     为什么把它单独暴露出来：``search_repository`` 每次调用都要扫描、切块并
     Embedding 整个仓库；同一进程里连续检索同一仓库时，把这份状态缓存起来，
     单次检索的成本就从「整仓库 Embedding」降到「查询 Embedding + 向量检索」。
+
+    复用优先级：先看 Qdrant 上的 active 索引能不能直接用（跨进程复用，见
+    ``reuse_active_index``）；不能才重新构建，并把新索引发布回 Qdrant。
     """
 
+    reused = reuse_active_index(
+        root,
+        chunk_max_lines=chunk_max_lines,
+        chunk_overlap_ratio=chunk_overlap_ratio,
+    )
+    if reused is not None:
+        return reused
     index = build_repository_semantic_index(
         root,
         chunk_max_lines=chunk_max_lines,

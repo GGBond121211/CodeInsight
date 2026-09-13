@@ -145,3 +145,57 @@ def test_excerpt_is_bounded() -> None:
         ),
     )
     assert len(report.added[0].excerpt) == 10
+
+
+def test_excerpt_is_anchored_on_the_line_the_question_asks_about() -> None:
+    """片段要对准问题里的标识符所在行，而不是一律从块开头截。
+
+    为什么：块常常有几十行，定义行不一定在开头。只截开头时模型看不到它要引用的那一行，
+    实测就会把引用挂到别的证据上。
+    """
+
+    text = "\n".join(
+        ["# header"] * 30 + ["class Client(BaseClient):", "    pass"] + ["# tail"] * 30
+    )
+    ledger = EvidenceLedger(excerpt_chars=40)
+
+    report = ledger.ingest(
+        call=_call("search_repository"),
+        result=ToolResult.success(
+            "call-search",
+            "search_repository",
+            {
+                "results": [
+                    {
+                        "relative_path": "src/client.py",
+                        "start_line": 1,
+                        "end_line": 62,
+                        "text": text,
+                    }
+                ]
+            },
+        ),
+        focus_text="Client 类定义在哪个文件？",
+    )
+
+    record = report.added[0]
+    assert record.excerpt.startswith("class Client(BaseClient):")
+    # 块从第 1 行开始、锚点在第 31 行，所以片段起点要如实写出来。
+    assert record.excerpt_start_line == 31
+
+
+def test_excerpt_stays_at_the_block_start_without_a_focus() -> None:
+    ledger = EvidenceLedger(excerpt_chars=20)
+
+    report = ledger.ingest(
+        call=_call("read_file"),
+        result=ToolResult.success(
+            "call-read_file",
+            "read_file",
+            {"path": "src/a.py", "start_line": 5, "end_line": 9, "text": "first line\n" + "x" * 80},
+        ),
+    )
+
+    record = report.added[0]
+    assert record.excerpt.startswith("first line")
+    assert record.excerpt_start_line is None

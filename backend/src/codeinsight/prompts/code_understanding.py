@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 PROMPT_VERSION = "code-understanding-tool-loop-v1"
 
 SYSTEM_PROMPT = """你是 CodeInsight 的代码理解助手。你只能读取仓库，不能修改任何文件。
@@ -59,23 +61,68 @@ def evidence_index_message(
 
 
 def evidence_context_message(
-    entries: tuple[tuple[str, str, int, int, str], ...],
+    entries: tuple[tuple[str, str, int, int, str, int | None], ...],
 ) -> str:
     """把证据编号、位置与开头片段一起回填给快路径模型。
 
     为什么快路径需要它：只给编号索引时，模型看不到任何正文，遇到「默认值是
     多少」这类内容问题就只能靠自己的记忆作答——那正是「看起来正确、却没有证据
     支撑」的形态。片段是有界的（每条只给开头一段），权威引用仍然是 path:行号。
+
+    片段带 ``excerpt_start_line`` 时说明它没有从块首开始，而是在块内对准了与问题相关
+    的那一行；把它写出来，模型才能判断「这条证据到底含不含我要找的符号」。
     """
-    lines = ["[evidence] 本次配方取到的可引用证据（编号 + 位置 + 开头片段）："]
-    for evidence_id, path, start_line, end_line, excerpt in entries:
-        lines.append(f"{evidence_id} = {path}:{start_line}-{end_line}")
+    lines = ["[evidence] 本次配方取到的可引用证据（编号 + 位置 + 片段）："]
+    for evidence_id, path, start_line, end_line, excerpt, excerpt_start_line in entries:
+        anchor = (
+            f"（片段从第 {excerpt_start_line} 行开始）"
+            if excerpt_start_line is not None
+            else ""
+        )
+        lines.append(f"{evidence_id} = {path}:{start_line}-{end_line}{anchor}")
         body = excerpt.strip()
         if body:
             lines.append("    " + body.replace("\n", "\n    "))
     lines.append("citations 只能使用这些编号；行号是权威位置。")
     lines.append(
-        "片段是每条证据的开头部分，可能被截断；片段里没有的内容不要凭记忆补全，"
+        "正文里点名的文件必须出现在 citations 里：结论来自哪个文件就引用哪个文件的编号，"
+        "引用别的文件会被判为不一致。"
+    )
+    lines.append(
+        "片段可能只是块内的一段，也可能被截断；片段里没有的内容不要凭记忆补全，"
         "证据不足时用 outcome=insufficient_evidence。"
     )
     return "\n".join(lines)
+
+
+def invalid_answer_retry_message() -> str:
+    """模型上一次输出不是合法 JSON 时的纠正指令。"""
+
+    return (
+        "[status] 上一次输出不是合法的 JSON。请重新只输出一个 JSON 对象，"
+        "形如 {\"outcome\": \"answered\", \"answer\": \"……\", \"citations\": [\"E1\"]}，"
+        "不要包含解释、Markdown 代码块或额外文本。"
+    )
+
+
+def unknown_evidence_retry_message(unknown: Sequence[str]) -> str:
+    """模型引用了解算不出的编号时的纠正指令。"""
+
+    listed = "、".join(unknown)
+    return (
+        f"[status] 引用里出现了不存在的编号：{listed}。"
+        "citations 只能使用 [evidence] 里出现过的编号，请重新输出完整 JSON。"
+    )
+
+
+def citation_mismatch_retry_message(
+    paths: Sequence[str], cited: Sequence[str]
+) -> str:
+    """正文点名的文件没有被引用时的纠正指令。"""
+
+    return (
+        f"[status] 正文提到了文件 {'、'.join(paths)}，但 citations 里没有这些文件的编号"
+        f"（当前引用：{'、'.join(cited) if cited else '空'}）。"
+        "结论来自哪个文件就要引用哪个文件的编号；如果正文里的说法没有证据支撑，"
+        "请改成 outcome=insufficient_evidence。请重新输出完整 JSON。"
+    )

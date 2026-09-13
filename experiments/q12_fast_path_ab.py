@@ -351,6 +351,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Q-012 C2.4 快路径 vs Tool Loop")
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--cases", type=int, default=0, help="0 表示全部题面")
+    parser.add_argument(
+        "--case-id",
+        action="append",
+        dest="case_ids",
+        help="只跑指定题面（可重复）；与 --cases 同时给时按 --case-id 过滤",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "work" / "q12_fast_path_ab.json")
     parser.add_argument(
         "--cooldown",
@@ -374,6 +380,13 @@ def main() -> int:
     model = GatewayChatModel.from_environment()
     router = ArchetypeRouter(embed=_resilient_embed(embedding.embed))
     repository, cases = _load_cases(args.cases)
+    if args.case_ids:
+        wanted = set(args.case_ids)
+        cases = [case for case in cases if case["id"] in wanted]
+        missing = sorted(wanted - {str(case["id"]) for case in cases})
+        if missing:
+            print(f"题面不存在：{missing}")
+            return 2
     if not repository.is_dir():
         print(f"仓库不存在：{repository}")
         return 2

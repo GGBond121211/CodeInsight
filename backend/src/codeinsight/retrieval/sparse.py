@@ -64,6 +64,8 @@ def search_chunks_sparse(
         raise ValueError("limit 必须是正整数")
     if not query.strip():
         return ()
+    if vector_store is None and index.vectors_persisted:
+        raise ValueError("该索引的向量持久化在 Qdrant，缺少向量库时不能做本地稀疏检索")
     query_batch = embed((query,))
     query_sparse = require_sparse_batch(query_batch, 1)[0]
     entries_by_id = {entry.chunk_id: entry for entry in index.entries}
