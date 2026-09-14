@@ -5,6 +5,11 @@ on:
   push:
     branches: [main, master]
 
+concurrency:
+  # 同一分支连续推送时取消还在跑的旧 run；否则旧 run 会占着 runner 跑完。
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -13,12 +18,95 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.32"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: uv sync --project backend --locked
       - run: uv run --project backend ruff check backend/src backend/tests
       - run: uv run --project backend python -m pytest --basetemp=work/pytest-ci -q backend/tests
+
+  integration-services:
+    # backend job 跑的是无依赖用例；依赖真实 MySQL / Redis / Qdrant 的用例在那里会
+    # 静默跳过。这个 job 用 service containers 起真依赖，把那些用例真正跑起来。
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0.43
+        env:
+          # 与本地 Compose 相同的开发凭据：本地专用值，不是秘密。
+          MYSQL_ROOT_PASSWORD: codeinsight-dev-root
+          MYSQL_USER: codeinsight
+          MYSQL_PASSWORD: codeinsight-dev
+          # 库名必须含 "test"：集成测试会 TRUNCATE 全部表，conftest 拒绝非测试库。
+          MYSQL_DATABASE: codeinsight_v2_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pcodeinsight-dev-root"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+          --health-start-period=30s
+      redis:
+        # 与根目录 docker-compose.yml 同一个 digest，不让 CI 漂到别的版本。
+        image: redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+        ports:
+          # 6380 是仓库既有约定：test_worker_restart_recovery.py 直连这个端口。
+          - 6380:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+      qdrant:
+        image: qdrant/qdrant@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+        ports:
+          - 6335:6333
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --project backend --locked
+      - name: Wait for Qdrant
+        # Qdrant 镜像不带 curl/wget，写不了容器健康检查，所以在这里等它真的可连。
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:6335/healthz > /dev/null; then
+              echo "Qdrant ready after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Qdrant did not become ready in 30s" >&2
+          exit 1
+      - name: MySQL-backed integration tests
+        # 这些用例每次会 TRUNCATE 测试库，按项目约定单独一次调用，不和其它用例混跑。
+        env:
+          CODEINSIGHT_MYSQL_HOST: 127.0.0.1
+          CODEINSIGHT_MYSQL_PORT: "3306"
+          CODEINSIGHT_MYSQL_USER: codeinsight
+          CODEINSIGHT_MYSQL_PASSWORD: codeinsight-dev
+          CODEINSIGHT_MYSQL_TEST_DATABASE: codeinsight_v2_test
+        run: >
+          uv run --project backend python -m pytest --basetemp=work/pytest-integration -q
+          backend/tests/integration/test_mysql_stores.py
+          backend/tests/integration/test_mysql_memory.py
+          backend/tests/integration/test_mysql_gateway_cost.py
+          backend/tests/integration/test_agent_run_persistence.py
+          backend/tests/integration/test_conversation_persistence.py
+      - name: Redis and Qdrant adapter tests
+        run: >
+          uv run --project backend python -m pytest --basetemp=work/pytest-integration-adapters -q
+          backend/tests/integration/test_worker_restart_recovery.py
+          backend/tests/integration/test_qdrant_store.py
 
   frontend:
     runs-on: ubuntu-latest
