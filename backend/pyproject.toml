@@ -38,7 +38,7 @@ codeinsight = "codeinsight.cli.main:main"
 dev = [
     "httpx2>=2,<3",
     "pytest>=8.4,<10",
-    "ruff>=0.12,<1",
+    "ruff>=0.16.6,<1",
 ]
 
 [tool.hatch.build.targets.wheel]
