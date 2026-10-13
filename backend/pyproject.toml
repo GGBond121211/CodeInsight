@@ -28,7 +28,7 @@ dependencies = [
     "celery>=5.5,<6",
     "opentelemetry-api>=1.36,<2",
     "prometheus-client>=0.22,<1",
-    "uvicorn[standard]>=0.35,<1",
+    "uvicorn[standard]>=0.52.4,<1",
 ]
 
 [project.scripts]

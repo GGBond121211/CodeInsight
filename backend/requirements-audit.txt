@@ -9,4 +9,4 @@ pymysql>=1.1,<2
 qdrant-client>=1.15,<1.16
 redis>=6,<7
 sqlalchemy>=2.0,<3
-uvicorn[standard]>=0.35,<1
+uvicorn[standard]>=0.52.4,<1
