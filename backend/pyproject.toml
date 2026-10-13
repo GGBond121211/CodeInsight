@@ -9,7 +9,7 @@ description = "基于 Provider Dense/Sparse、Qdrant 与 LangGraph 的多语言�
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi>=0.116,<1",
-    "langgraph>=1,<2",
+    "langgraph>=1.2.11,<2",
     "openai>=2,<3",
     # Session / Goal / Run 三层状态的 MySQL 持久化（2.0 Step 2）。
     # 用 ORM 而不是手写 SQL 的关键理由是 version_id_col：
